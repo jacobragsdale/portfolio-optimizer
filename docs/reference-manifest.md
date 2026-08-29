@@ -61,11 +61,11 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `run_id`, `run_name`, `created_at_utc`, `as_of` | Identity. `created_at_utc` comes from the injected clock. |
 | `git_sha`, `git_dirty` | The code revision, or `unknown` outside a repository. |
 | `execution_mode` | |
-| `versions` | `python`, `cvxpy`, `numpy`, `pandas`, `solver`, `solver_version`. |
+| `versions` | `python`, `cvxpy`, `numpy`, `pandas`, `solver`, `solver_version`, and `packages`: the installed version of every distribution that supplied a step named outside the template modules (`{"my-firm-quant": "1.4.2"}`; a module no distribution provides is listed under its own name as `unknown`). |
 | `config` | `path`, `sha256` of the canonical resolved config, and `resolved` (the full config). |
 | `settings` | Non-secret settings the run used. |
 | `terms`, `constraints` | Qualified name and params of every configured step, in order; `verify` uses these. |
-| `datasets[]` | `name`, `loader_qualname`, `loader_source_sha256`, `params_sha256`, `rows`, `columns`, `content_sha256`. |
+| `datasets[]` | `name`, `loader_qualname`, `loader_source_sha256`, `params_sha256`, `rows`, `columns`, `content_sha256`, `load_time_s` (wall-clock seconds the loader took). |
 | `portfolios[]` | See below. A `sink` failure appears as an extra record with `portfolio_id: "*"`. |
 | `artifacts[]` | `path`, `sha256`, `size_bytes` of every file written. |
 | `exit_code` | The code the run returned. |
@@ -89,10 +89,10 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 Frame hashes are independent of row order (given the schema key), column order, and index; Decimals are
 normalized; timestamps are compared as UTC instants; every column's dtype is part of the hash. Spec
 hashes cover each array's name, shape, dtype, and bytes (with `-0.0` normalized) plus the scalar
-metadata. Source hashes are of the function's source text; module hashes are of the whole file.
+metadata. Source hashes are of the function's source text.
 
 ### `diff-manifests` stages
 
-Checked in order: `config`, `code` (git sha), `versions`, `datasets` (per dataset), then per portfolio
+Checked in order: `config`, `code` (git sha), `versions` (libraries, solver, and step packages), `datasets` (per dataset), then per portfolio
 `status`, `rules`, `spec`, `solve` (objective value), `orders`. Only the first divergence per portfolio
 is reported.

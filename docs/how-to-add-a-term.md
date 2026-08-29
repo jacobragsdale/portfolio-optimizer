@@ -12,7 +12,11 @@ signal column and a constraint that uses earlier portfolios' results, and keeps 
 - If the signal is not in the universe yet, add it with a loader join or a rule first; the term then
   reads it with `spec.column("my_signal")`.
 
-## 1. Write the function in `src/portfolio_optimizer/terms.py`
+## 1. Write the function in `src/portfolio_optimizer/terms.py` — or in your package
+
+A term or constraint in an installed package is named `my_firm.terms:signal_tilt` in the config. It runs
+and is recorded like a shipped one, but has no numpy twin unless you add one here (step 3), so the
+manifest lists it as `unverified`.
 
 An objective term returns `ObjectiveTerm`; a constraint returns `ConstraintSet`. Both take
 `x: DecisionVars` (`x.w`, `x.buy`, `x.sell` — weights and the non-negative trade split, as fractions of

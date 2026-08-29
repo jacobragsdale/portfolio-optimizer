@@ -13,7 +13,10 @@ dependency.
 
 ## Add a loader
 
-### 1. Write the function in `src/portfolio_optimizer/loaders.py`
+### 1. Write the function in `src/portfolio_optimizer/loaders.py` — or in your package
+
+A loader shared across desks belongs in a package installed in the environment and is named
+`my_firm.loaders:holdings_from_sql` in the config; the manifest records the package's version.
 
 ```python
 class SqlParams(Params):
@@ -28,7 +31,7 @@ def holdings_from_sql(request: LoadRequest, params: SqlParams) -> pd.DataFrame:
 ```
 
 - `request: LoadRequest` carries `dataset` (the config key being loaded), `portfolio_ids` in solve
-  order, `as_of`, `data_root`, and `run_id`.
+  order, `as_of`, `data_root`, `run_id`, and `rate_limiter` (see below).
 - Return `pd.DataFrame` with every dtype declared. `coerce_frame` casts to the dataset's schema and turns
   money written as strings, ints, or floats into `Decimal` — do this at the read boundary, not later.
 - The `constraints` loader returns `dict[str, dict[str, object]]` keyed by portfolio id; money inside may
@@ -36,6 +39,50 @@ def holdings_from_sql(request: LoadRequest, params: SqlParams) -> pd.DataFrame:
 
 Pass the database client in as a parameter of your gateway object rather than reaching for a global,
 so a tier-4 contract test can call the real query and validate its shape with the production schema.
+
+### Async loaders, fan-out, and rate limits
+
+Every dataset loader runs concurrently once the portfolio list is known: an `async def` loader runs on
+the engine's event loop, a plain `def` loader in a worker thread. Use `async def` for a source with an
+async client; a blocking driver is fine as a plain function and still overlaps with the other loaders.
+
+A source that answers one portfolio per call needs two things a large run cannot do without: fan-out
+and a rate limit. Every input can be bounded on its own, because sources scale differently:
+
+```json
+"portfolios": {"loader": "portfolios_from_api", "rate_limit": {"max_in_flight": 1}},
+"rate_limits": {"vendor_api": {"requests_per_second": 20, "burst": 40, "max_in_flight": 8}},
+"datasets": {
+  "holdings": {"loader": "holdings_from_api", "rate_limit": "vendor_api"},
+  "universe": {"loader": "universe_from_api", "rate_limit": "vendor_api"},
+  "details": {"loader": "details_from_sql", "rate_limit": {"max_in_flight": 32}}
+}
+```
+
+`holdings` and `universe` name the same pool, so together they never exceed 20 requests per second or
+8 in flight against the vendor. `details` has an inline bound of its own — the database takes 32
+concurrent queries happily — and the portfolio list is held to one call at a time. The loader receives
+whichever bound its input carries as `request.rate_limiter`:
+
+```python
+async def holdings_from_api(request: LoadRequest, params: ApiParams) -> pd.DataFrame:
+    client = build_client(params)
+
+    async def one(portfolio_id: PortfolioId) -> pd.DataFrame:
+        return await client.holdings(portfolio_id, as_of=request.as_of)
+
+    parts = await fan_out(request.portfolio_ids, one, limiter=request.rate_limiter)
+    return coerce_frame(pd.concat(parts, ignore_index=True), DATASET_SCHEMAS[request.dataset])
+```
+
+`fan_out` starts every call at once and lets the limiter decide when each one runs; results come back
+in portfolio order, and one failure cancels the rest and surfaces as an `ExceptionGroup`. From a plain
+loader, wrap each call in `with request.rate_limiter.sync:` instead — it draws from the same pool. The
+shipped `csv_per_portfolio` is this pattern with files in place of a client; copy its shape.
+
+The manifest records how long each dataset took (`load_time_s`), and the run log reports each pool's
+request count and total time spent waiting, so a slow run can be traced to the dataset and the limit
+that paced it.
 
 ### 2. Name it in the config
 
@@ -58,7 +105,7 @@ uses — shape only, never values.
 
 ## Add a sink
 
-### 1. Write the function in `src/portfolio_optimizer/sinks.py`
+### 1. Write the function in `src/portfolio_optimizer/sinks.py` — or in your package
 
 ```python
 class GatewaySinkParams(Params):

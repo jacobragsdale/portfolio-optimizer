@@ -1,11 +1,25 @@
 """Tier 1/2: the manifest round-trips with an integrity hash, is written atomically, and localizes drift."""
 
+import importlib.metadata
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
-from portfolio_optimizer.engine.manifest import ConfigInfo, OrdersRecord, PortfolioRecord, RunManifest, VersionInfo, diff_manifests, finalize, load_manifest, read_git_info, write_manifest
+from portfolio_optimizer.engine.manifest import (
+    ConfigInfo,
+    OrdersRecord,
+    PortfolioRecord,
+    RunManifest,
+    VersionInfo,
+    diff_manifests,
+    finalize,
+    load_manifest,
+    package_versions,
+    read_git_info,
+    write_manifest,
+)
 from tests.conftest import AS_OF
 
 
@@ -62,6 +76,7 @@ def test_identical_manifests_do_not_differ() -> None:
     [
         ({"config": ConfigInfo(path="c.json", sha256="other", resolved={})}, "config: resolved config differs"),
         ({"git_sha": "zzz"}, "code: git sha abc vs zzz"),
+        ({"versions": manifest().versions.model_copy(update={"packages": {"my-firm-quant": "1.5.0"}})}, "versions: library, solver, or step-package versions differ"),
         (
             {
                 "portfolios": (
@@ -84,6 +99,14 @@ def test_identical_manifests_do_not_differ() -> None:
 )
 def test_diff_names_the_first_divergence(overrides: dict[str, object], expected: str) -> None:
     assert expected in diff_manifests(manifest(), manifest(**overrides))
+
+
+def test_package_versions_name_the_distribution_behind_each_external_module() -> None:
+    found = package_versions(["pandas.core.frame", "pandas", "portfolio_optimizer.rules", "fake_steps"])
+    assert found["pandas"] == pd.__version__  # an indexed distribution, once, whatever the submodule
+    assert found["portfolio-optimizer"] == importlib.metadata.version("portfolio-optimizer")  # an editable install, found by name
+    assert found["fake_steps"] == "unknown"  # a module no distribution provides
+    assert package_versions([]) == {}
 
 
 def test_git_info_outside_a_repository_is_unknown(tmp_path: Path) -> None:

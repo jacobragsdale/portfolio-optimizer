@@ -10,7 +10,12 @@ and tests it.
 - You know which frame the rule changes: `holdings`, `universe`, `targets`, `covariance`, or the
   `style` constraints.
 
-## 1. Write the function in `src/portfolio_optimizer/rules.py`
+## 1. Write the function in `src/portfolio_optimizer/rules.py` — or in your package
+
+A rule shared across desks belongs in a package installed in the environment (`uv add my-firm-quant`)
+and is named `my_firm.rules:exclude_sector` in the config; everything below applies unchanged. A loose
+module next to the config is not on the console script's import path, so install it or run with
+`PYTHONPATH`.
 
 ```python
 class ExcludeSectorParams(Params):

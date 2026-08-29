@@ -6,7 +6,9 @@ Builders are exposed as fixtures because ``--import-mode=importlib`` keeps ``tes
 ``sys.path``.
 """
 
+import asyncio
 import json
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -330,3 +332,55 @@ def _protocols_hold(clock: Clock, ids: IdFactory) -> None:
 
 
 _protocols_hold(FixedClock(), FixedIds())
+
+
+# --- loaders that prove the load stage's concurrency and plumbing ---
+
+_SYNC_BARRIER = threading.Barrier(2, timeout=5)
+_ASYNC_BARRIER: tuple[asyncio.AbstractEventLoop, asyncio.Barrier] | None = None
+
+
+def barrier_loader(request: LoadRequest) -> pd.DataFrame:
+    """Returns only once a second barrier loader is running at the same time — proof that sync loaders overlap."""
+    _SYNC_BARRIER.wait()
+    return pd.DataFrame({"portfolio_id": pd.Series(list(request.portfolio_ids), dtype="string")})
+
+
+async def async_barrier_loader(request: LoadRequest) -> pd.DataFrame:
+    """The async twin of ``barrier_loader``; two of these must be in flight together."""
+    global _ASYNC_BARRIER  # noqa: PLW0603  # one barrier per event loop, shared by the two loaders of a test
+    loop = asyncio.get_running_loop()
+    if _ASYNC_BARRIER is None or _ASYNC_BARRIER[0] is not loop:
+        _ASYNC_BARRIER = (loop, asyncio.Barrier(2))
+    await asyncio.wait_for(_ASYNC_BARRIER[1].wait(), timeout=5)
+    return pd.DataFrame({"portfolio_id": pd.Series(list(request.portfolio_ids), dtype="string")})
+
+
+def pool_reporting_loader(request: LoadRequest) -> pd.DataFrame:
+    """Reports which rate-limit pool the engine handed it, and takes one turn from it."""
+    with request.rate_limiter.sync:
+        return pd.DataFrame({"pool": pd.Series([request.rate_limiter.name], dtype="string"), "limited": [request.rate_limiter.is_limited]})
+
+
+async def async_pool_reporting_loader(request: LoadRequest) -> pd.DataFrame:
+    """The async twin of ``pool_reporting_loader``."""
+    async with request.rate_limiter:
+        return pd.DataFrame({"pool": pd.Series([request.rate_limiter.name], dtype="string"), "limited": [request.rate_limiter.is_limited]})
+
+
+def invalid_input_loader(request: LoadRequest) -> pd.DataFrame:
+    """A loader whose source rejected the request."""
+    msg = f"{request.dataset}: no rows as of {request.as_of:%Y-%m-%d}"
+    raise ValueError(msg)
+
+
+def unreachable_loader(request: LoadRequest) -> pd.DataFrame:
+    """A loader whose backend is down; an infrastructure failure, not an input problem."""
+    msg = f"{request.dataset}: connection refused"
+    raise ConnectionError(msg)
+
+
+def limiter_naming_portfolios_loader(request: LoadRequest) -> pd.DataFrame:
+    """A portfolio list whose single id is the name of the limiter the engine handed this input."""
+    with request.rate_limiter.sync:
+        return pd.DataFrame({"portfolio_id": pd.Series([request.rate_limiter.name], dtype="string"), "solve_order": pd.Series([0], dtype="Int64")})

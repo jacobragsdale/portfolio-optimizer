@@ -38,7 +38,10 @@ def cap_single_name(data: PortfolioData, params: CapSingleNameParams) -> Portfol
 "rules": [{"name": "cap_single_name", "params": {"max_weight": "0.05"}}]
 ```
 
-No decorators, no registries. Before any data loads, the engine imports every named function, checks its
+No decorators, no registries. The function may live in the template modules or in any package installed
+in the environment: name it `my_firm.rules:cap_single_name` and the engine imports it from there — which
+is how a firm shares loaders, rules, and sinks across desks, with the package's version recorded in every
+manifest. Before any data loads, the engine imports every named function, checks its
 signature, validates its `params` against the function's own model, and records its source hash in the
 run manifest. Loaders, objective terms, constraints, and sinks follow the same rule.
 
@@ -50,11 +53,12 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 
 | Path | Role |
 |---|---|
-| `src/portfolio_optimizer/{loaders,rules,terms,sinks}.py` | **Yours to edit.** Each ships worked, tested examples. |
+| `src/portfolio_optimizer/{loaders,rules,terms,sinks}.py` | **Yours to edit.** Each ships worked, tested examples. Shared steps live in your own installed package instead and are named `package.module:function`. |
 | `src/portfolio_optimizer/engine/` | Loading and assembly, the rule pipeline, build, solve, cvxpy-free verification, orders, scheduling, manifest. Rarely edited. |
 | `src/portfolio_optimizer/domain/` | Frame schemas, the per-portfolio data bundle, the pure-data problem spec and results. |
 | `src/portfolio_optimizer/config/` | The run-config models and the step resolver. |
 | `src/portfolio_optimizer/cvx/adapter.py` | The only module that imports cvxpy. |
+| `src/portfolio_optimizer/ratelimit.py` | Rate-limit pools loaders draw from, and `fan_out` for sources that answer one portfolio per call. |
 | `configs/example_run.json`, `configs/run-config.schema.json`, `examples/data/` | The shipped example and the generated JSON Schema. |
 | `docs/` | Tutorial, how-to guides, reference, and explanation. |
 
@@ -67,6 +71,7 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 - [Reference: the run config](docs/reference-run-config.md)
 - [Reference: outputs, the manifest, and the CLI](docs/reference-manifest.md)
 - [Explanation: how the engine is built and why](docs/explanation-architecture.md)
+- [Explanation: the life of a run](docs/explanation-run-lifecycle.md)
 
 ## Development
 

@@ -4,7 +4,7 @@ import importlib.metadata
 import json
 import platform
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -40,7 +40,12 @@ def read_git_info(repo: Path) -> GitInfo:
 
 
 class VersionInfo(StrictModel):
-    """Library versions that determine numerical results."""
+    """Library versions that determine numerical results, and the version of every package that supplied a step.
+
+    ``packages`` maps the distribution behind each step named outside the template modules to its
+    installed version (``{"my-firm-quant": "1.4.2"}``); a module that no distribution claims is
+    recorded under its own name as ``unknown``. Steps from the template modules are covered by ``git_sha``.
+    """
 
     python: str
     cvxpy: str
@@ -48,6 +53,7 @@ class VersionInfo(StrictModel):
     pandas: str
     solver: str
     solver_version: str
+    packages: dict[str, str] = Field(default_factory=dict)
 
 
 class ConfigInfo(StrictModel):
@@ -68,6 +74,7 @@ class DatasetRecord(StrictModel):
     rows: int
     columns: tuple[str, ...]
     content_sha256: str
+    load_time_s: float
 
 
 class RuleRecord(StrictModel):
@@ -175,9 +182,33 @@ class RunManifest(StrictModel):
     manifest_sha256: str = Field(default="")
 
 
-def versions(solver: str, solver_version: str) -> VersionInfo:
+def versions(solver: str, solver_version: str, packages: Mapping[str, str]) -> VersionInfo:
     """Collect the versions that matter for reproducibility."""
-    return VersionInfo(python=platform.python_version(), cvxpy=_version("cvxpy"), numpy=_version("numpy"), pandas=_version("pandas"), solver=solver, solver_version=solver_version)
+    return VersionInfo(
+        python=platform.python_version(), cvxpy=_version("cvxpy"), numpy=_version("numpy"), pandas=_version("pandas"), solver=solver, solver_version=solver_version, packages=dict(packages)
+    )
+
+
+def package_versions(module_names: Iterable[str]) -> dict[str, str]:
+    """The installed version of the distribution behind each module, keyed by distribution name.
+
+    A module's top-level package is looked up among the installed distributions; an editable install
+    that the metadata does not index is found by name when the distribution is named after the package.
+    A module no distribution claims is recorded under its own top-level name as ``unknown``.
+    """
+    claimed = importlib.metadata.packages_distributions()
+    found: dict[str, str] = {}
+    for top_level in sorted({name.partition(".")[0] for name in module_names}):
+        distributions = claimed.get(top_level)
+        if distributions is None:
+            try:
+                distributions = [str(importlib.metadata.distribution(top_level).metadata["Name"])]
+            except importlib.metadata.PackageNotFoundError:
+                found[top_level] = "unknown"
+                continue
+        for distribution in distributions:
+            found[distribution] = _version(distribution)
+    return found
 
 
 def _version(package: str) -> str:
@@ -200,7 +231,14 @@ def dataset_records(audits: Sequence[DatasetAudit]) -> tuple[DatasetRecord, ...]
     """Convert load-time audits into manifest records."""
     return tuple(
         DatasetRecord(
-            name=a.name, loader_qualname=a.loader_qualname, loader_source_sha256=a.loader_source_sha256, params_sha256=a.params_sha256, rows=a.rows, columns=a.columns, content_sha256=a.content_sha256
+            name=a.name,
+            loader_qualname=a.loader_qualname,
+            loader_source_sha256=a.loader_source_sha256,
+            params_sha256=a.params_sha256,
+            rows=a.rows,
+            columns=a.columns,
+            content_sha256=a.content_sha256,
+            load_time_s=a.load_time_s,
         )
         for a in audits
     )
@@ -293,7 +331,7 @@ def diff_manifests(left: RunManifest, right: RunManifest) -> list[str]:
     if left.git_sha != right.git_sha:
         lines.append(f"code: git sha {left.git_sha[:12]} vs {right.git_sha[:12]}")
     if left.versions != right.versions:
-        lines.append("versions: library or solver versions differ")
+        lines.append("versions: library, solver, or step-package versions differ")
     left_datasets = {d.name: d.content_sha256 for d in left.datasets}
     right_datasets = {d.name: d.content_sha256 for d in right.datasets}
     lines.extend(f"datasets: {name} content differs" for name in sorted(set(left_datasets) | set(right_datasets)) if left_datasets.get(name) != right_datasets.get(name))

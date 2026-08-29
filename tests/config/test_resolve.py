@@ -1,5 +1,6 @@
 """Tier 1: the step-resolution convention, table-tested against every way a function can violate it."""
 
+import asyncio
 import json
 import sys
 import types
@@ -17,6 +18,7 @@ from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, Objecti
 from portfolio_optimizer.domain.data import IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec, SolveContext
 from portfolio_optimizer.domain.types import Params
+from tests.conftest import AS_OF
 
 # --- functions that follow the convention (and ones that break it), registered as module "fake_steps" ---
 
@@ -80,6 +82,14 @@ def chained_constraint(x: DecisionVars, spec: ProblemSpec, chain: ChainState) ->
 
 def loader(request: LoadRequest) -> pd.DataFrame:
     return pd.DataFrame({"dataset": [request.dataset]})
+
+
+async def async_loader(request: LoadRequest) -> pd.DataFrame:
+    return pd.DataFrame({"dataset": [request.dataset]})
+
+
+async def async_rule(data: PortfolioData) -> PortfolioData:  # async is the case under test
+    return data
 
 
 def constraints_loader(request: LoadRequest) -> dict[str, dict[str, object]]:  # noqa: ARG001  # never invoked here
@@ -151,6 +161,7 @@ VIOLATIONS: list[tuple[str, str, StepKind, Mapping[str, object], str]] = [
     ("params with the wrong type", "fake_steps:rule_with_params", "rule", {"strength": "-1"}, "strength: Input should be greater than or equal to 0"),
     ("term used as a constraint", "fake_steps:term", "constraint", {}, "return annotation must be ConstraintSet, got ObjectiveTerm"),
     ("rule used as a loader", "fake_steps:plain_rule", "loader", {}, "unexpected parameter 'data'"),
+    ("async rule", "fake_steps:async_rule", "rule", {}, "`async def` is only allowed for loaders"),
 ]
 
 
@@ -173,6 +184,22 @@ def test_every_contract_kind_accepts_its_canonical_signature(fake_steps: str) ->
     ]
     for name, kind in pairs:
         assert resolve_step(spec(f"{fake_steps}:{name}"), kind).kind == kind
+
+
+def test_loaders_may_be_async_and_invoke_async_runs_both_styles(fake_steps: str) -> None:
+    asynchronous = resolve_step(spec(f"{fake_steps}:async_loader"), "loader")
+    synchronous = resolve_step(spec(f"{fake_steps}:loader"), "loader")
+    assert asynchronous.is_async
+    assert not synchronous.is_async
+    request = LoadRequest(dataset="holdings", portfolio_ids=(), as_of=AS_OF, data_root=Path(), run_id="r")
+
+    async def both() -> tuple[object, object]:
+        return await asynchronous.invoke_async(request=request), await synchronous.invoke_async(request=request)
+
+    from_async, from_thread = asyncio.run(both())
+    assert isinstance(from_async, pd.DataFrame)
+    assert isinstance(from_thread, pd.DataFrame)
+    assert from_async["dataset"].tolist() == from_thread["dataset"].tolist() == ["holdings"]
 
 
 def test_invoke_supplies_params_and_context(fake_steps: str, make: object) -> None:
@@ -201,7 +228,6 @@ def test_source_hash_is_stable_and_function_specific(fake_steps: str) -> None:
     other = resolve_step(spec(f"{fake_steps}:chained_rule"), "rule")
     assert first.source_sha256 == second.source_sha256
     assert first.source_sha256 != other.source_sha256
-    assert first.module_sha256 == other.module_sha256
 
 
 # --- resolve_config ---

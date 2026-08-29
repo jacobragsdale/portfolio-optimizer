@@ -163,6 +163,12 @@ def test_manifest_records_provenance_for_every_stage(tmp_path: Path) -> None:
     assert p1.orders.gross_notional == "500000"
     assert len(manifest.manifest_sha256) == 64
     assert {a.path.rsplit("/", 1)[-1] for a in manifest.artifacts} >= {"P1.npz", "P2.npz", "orders.parquet"}
+    assert manifest.versions.packages == {}  # every step came from the template modules; git_sha covers them
+
+
+def test_manifest_records_the_package_behind_every_external_step(tmp_path: Path) -> None:
+    manifest = execute(tmp_path, mode="sequential", sink="tests.conftest:noop_sink").manifest
+    assert manifest.versions.packages == {"tests": "unknown"}  # tests.conftest is importable but no installed distribution provides it
 
 
 def test_two_runs_over_the_same_inputs_are_identical_except_for_identity(tmp_path: Path) -> None:

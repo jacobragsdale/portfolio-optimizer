@@ -135,3 +135,67 @@ def test_defaults_fill_optional_sections() -> None:
     assert config.execution.executor == "process"
     assert config.assembly.joins == ()
     assert config.rules == ()
+
+
+def test_rate_limit_pool_named_by_a_dataset_must_be_declared(example_dict: dict[str, object]) -> None:
+    datasets = section(example_dict, "datasets") | {"holdings": {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}, "rate_limit": "vendor"}}
+    with pytest.raises(ValidationError, match="rate_limit 'vendor' is not declared in rate_limits \\[\\]"):
+        load_run_config(json.dumps(example_dict | {"datasets": datasets}))
+    config = load_run_config(json.dumps(example_dict | {"datasets": datasets, "rate_limits": {"vendor": {"requests_per_second": 20, "max_in_flight": 4}}}))
+    assert config.datasets["holdings"].rate_limit == "vendor"
+    assert config.rate_limits["vendor"].to_limit().burst == 20
+
+
+@pytest.mark.parametrize(
+    ("pool", "fragment"),
+    [
+        ({}, "requests_per_second, max_in_flight, or both"),
+        ({"burst": 5, "max_in_flight": 2}, "burst only applies with requests_per_second"),
+        ({"requests_per_second": 0}, "greater than 0"),
+        ({"max_in_flight": 0}, "greater than or equal to 1"),
+    ],
+    ids=["no bound", "burst without a rate", "zero rate", "zero in-flight"],
+)
+def test_meaningless_rate_limits_are_rejected(example_dict: dict[str, object], pool: dict[str, object], fragment: str) -> None:
+    with pytest.raises(ValidationError, match=fragment):
+        load_run_config(json.dumps(example_dict | {"rate_limits": {"vendor": pool}}))
+
+
+def test_rate_limit_burst_defaults_to_the_rate_rounded_up_and_never_below_one() -> None:
+    from portfolio_optimizer.config.models import RateLimitConfig
+
+    assert RateLimitConfig.model_validate({"requests_per_second": 2.5}).to_limit().burst == 3
+    assert RateLimitConfig.model_validate({"requests_per_second": 0.1}).to_limit().burst == 1
+    assert RateLimitConfig.model_validate({"requests_per_second": 4, "burst": 1}).to_limit().burst == 1
+    assert RateLimitConfig.model_validate({"max_in_flight": 8}).to_limit().max_in_flight == 8
+
+
+@pytest.mark.parametrize(
+    "portfolios",
+    ["csv", {"name": "csv", "params": {"path": "portfolios.csv"}}, {"loader": {"name": "csv", "params": {"path": "portfolios.csv"}}}, {"loader": "csv", "rate_limit": {"max_in_flight": 1}}],
+    ids=["bare name", "bare step", "loader object", "loader with its own bound"],
+)
+def test_portfolios_accepts_a_bare_step_or_the_full_input_form(example_dict: dict[str, object], portfolios: object) -> None:
+    config = load_run_config(json.dumps(example_dict | {"portfolios": portfolios}))
+    assert config.portfolios.loader.name == "csv"
+
+
+def test_a_bare_portfolios_step_hashes_the_same_as_its_wrapped_form(example_dict: dict[str, object]) -> None:
+    bare = load_run_config(json.dumps(example_dict | {"portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}}}))
+    wrapped = load_run_config(json.dumps(example_dict | {"portfolios": {"loader": {"name": "csv", "params": {"path": "portfolios.csv"}}}}))
+    assert config_sha256(bare) == config_sha256(wrapped)
+
+
+def test_each_input_may_carry_its_own_inline_bound(example_dict: dict[str, object]) -> None:
+    datasets = section(example_dict, "datasets") | {
+        "holdings": {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}, "rate_limit": {"requests_per_second": 5, "max_in_flight": 2}},
+        "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}, "rate_limit": {"max_in_flight": 16}},
+    }
+    config = load_run_config(json.dumps(example_dict | {"datasets": datasets, "portfolios": {"loader": "csv", "rate_limit": "slow"}, "rate_limits": {"slow": {"requests_per_second": 1}}}))
+    holdings = config.datasets["holdings"].rate_limit
+    universe = config.datasets["universe"].rate_limit
+    assert not isinstance(holdings, str | None) and holdings.to_limit().max_in_flight == 2
+    assert not isinstance(universe, str | None) and universe.to_limit().requests_per_second is None
+    assert config.portfolios.rate_limit == "slow"
+    with pytest.raises(ValidationError, match="portfolios: rate_limit 'fast' is not declared"):
+        load_run_config(json.dumps(example_dict | {"portfolios": {"loader": "csv", "rate_limit": "fast"}}))

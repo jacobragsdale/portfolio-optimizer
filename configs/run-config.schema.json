@@ -238,6 +238,22 @@
         "loader": {
           "$ref": "#/$defs/ConstraintsLoaderStep",
           "description": "A loader returning a mapping of portfolio id to style-constraint object."
+        },
+        "rate_limit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/RateLimitConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How hard this input's source may be pushed: the name of a shared pool in the top-level `rate_limits`, or an inline bound private to this input. The loader receives it as `request.rate_limiter`. Omit for no limit.",
+          "title": "Rate Limit"
         }
       },
       "required": [
@@ -316,16 +332,32 @@
           "type": "object"
         }
       ],
-      "description": "The loader for the `constraints` dataset: `(request: LoadRequest[, params]) -> dict[portfolio_id, style constraints]`.",
+      "description": "The loader for the `constraints` dataset: `(request: LoadRequest[, params]) -> dict[portfolio_id, style constraints]`, plain or `async def`.",
       "title": "ConstraintsLoaderStep"
     },
     "DatasetConfig": {
       "additionalProperties": false,
-      "description": "How one named dataset is loaded.",
+      "description": "How one input is loaded, and how hard its source may be pushed.",
       "properties": {
         "loader": {
           "$ref": "#/$defs/LoaderStep",
           "description": "The loader step. For frame datasets it returns a DataFrame; for `constraints` it returns a mapping of portfolio id to style-constraint object."
+        },
+        "rate_limit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/RateLimitConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How hard this input's source may be pushed: the name of a shared pool in the top-level `rate_limits`, or an inline bound private to this input. The loader receives it as `request.rate_limiter`. Omit for no limit.",
+          "title": "Rate Limit"
         }
       },
       "required": [
@@ -473,14 +505,15 @@
       "type": "object"
     },
     "LoaderStep": {
-      "$comment": "Shipped steps: ['csv', 'parquet']",
+      "$comment": "Shipped steps: ['csv', 'csv_per_portfolio', 'parquet']",
       "anyOf": [
         {
-          "$comment": "These shipped steps have required parameters and must use the object form: ['csv', 'parquet']",
+          "$comment": "These shipped steps have required parameters and must use the object form: ['csv', 'csv_per_portfolio', 'parquet']",
           "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
           "not": {
             "enum": [
               "csv",
+              "csv_per_portfolio",
               "parquet"
             ]
           },
@@ -551,6 +584,63 @@
               "if": {
                 "properties": {
                   "name": {
+                    "const": "csv_per_portfolio"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "Parameters for :func:`csv_per_portfolio`.",
+                    "properties": {
+                      "decimal_columns": {
+                        "default": [],
+                        "items": {
+                          "type": "string"
+                        },
+                        "title": "Decimal Columns",
+                        "type": "array"
+                      },
+                      "directory": {
+                        "minLength": 1,
+                        "title": "Directory",
+                        "type": "string"
+                      },
+                      "dtypes": {
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "title": "Dtypes",
+                        "type": "object"
+                      },
+                      "utc_datetime_columns": {
+                        "default": [],
+                        "items": {
+                          "type": "string"
+                        },
+                        "title": "Utc Datetime Columns",
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "directory"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "params"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
                     "const": "parquet"
                   }
                 },
@@ -608,7 +698,7 @@
           "type": "object"
         }
       ],
-      "description": "A dataset loader from `loaders.py`: `(request: LoadRequest[, params]) -> DataFrame`.",
+      "description": "A dataset loader from `loaders.py`: `(request: LoadRequest[, params]) -> DataFrame`, plain or `async def`.",
       "title": "LoaderStep"
     },
     "ObjectiveConfig": {
@@ -673,6 +763,56 @@
         }
       },
       "title": "PostSolveConfig",
+      "type": "object"
+    },
+    "RateLimitConfig": {
+      "additionalProperties": false,
+      "description": "Bounds shared by every dataset that names this pool.\n\nAt least one of `requests_per_second` and `max_in_flight` is required. The loader receives the pool as\n`request.rate_limiter` and wraps each call to the backend in it.",
+      "properties": {
+        "burst": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Requests that may be made at once before the rate applies; defaults to `requests_per_second` rounded up. Requires `requests_per_second`.",
+          "title": "Burst"
+        },
+        "max_in_flight": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum simultaneous requests across every loader in the pool. Omit for no concurrency bound.",
+          "title": "Max In Flight"
+        },
+        "requests_per_second": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Sustained request rate the pool allows, refilled continuously (a token bucket). Omit for no rate bound.",
+          "title": "Requests Per Second"
+        }
+      },
+      "title": "RateLimitConfig",
       "type": "object"
     },
     "RuleStep": {
@@ -1289,7 +1429,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/DatasetConfig"
       },
-      "description": "Named datasets. `holdings`, `universe`, `details`, `constraints`, and `targets` are required; `covariance` is optional and enables the `risk` term; any other name is an extra dataset for `assembly.joins`.",
+      "description": "Named datasets. `holdings`, `universe`, `details`, `constraints`, and `targets` are required; `covariance` is optional and enables the `risk` term; any other name is an extra dataset for `assembly.joins`. Every dataset loader runs concurrently once the portfolio list is known.",
       "properties": {
         "constraints": {
           "$ref": "#/$defs/ConstraintsDatasetConfig"
@@ -1329,12 +1469,28 @@
       "description": "What the optimizer minimizes."
     },
     "portfolios": {
-      "$ref": "#/$defs/LoaderStep",
-      "description": "Loader returning the portfolio list (`portfolio_id`, `solve_order`); portfolios are processed in ascending `solve_order`."
+      "$comment": "A bare step is shorthand for {\"loader\": step}.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LoaderStep"
+        },
+        {
+          "$ref": "#/$defs/DatasetConfig"
+        }
+      ],
+      "description": "The portfolio list (`portfolio_id`, `solve_order`): a bare loader step, or `{\"loader\": step, \"rate_limit\": ...}` to bound its source. Portfolios are processed in ascending `solve_order`."
     },
     "post_solve": {
       "$ref": "#/$defs/PostSolveConfig",
       "description": "Verification tolerances."
+    },
+    "rate_limits": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RateLimitConfig"
+      },
+      "description": "Named rate-limit pools for loaders, e.g. `{\"vendor_api\": {\"requests_per_second\": 20, \"max_in_flight\": 8}}`. A dataset opts in with `rate_limit`; datasets naming the same pool share its budget.",
+      "title": "Rate Limits",
+      "type": "object"
     },
     "rules": {
       "default": [],

@@ -1,13 +1,14 @@
 # Explanation: how the engine is built and why
 
 This page explains the design decisions behind the template — what the engine promises, where those
-promises are enforced, and what was deliberately left out.
+promises are enforced, and what was deliberately left out. For the same engine narrated in execution
+order, stage by stage, see [the life of a run](explanation-run-lifecycle.md).
 
 ## One convention instead of a framework
 
 Quant developers who clone this repository want to write Python, not learn a plugin system. So the only
-mechanism for extending the engine is: write an ordinary function in a designated module and name it in
-JSON. The engine's resolver (`config/resolve.py`) does the work a framework would normally push onto the
+mechanism for extending the engine is: write an ordinary function — in a designated module of this repository or in any installed
+package — and name it in JSON. The engine's resolver (`config/resolve.py`) does the work a framework would normally push onto the
 author — it imports the function, checks its signature against the contract for its kind, validates the
 JSON parameters against the function's own `Params` model, and detects optional context arguments by
 name — and it does all of this before any data is loaded. A mistake surfaces as a config error with the
@@ -16,6 +17,22 @@ function's qualified name, not as a traceback halfway through a run.
 The convention has a second purpose: auditability. Because every step is a named function, the manifest
 can record its qualified name and the hash of its source text. A run can be traced to the exact business
 logic that produced it, and two runs can be compared to find whether code, data, or the solver changed.
+
+## Loading is the slow part, so it is concurrent and metered
+
+In production the datasets come from APIs and databases, and waiting on them dominates a run. The load
+stage is therefore asynchronous: after the portfolio list — whose ids every other request needs — all
+dataset loaders start at once, `async def` loaders on the event loop and plain ones in worker threads.
+Loaders are the only step kind that may be async; everything downstream is pure and synchronous.
+
+A backend has limits, and a source that answers one portfolio per call will hit them on a large run.
+Backends also differ: a vendor API may tolerate two concurrent requests where a warehouse takes
+thirty-two. So every input carries its own bound — a token bucket plus an in-flight cap — either
+inline and private to it, or as the name of a shared pool when two inputs come from the same backend;
+the loader draws from it through `request.rate_limiter`. The limiter is one object usable from both
+async code and threads, so a sync loader and an async loader on the same API cannot exceed the limit
+between them. The manifest records each input's load time and the log each limiter's wait, so "why was
+this run slow" has an answer.
 
 ## Two conversions, in two places
 

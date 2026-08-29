@@ -4,16 +4,17 @@ The convention: a step is an ordinary function whose signature carries engine-pr
 arguments by fixed names (``data``, ``request``, ``x``, ``spec``, ``orders``, ``io``), an optional
 ``params`` argument annotated with a :class:`~portfolio_optimizer.domain.types.Params` subclass,
 and an optional context argument (``ctx`` for rules, ``chain`` for terms and constraints). The
-engine calls steps with keyword arguments, so the order does not matter.
+engine calls steps with keyword arguments, so the order does not matter. Loaders may be
+``async def``; every other kind runs synchronously.
 """
 
+import asyncio
 import hashlib
 import importlib
 import inspect
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal, get_type_hints
 
 import pandas as pd
@@ -47,12 +48,13 @@ class Contract:
     engine_args: Mapping[str, type]
     context: tuple[str, type] | None
     returns: tuple[object, ...]
+    allows_async: bool = False
 
 
 CONTRACTS: Mapping[StepKind, Contract] = {
-    "portfolios": Contract({"request": LoadRequest}, None, (pd.DataFrame,)),
-    "loader": Contract({"request": LoadRequest}, None, (pd.DataFrame,)),
-    "constraints_loader": Contract({"request": LoadRequest}, None, (ConstraintsMapping.__value__, dict[str, dict[str, object]])),
+    "portfolios": Contract({"request": LoadRequest}, None, (pd.DataFrame,), allows_async=True),
+    "loader": Contract({"request": LoadRequest}, None, (pd.DataFrame,), allows_async=True),
+    "constraints_loader": Contract({"request": LoadRequest}, None, (ConstraintsMapping.__value__, dict[str, dict[str, object]]), allows_async=True),
     "rule": Contract({"data": PortfolioData}, ("ctx", SolveContext), (PortfolioData,)),
     "term": Contract({"x": DecisionVars, "spec": ProblemSpec}, ("chain", ChainState), (ObjectiveTerm,)),
     "constraint": Contract({"x": DecisionVars, "spec": ProblemSpec}, ("chain", ChainState), (ConstraintSet,)),
@@ -79,9 +81,9 @@ class ResolvedStep:
     params: Params | None
     context_name: str | None
     source_sha256: str
-    module_sha256: str
     params_sha256: str
     is_external: bool
+    is_async: bool = False
 
     @property
     def needs_context(self) -> bool:
@@ -89,7 +91,10 @@ class ResolvedStep:
         return self.context_name is not None
 
     def invoke(self, *, context: object | None = None, **engine_args: object) -> object:
-        """Call the function with the engine arguments, its validated params, and its context."""
+        """Call the function with the engine arguments, its validated params, and its context.
+
+        For an async step this returns the coroutine; :meth:`invoke_async` awaits it.
+        """
         kwargs: dict[str, object] = dict(engine_args)
         if self.params is not None:
             kwargs["params"] = self.params
@@ -99,6 +104,16 @@ class ResolvedStep:
                 raise ValueError(msg)
             kwargs[self.context_name] = context
         return self.fn(**kwargs)
+
+    async def invoke_async(self, *, context: object | None = None, **engine_args: object) -> object:
+        """Await an async step, or run a sync step in a worker thread so it cannot block the event loop."""
+        if not self.is_async:
+            return await asyncio.to_thread(self.invoke, context=context, **engine_args)
+        result = self.invoke(context=context, **engine_args)
+        if not inspect.isawaitable(result):
+            msg = f"async step {self.qualname!r} returned {type(result).__name__} instead of an awaitable"
+            raise TypeError(msg)
+        return await result
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +151,7 @@ def resolve_config(config: RunConfig, config_sha256: str) -> ResolvedConfig:
             failures.extend(f"{where}: {failure}" for failure in error.failures)
             return None
 
-    portfolios = resolve(config.portfolios, "portfolios", "portfolios")
+    portfolios = resolve(config.portfolios.loader, "portfolios", "portfolios")
     loaders = {name: resolve(dataset.loader, "constraints_loader" if name == "constraints" else "loader", f"datasets.{name}") for name, dataset in config.datasets.items()}
     rules = [resolve(spec, "rule", f"rules[{i}]") for i, spec in enumerate(config.rules)]
     terms = [resolve(spec, "term", f"objective.terms[{i}]") for i, spec in enumerate(config.objective.terms)]
@@ -206,9 +221,9 @@ def resolve_step(spec: StepSpec, kind: StepKind) -> ResolvedStep:
         params=params,
         context_name=context_name,
         source_sha256=hashlib.sha256(inspect.getsource(fn).encode()).hexdigest(),
-        module_sha256=_module_sha256(fn),
         params_sha256=hashlib.sha256(json.dumps(spec.params, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         is_external=module_name != TEMPLATE_MODULES[kind],
+        is_async=inspect.iscoroutinefunction(fn),
     )
 
 
@@ -221,6 +236,8 @@ def _split_name(name: str, kind: StepKind) -> tuple[str, str]:
 
 def _signature_failures(fn: Callable[..., object], hints: Mapping[str, object], contract: Contract, qualname: str) -> list[str]:
     failures: list[str] = []
+    if inspect.iscoroutinefunction(fn) and not contract.allows_async:
+        failures.append(f"{qualname}: `async def` is only allowed for loaders; this step kind runs synchronously")
     parameters = inspect.signature(fn).parameters
     for name, parameter in parameters.items():
         if parameter.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
@@ -273,10 +290,3 @@ def _validate_params(spec: StepSpec, params_model: object, qualname: str) -> Par
     except ValidationError as error:
         details = "; ".join(f"{'.'.join(str(part) for part in item['loc']) or '<root>'}: {item['msg']}" for item in error.errors())
         raise ConfigResolutionError([f"{qualname}: invalid params ({details})"]) from error
-
-
-def _module_sha256(fn: Callable[..., object]) -> str:
-    source_file = inspect.getsourcefile(fn)
-    if source_file is None:  # pragma: no cover - functions resolved here always come from files
-        return ""
-    return hashlib.sha256(Path(source_file).read_bytes()).hexdigest()

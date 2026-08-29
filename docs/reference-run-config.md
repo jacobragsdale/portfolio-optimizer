@@ -30,8 +30,9 @@ steps (those declaring `ctx`/`chain`) are only allowed under the sequential mode
 | Key | Type | Required | Description |
 |---|---|---|---|
 | `run` | object | yes | Run identity: `name` (non-empty), `as_of` (timezone-aware ISO-8601 timestamp), `tags` (string map, default `{}`). |
-| `portfolios` | step | yes | Loader returning the `portfolios` frame (`portfolio_id`, `solve_order`). Solve order is ascending `solve_order`. |
-| `datasets` | object | yes | Named datasets, each `{"loader": step}`. Must include `holdings`, `universe`, `details`, `constraints`, `targets`; `covariance` is optional and enables the `risk` term; any other name is an extra dataset for `assembly.joins`. |
+| `portfolios` | step or input | yes | Loader returning the `portfolios` frame (`portfolio_id`, `solve_order`); a bare step, or `{"loader": step[, "rate_limit": ...]}` to bound its source. Solve order is ascending `solve_order`. |
+| `datasets` | object | yes | Named inputs, each `{"loader": step[, "rate_limit": name or bound]}`. Must include `holdings`, `universe`, `details`, `constraints`, `targets`; `covariance` is optional and enables the `risk` term; any other name is an extra dataset for `assembly.joins`. All dataset loaders run concurrently. |
+| `rate_limits` | object | no | Named pools that inputs on the same backend share; see below. Default `{}`. |
 | `assembly` | object | no | `portfolio_key` (default `portfolio_id`), `security_key` (default `security_id`), `joins` (default `[]`). |
 | `rules` | step list | no | Business-logic rules, run in order. Default `[]`. |
 | `objective` | object | yes | `sense` (only `minimize`), `terms` (step list, at least one). |
@@ -56,14 +57,38 @@ against the function's `params` annotation; a function without a `params` argume
 
 | Kind | Signature |
 |---|---|
-| portfolios, dataset loader | `(request: LoadRequest[, params]) -> pd.DataFrame` |
-| constraints loader | `(request: LoadRequest[, params]) -> dict[str, dict[str, object]]` |
+| portfolios, dataset loader | `(request: LoadRequest[, params]) -> pd.DataFrame`, plain or `async def` |
+| constraints loader | `(request: LoadRequest[, params]) -> dict[str, dict[str, object]]`, plain or `async def` |
 | rule | `(data: PortfolioData[, params][, ctx: SolveContext]) -> PortfolioData` |
 | objective term | `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ObjectiveTerm` |
 | constraint | `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ConstraintSet` |
 | sink | `(orders: pd.DataFrame, io: IoContext[, params]) -> tuple[Artifact, ...]` |
 
-Optional arguments are recognized by name and must carry exactly the annotation shown.
+Optional arguments are recognized by name and must carry exactly the annotation shown. Only loaders may
+be `async def`; every other kind runs synchronously.
+
+## Rate limits
+
+Every input — `portfolios` and each entry of `datasets` — may carry a `rate_limit`, which the loader
+receives as `request.rate_limiter`. It is written one of two ways:
+
+- **An inline bound**, private to that input: `"rate_limit": {"requests_per_second": 5, "max_in_flight": 2}`.
+  Use this when sources scale differently — a fragile vendor API on one input, a database that takes
+  32 concurrent queries on another.
+- **The name of a shared pool** declared under the top-level `rate_limits`: `"rate_limit": "vendor_api"`.
+  Inputs naming the same pool share its budget, which is what you want when two datasets come from the
+  same backend.
+
+A bound, inline or in a pool, has these keys:
+
+| Key | Type | Description |
+|---|---|---|
+| `requests_per_second` | number > 0 | Sustained rate, refilled continuously (a token bucket). Omit for no rate bound. |
+| `burst` | integer ≥ 1 | Requests allowed at once before the rate applies. Default: `requests_per_second` rounded up. Requires `requests_per_second`. |
+| `max_in_flight` | integer ≥ 1 | Simultaneous requests across every loader drawing from the bound. Omit for no concurrency bound. |
+
+At least one of `requests_per_second` and `max_in_flight` is required. Naming an undeclared pool is a
+config error.
 
 ## `assembly.joins[]`
 

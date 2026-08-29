@@ -7,13 +7,15 @@ this module is also the schema's documentation.
 """
 
 import hashlib
+import math
 import re
 from typing import Literal, Self
 
-from pydantic import AwareDatetime, Field, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from portfolio_optimizer.domain.schemas import REQUIRED_DATASETS
 from portfolio_optimizer.domain.types import StrictModel
+from portfolio_optimizer.ratelimit import RateLimit
 
 STEP_NAME_PATTERN = r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$"
 _STEP_NAME = re.compile(STEP_NAME_PATTERN)
@@ -72,10 +74,43 @@ class RunMeta(StrictModel):
     tags: dict[str, str] = Field(default_factory=dict, description='Free-form string labels copied into the manifest, e.g. `{"desk": "tax-aware"}`.')
 
 
+class RateLimitConfig(StrictModel):
+    """Bounds shared by every dataset that names this pool.
+
+    At least one of `requests_per_second` and `max_in_flight` is required. The loader receives the pool as
+    `request.rate_limiter` and wraps each call to the backend in it.
+    """
+
+    requests_per_second: float | None = Field(default=None, gt=0, description="Sustained request rate the pool allows, refilled continuously (a token bucket). Omit for no rate bound.")
+    burst: int | None = Field(
+        default=None, ge=1, description="Requests that may be made at once before the rate applies; defaults to `requests_per_second` rounded up. Requires `requests_per_second`."
+    )
+    max_in_flight: int | None = Field(default=None, ge=1, description="Maximum simultaneous requests across every loader in the pool. Omit for no concurrency bound.")
+
+    @model_validator(mode="after")
+    def _at_least_one_bound(self) -> Self:
+        if self.requests_per_second is None and self.max_in_flight is None:
+            msg = "a rate limit needs requests_per_second, max_in_flight, or both"
+            raise ValueError(msg)
+        if self.burst is not None and self.requests_per_second is None:
+            msg = "burst only applies with requests_per_second"
+            raise ValueError(msg)
+        return self
+
+    def to_limit(self) -> RateLimit:
+        """The runtime form the engine builds a limiter from."""
+        default_burst = 1 if self.requests_per_second is None else max(1, math.ceil(self.requests_per_second))
+        return RateLimit(requests_per_second=self.requests_per_second, burst=self.burst if self.burst is not None else default_burst, max_in_flight=self.max_in_flight)
+
+
 class DatasetConfig(StrictModel):
-    """How one named dataset is loaded."""
+    """How one input is loaded, and how hard its source may be pushed."""
 
     loader: StepSpec = Field(description="The loader step. For frame datasets it returns a DataFrame; for `constraints` it returns a mapping of portfolio id to style-constraint object.")
+    rate_limit: str | RateLimitConfig | None = Field(
+        default=None,
+        description="How hard this input's source may be pushed: the name of a shared pool in the top-level `rate_limits`, or an inline bound private to this input. The loader receives it as `request.rate_limiter`. Omit for no limit.",
+    )
 
 
 class JoinSpec(StrictModel):
@@ -156,9 +191,15 @@ class RunConfig(StrictModel):
 
     schema_ref: str | None = Field(default=None, alias="$schema", description="Optional pointer to the JSON Schema for editor validation; ignored by the engine.")
     run: RunMeta = Field(description="Run identity.")
-    portfolios: StepSpec = Field(description="Loader returning the portfolio list (`portfolio_id`, `solve_order`); portfolios are processed in ascending `solve_order`.")
+    portfolios: DatasetConfig = Field(
+        description='The portfolio list (`portfolio_id`, `solve_order`): a bare loader step, or `{"loader": step, "rate_limit": ...}` to bound its source. Portfolios are processed in ascending `solve_order`.'
+    )
     datasets: dict[str, DatasetConfig] = Field(
-        description="Named datasets. `holdings`, `universe`, `details`, `constraints`, and `targets` are required; `covariance` is optional and enables the `risk` term; any other name is an extra dataset for `assembly.joins`."
+        description="Named datasets. `holdings`, `universe`, `details`, `constraints`, and `targets` are required; `covariance` is optional and enables the `risk` term; any other name is an extra dataset for `assembly.joins`. Every dataset loader runs concurrently once the portfolio list is known."
+    )
+    rate_limits: dict[str, RateLimitConfig] = Field(
+        default_factory=dict,
+        description='Named rate-limit pools for loaders, e.g. `{"vendor_api": {"requests_per_second": 20, "max_in_flight": 8}}`. A dataset opts in with `rate_limit`; datasets naming the same pool share its budget.',
     )
     assembly: AssemblyConfig = Field(default_factory=AssemblyConfig, description="How datasets are combined.")
     rules: tuple[StepSpec, ...] = Field(default=(), description="Business-logic rule steps from `rules.py`, applied in order to each portfolio's bundle.")
@@ -168,6 +209,13 @@ class RunConfig(StrictModel):
     post_solve: PostSolveConfig = Field(default_factory=PostSolveConfig, description="Verification tolerances.")
     sink: StepSpec = Field(description="Sink step from `sinks.py`, called once with every solved portfolio's orders.")
     execution: ExecutionConfig = Field(description="Scheduling and failure semantics.")
+
+    @field_validator("portfolios", mode="before")
+    @classmethod
+    def _accept_bare_portfolios_step(cls, value: object) -> object:
+        if isinstance(value, str) or (isinstance(value, dict) and "name" in value):
+            return {"loader": value}
+        return value
 
     @model_validator(mode="after")
     def _datasets_and_joins_are_consistent(self) -> Self:
@@ -181,6 +229,11 @@ class RunConfig(StrictModel):
                 raise ValueError(msg)
             if join.source in (join.into, "constraints"):
                 msg = f"assembly.joins[{index}]: cannot join {join.source!r} into {join.into!r}"
+                raise ValueError(msg)
+        inputs = [("portfolios", self.portfolios), *((f"datasets.{name}", dataset) for name, dataset in self.datasets.items())]
+        for where, dataset in inputs:
+            if isinstance(dataset.rate_limit, str) and dataset.rate_limit not in self.rate_limits:
+                msg = f"{where}: rate_limit {dataset.rate_limit!r} is not declared in rate_limits {sorted(self.rate_limits)}"
                 raise ValueError(msg)
         return self
 

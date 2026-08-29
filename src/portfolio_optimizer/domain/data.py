@@ -14,6 +14,7 @@ from pydantic import Field, model_validator
 from portfolio_optimizer.domain.frames import FrameSchemaError, validate_frame
 from portfolio_optimizer.domain.schemas import COVARIANCE, HOLDINGS, TARGETS, UNIVERSE
 from portfolio_optimizer.domain.types import Clock, PortfolioId, StrictModel
+from portfolio_optimizer.ratelimit import RateLimiter
 
 
 class PortfolioDetails(StrictModel):
@@ -186,13 +187,20 @@ class PortfolioData:
 
 @dataclass(frozen=True, slots=True)
 class LoadRequest:
-    """What a loader is asked for: which dataset, for which portfolios, as of when, and where data lives."""
+    """What a loader is asked for: which dataset, for which portfolios, as of when, and where data lives.
+
+    ``rate_limiter`` is the pool the dataset's config names, or an unlimited one. A loader that
+    makes many calls wraps each in ``async with request.rate_limiter:`` (or
+    ``with request.rate_limiter.sync:`` from a sync loader) so large runs stay inside the
+    backend's limits.
+    """
 
     dataset: str
     portfolio_ids: tuple[PortfolioId, ...]
     as_of: datetime
     data_root: Path
     run_id: str
+    rate_limiter: RateLimiter = field(default_factory=RateLimiter.unlimited)
 
 
 @dataclass(frozen=True, slots=True)

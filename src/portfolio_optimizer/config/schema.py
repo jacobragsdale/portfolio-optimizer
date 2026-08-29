@@ -36,8 +36,12 @@ _ENUM_DESCRIPTIONS: Mapping[str, str] = {
 }
 
 _STEP_DEFINITIONS: Mapping[StepKind, tuple[str, str, ModuleType]] = {
-    "loader": ("LoaderStep", "A dataset loader from `loaders.py`: `(request: LoadRequest[, params]) -> DataFrame`.", loaders),
-    "constraints_loader": ("ConstraintsLoaderStep", "The loader for the `constraints` dataset: `(request: LoadRequest[, params]) -> dict[portfolio_id, style constraints]`.", loaders),
+    "loader": ("LoaderStep", "A dataset loader from `loaders.py`: `(request: LoadRequest[, params]) -> DataFrame`, plain or `async def`.", loaders),
+    "constraints_loader": (
+        "ConstraintsLoaderStep",
+        "The loader for the `constraints` dataset: `(request: LoadRequest[, params]) -> dict[portfolio_id, style constraints]`, plain or `async def`.",
+        loaders,
+    ),
     "rule": ("RuleStep", "A business-logic rule from `rules.py`: `(data: PortfolioData[, params][, ctx: SolveContext]) -> PortfolioData`.", rules),
     "term": ("TermStep", "An objective term from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ObjectiveTerm`.", terms),
     "constraint": ("ConstraintStep", "A constraint from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ConstraintSet`.", terms),
@@ -55,7 +59,7 @@ def run_config_schema() -> JsonObject:
     for name, description in _ENUM_DESCRIPTIONS.items():
         defs[name] = {**_object(defs[name]), "description": description}
     properties = _object(base["properties"])
-    properties["portfolios"] = _with_ref(properties["portfolios"], "LoaderStep")
+    properties["portfolios"] = _portfolios_schema(properties["portfolios"])
     properties["rules"] = _with_items(properties["rules"], "RuleStep")
     properties["constraints"] = _with_items(properties["constraints"], "ConstraintStep")
     properties["sink"] = _with_ref(properties["sink"], "SinkStep")
@@ -169,8 +173,19 @@ def _constraints_dataset_config(dataset_config: JsonObject) -> JsonObject:
         **dataset_config,
         "title": "ConstraintsDatasetConfig",
         "description": "How the `constraints` dataset (style constraints per portfolio) is loaded.",
-        "properties": {"loader": {"$ref": "#/$defs/ConstraintsLoaderStep", "description": "A loader returning a mapping of portfolio id to style-constraint object."}},
+        "properties": {
+            **_object(dataset_config["properties"]),
+            "loader": {"$ref": "#/$defs/ConstraintsLoaderStep", "description": "A loader returning a mapping of portfolio id to style-constraint object."},
+        },
     }
+
+
+def _portfolios_schema(property_schema: object) -> JsonObject:
+    """A bare loader step, or the full `{"loader": step, "rate_limit": ...}` form; the model normalizes the first into the second."""
+    schema = _object(property_schema)
+    schema.pop("$ref", None)
+    schema.pop("allOf", None)
+    return {**schema, "anyOf": [{"$ref": "#/$defs/LoaderStep"}, {"$ref": "#/$defs/DatasetConfig"}], "$comment": 'A bare step is shorthand for {"loader": step}.'}
 
 
 def _execution_schema(execution: JsonObject) -> JsonObject:
