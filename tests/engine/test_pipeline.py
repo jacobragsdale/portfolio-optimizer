@@ -12,7 +12,7 @@ from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.config.models import StepSpec
 from portfolio_optimizer.config.resolve import resolve_step
-from portfolio_optimizer.domain.results import ChainState, ConstraintReport, PortfolioResult, Solution, SolveContext, SolveStatus
+from portfolio_optimizer.domain.results import ChainState, ConstraintReport, DriftReport, PortfolioResult, Solution, SolveContext, SolveStatus
 from portfolio_optimizer.engine.pipeline import RuleError, apply_rules
 from portfolio_optimizer.rules import CapSingleNameParams, LiquidityParams, add_zero_alpha, avoid_cross_portfolio_wash_sales, cap_single_name, restrict_low_liquidity
 from tests.conftest import Factories, Frames
@@ -90,7 +90,7 @@ def prior_context(make: Factories, frames: Frames, *sold: str) -> SolveContext:
     report = ConstraintReport(checks=(), objective_terms=(), recomputed_objective=0.0, solver_objective=0.0, objective_gap=0.0, objective_passed=True, unverified=())
     rows = [{"portfolio_id": "P0", "security_id": security, "side": "SELL", "quantity": 1, "reference_price": Decimal(1), "notional": Decimal(1)} for security in sold]
     orders = frames.orders(*rows) if rows else frames.orders().iloc[0:0]
-    return SolveContext().with_result(PortfolioResult("P0", spec, solution, report, orders, (), ChainState.empty(spec.security_ids)))
+    return SolveContext().with_result(PortfolioResult("P0", spec, solution, report, orders, (), ChainState.empty(spec.security_ids), DriftReport(0.0, 0.0, 0)))
 
 
 def test_wash_sale_rule_caps_names_sold_earlier_at_their_current_weight(make: Factories, frames: Frames) -> None:

@@ -33,7 +33,7 @@ def test_shipped_example_validates(example_text: str) -> None:
     config = load_run_config(example_text)
     assert config.run.name == "example_rebalance"
     assert config.execution.mode == "parallel_build_sequential_solve"
-    assert config.rules[0].params == {"max_weight": "0.50"}
+    assert config.rules[0].params == {"min_adv_shares": 1000}
 
 
 def test_step_spec_accepts_bare_names_and_objects() -> None:

@@ -5,7 +5,18 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from portfolio_optimizer.domain.results import ChainState, ConstraintReport, MissingSpecColumnError, PortfolioResult, ProblemSpecError, Solution, SolveContext, SolveStatus, derive_chain_state
+from portfolio_optimizer.domain.results import (
+    ChainState,
+    ConstraintReport,
+    DriftReport,
+    MissingSpecColumnError,
+    PortfolioResult,
+    ProblemSpecError,
+    Solution,
+    SolveContext,
+    SolveStatus,
+    derive_chain_state,
+)
 from tests.conftest import Factories, Frames
 
 
@@ -135,7 +146,14 @@ def prior_results(make: Factories, frames: Frames) -> SolveContext:
 
     def result(portfolio_id: str, orders_rows: list[dict[str, object]]) -> PortfolioResult:
         return PortfolioResult(
-            portfolio_id=portfolio_id, spec=spec, solution=solution, report=report, orders=frames.orders(*orders_rows), rule_audit=(), chain_state=ChainState.empty(spec.security_ids)
+            portfolio_id=portfolio_id,
+            spec=spec,
+            solution=solution,
+            report=report,
+            orders=frames.orders(*orders_rows),
+            rule_audit=(),
+            chain_state=ChainState.empty(spec.security_ids),
+            drift=DriftReport(0.0, 0.0, 0),
         )
 
     first = result(

@@ -410,6 +410,19 @@ class ChainState:
         """The state before any portfolio has solved."""
         return cls(security_ids=security_ids, cumulative_shares=np.zeros(len(security_ids)), portfolios_done=0)
 
+    def to_npz(self, path: Path) -> None:
+        """Persist the chain inputs a solve depended on."""
+        meta = {"security_ids": list(self.security_ids), "portfolios_done": self.portfolios_done}
+        np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(meta, sort_keys=True)), cumulative_shares=self.cumulative_shares)
+
+    @classmethod
+    def from_npz(cls, path: Path) -> Self:
+        """Load a chain state written by :meth:`to_npz`."""
+        with np.load(path, allow_pickle=False) as data:
+            meta = json.loads(str(data["__meta__"]))
+            shares = np.asarray(data["cumulative_shares"], dtype=np.float64)
+        return cls(security_ids=tuple(str(s) for s in meta["security_ids"]), cumulative_shares=shares, portfolios_done=int(meta["portfolios_done"]))
+
 
 @dataclass(frozen=True, slots=True, eq=False)
 class PortfolioResult:
@@ -422,6 +435,7 @@ class PortfolioResult:
     orders: pd.DataFrame
     rule_audit: tuple[RuleAuditRecord, ...]
     chain_state: ChainState
+    drift: DriftReport
 
 
 @dataclass(frozen=True, slots=True)

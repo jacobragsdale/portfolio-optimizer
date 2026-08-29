@@ -24,6 +24,7 @@ from portfolio_optimizer.domain.data import IoContext, LoadRequest, PortfolioDat
 from portfolio_optimizer.domain.frames import FrameSchema
 from portfolio_optimizer.domain.results import F64, Artifact, ProblemSpec
 from portfolio_optimizer.domain.schemas import COVARIANCE, DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
+from portfolio_optimizer.domain.types import Clock, IdFactory
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
@@ -288,3 +289,44 @@ def resolved_example(**overrides: object) -> ResolvedConfig:
 def resolved_example_real(**overrides: object) -> ResolvedConfig:
     """``example_config_real`` resolved."""
     return resolve_config(example_config_real(**overrides), config_sha256="example")
+
+
+class FixedClock:
+    """Always the same instant, so manifests are reproducible in tests."""
+
+    def __init__(self, at: datetime = AS_OF) -> None:
+        self.at = at
+
+    def now(self) -> datetime:
+        """The fixed instant."""
+        return self.at
+
+
+class FixedIds:
+    """Deterministic run ids."""
+
+    def __init__(self, run_id: str = "run-test") -> None:
+        self.run_id = run_id
+
+    def new_run_id(self) -> str:
+        """The fixed id."""
+        return self.run_id
+
+
+def failing_sink(orders: pd.DataFrame, io: IoContext) -> tuple[Artifact, ...]:
+    """A sink whose destination is down."""
+    del orders, io
+    msg = "trading gateway unreachable"
+    raise OSError(msg)
+
+
+def io_context(output_dir: Path, data_root: Path = EXAMPLE_DATA, run_id: str = "run-test") -> IoContext:
+    """An ``IoContext`` with a fixed clock."""
+    return IoContext(data_root=data_root, output_dir=output_dir, run_id=run_id, clock=FixedClock())
+
+
+def _protocols_hold(clock: Clock, ids: IdFactory) -> None:
+    del clock, ids
+
+
+_protocols_hold(FixedClock(), FixedIds())

@@ -50,13 +50,14 @@ def test_exact_deltas_become_exact_orders(make: Factories) -> None:
     assert orders["spec_hash"].iloc[0] == output.spec.content_hash()
 
 
-def test_fractional_shares_round_toward_zero(make: Factories) -> None:
+def test_fractional_shares_round_to_the_nearest_share(make: Factories) -> None:
     output = built(make)
-    w = output.spec.w0 + np.array([0.9 * 100 / 1e6, -0.9 * 50 / 1e6, 1.9 * 10 / 1e6])  # +0.9, -0.9, +1.9 shares
+    w = output.spec.w0 + np.array([0.4 * 100 / 1e6, -0.6 * 50 / 1e6, 1.5 * 10 / 1e6])  # +0.4, -0.6, +1.5 shares
     orders = solution_to_orders(output.spec, solution_at(output.spec, w), output.order_inputs, run_id="r")
-    assert orders["security_id"].tolist() == ["C"]
-    assert orders["quantity"].tolist() == [1]
-    assert orders["unrounded_shares"].iloc[0] == pytest.approx(1.9)
+    assert orders["security_id"].tolist() == ["B", "C"]
+    assert orders["side"].tolist() == ["SELL", "BUY"]
+    assert orders["quantity"].tolist() == [1, 2]
+    assert orders["unrounded_shares"].iloc[1] == pytest.approx(1.5)
 
 
 def test_lots_round_down_to_a_multiple(make: Factories, frames: Frames) -> None:

@@ -1,13 +1,15 @@
 """Turn a solution into whole-share orders: the one place float64 becomes Decimal again.
 
-Weights are rounded **toward zero** to whole shares and then down to lot multiples: under-trading
-can never breach a cap, a turnover limit, an ADV budget, or sell more than is held, whereas
-half-even rounding could round a buy up past a limit. The resulting drift from the solved weights
-is measured and bounded by :func:`rounding_drift`.
+Weight deltas become whole shares by rounding to the **nearest** share (half-even), then down to a
+lot multiple, then clamped so a sell never exceeds what is held. Nearest rounding matters because
+solver noise of 1e-8 in weight space is a fraction of a share: rounding toward zero would turn an
+exact 1250-share answer into 1249. The at-most-half-a-share drift this introduces is measured
+against the solved weights and bounded by :func:`rounding_drift`; verification of every constraint
+happens on the solved weights before rounding.
 """
 
 from datetime import datetime
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 
 import numpy as np
 import pandas as pd
@@ -50,11 +52,11 @@ def solution_to_orders(spec: ProblemSpec, solution: Solution, inputs: OrderInput
 
 
 def _shares(index: int, spec: ProblemSpec, solution: Solution, inputs: OrderInputs) -> tuple[int, float]:
-    """Signed whole shares for one name after toward-zero, lot, and held-quantity rounding."""
+    """Signed whole shares for one name after nearest-share, lot, and held-quantity rounding."""
     delta = Decimal(float(solution.w[index] - spec.w0[index])) * inputs.nav / inputs.price[index]
     unrounded = float(delta)
     lot = inputs.lot_size[index]
-    magnitude = int(abs(delta).to_integral_value(rounding=ROUND_DOWN))
+    magnitude = int(abs(delta).to_integral_value(rounding=ROUND_HALF_EVEN))
     magnitude -= magnitude % lot
     if delta < 0:
         magnitude = min(magnitude, inputs.shares_held[index])

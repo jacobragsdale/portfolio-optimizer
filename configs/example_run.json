@@ -17,7 +17,7 @@
     ]
   },
   "rules": [
-    {"name": "cap_single_name", "params": {"max_weight": "0.50"}},
+    {"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}},
     "add_zero_alpha"
   ],
   "objective": {
