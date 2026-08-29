@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import cvxpy as cp
 import numpy as np
 from cvxpy.error import SolverError
+from scipy.sparse import csr_array
 
 from portfolio_optimizer.domain.results import F64, SolveStatus
 
@@ -122,8 +123,8 @@ def dot(vector: F64, expr: Expr) -> Expr:
     return _expr(cp.sum(cp.multiply(vector, expr)))
 
 
-def matvec(matrix: F64, expr: Expr) -> Expr:
-    """``matrix @ expr``, affine."""
+def matvec(matrix: F64 | csr_array, expr: Expr) -> Expr:
+    """``matrix @ expr``, affine; a sparse matrix is passed through as is."""
     return _expr(cp.matmul(matrix, expr))
 
 

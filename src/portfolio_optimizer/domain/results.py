@@ -17,9 +17,11 @@ from typing import Self
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+from scipy.sparse import csr_array
 
 type F64 = NDArray[np.float64]
 type Flags = NDArray[np.bool_]
+type I64 = NDArray[np.int64]
 
 _SCALAR_FIELDS: tuple[str, ...] = ("nav", "max_turnover", "cash_lb", "cash_ub", "min_trade_notional")
 _VECTOR_FIELDS: tuple[str, ...] = ("w0", "price", "shares_held", "lot_size", "w_target", "tax_per_dollar", "tcost_per_dollar", "lb", "ub", "adv_capacity")
@@ -54,6 +56,16 @@ def _readonly_flags(array: Flags) -> Flags:
     return result
 
 
+def _readonly_sparse(matrix: csr_array | F64) -> csr_array:
+    """A canonical CSR copy — float64, duplicates summed, indices sorted — with its three arrays frozen."""
+    result = csr_array(matrix, dtype=np.float64, copy=True)
+    result.sum_duplicates()
+    result.sort_indices()
+    for array in (result.data, result.indices, result.indptr):
+        array.flags.writeable = False
+    return result
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class ProblemSpec:
     """The optimization problem for one portfolio as pure numpy data.
@@ -63,6 +75,10 @@ class ProblemSpec:
     :class:`ChainState` at solve time. ``columns`` are the numeric per-security columns the build
     exported from the universe, ``flags`` the boolean ones; the two namespaces do not overlap.
     :attr:`buyable` is the set the chain couples this portfolio through.
+
+    ``sector_matrix`` is the *K*-by-*N* membership matrix, one nonzero per security, held sparse: a
+    megabyte at 100,000 names, where the dense form is 128 MB at 160 groups and dominates every
+    pickle and ``.npz`` the run makes. A dense matrix is accepted on construction and converted.
     """
 
     portfolio_id: str
@@ -80,7 +96,7 @@ class ProblemSpec:
     lb: F64
     ub: F64
     adv_capacity: F64
-    sector_matrix: F64
+    sector_matrix: csr_array
     sector_lb: F64
     sector_ub: F64
     max_turnover: float
@@ -93,7 +109,7 @@ class ProblemSpec:
     def __post_init__(self) -> None:
         for name in _VECTOR_FIELDS:
             object.__setattr__(self, name, _readonly(getattr(self, name)))
-        object.__setattr__(self, "sector_matrix", _readonly(self.sector_matrix))
+        object.__setattr__(self, "sector_matrix", _readonly_sparse(self.sector_matrix))
         object.__setattr__(self, "sector_lb", _readonly(self.sector_lb))
         object.__setattr__(self, "sector_ub", _readonly(self.sector_ub))
         object.__setattr__(self, "columns", {name: _readonly(array) for name, array in sorted(self.columns.items())})
@@ -110,6 +126,8 @@ class ProblemSpec:
         for name, array in self._arrays():
             if not np.isfinite(array).all():
                 yield f"{name} contains non-finite values"
+        if not np.isfinite(np.asarray(self.sector_matrix.data, dtype=np.float64)).all():
+            yield "sector_matrix contains non-finite values"
         for name in _SCALAR_FIELDS:
             if not np.isfinite(getattr(self, name)):
                 yield f"{name} is not finite"
@@ -154,11 +172,16 @@ class ProblemSpec:
     def _arrays(self) -> Iterator[tuple[str, F64]]:
         for name in _VECTOR_FIELDS:
             yield name, getattr(self, name)
-        yield "sector_matrix", self.sector_matrix
         yield "sector_lb", self.sector_lb
         yield "sector_ub", self.sector_ub
         for name, array in self.columns.items():
             yield f"columns.{name}", array
+
+    def _sparse_parts(self) -> Iterator[tuple[str, F64 | I64]]:
+        """The sector matrix as the three CSR arrays that define it, in a fixed order."""
+        yield "sector_matrix__data", np.asarray(self.sector_matrix.data, dtype=np.float64)
+        yield "sector_matrix__indices", np.asarray(self.sector_matrix.indices, dtype=np.int64)
+        yield "sector_matrix__indptr", np.asarray(self.sector_matrix.indptr, dtype=np.int64)
 
     @property
     def n(self) -> int:
@@ -197,6 +220,11 @@ class ProblemSpec:
             digest.update(str(array.shape).encode())
             digest.update(array.dtype.str.encode())
             digest.update(np.ascontiguousarray(array + 0.0).tobytes())  # `+ 0.0` maps -0.0 to 0.0 so equal specs hash equal
+        for name, part in self._sparse_parts():
+            digest.update(name.encode())
+            digest.update(str(part.shape).encode())
+            digest.update(part.dtype.str.encode())
+            digest.update(np.ascontiguousarray(part + 0.0 if part.dtype == np.float64 else part).tobytes())
         for name, array in self.flags.items():
             digest.update(f"flags.{name}".encode())
             digest.update(str(array.shape).encode())
@@ -217,7 +245,8 @@ class ProblemSpec:
 
     def to_npz(self, path: Path) -> None:
         """Persist the spec as a single ``.npz`` file readable without pickle."""
-        arrays: dict[str, F64 | Flags] = {name.replace("columns.", "col__"): np.ascontiguousarray(array) for name, array in self._arrays()}
+        arrays: dict[str, F64 | I64 | Flags] = {name.replace("columns.", "col__"): np.ascontiguousarray(array) for name, array in self._arrays()}
+        arrays.update({name: np.ascontiguousarray(part) for name, part in self._sparse_parts()})
         arrays.update({f"flag__{name}": np.ascontiguousarray(array) for name, array in self.flags.items()})
         np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(self._metadata(), sort_keys=True)), **arrays)
 
@@ -226,10 +255,14 @@ class ProblemSpec:
         """Load a spec written by :meth:`to_npz`."""
         with np.load(path, allow_pickle=False) as data:
             meta = json.loads(str(data["__meta__"]))
-            loaded: dict[str, F64] = {key: np.asarray(data[key], dtype=np.float64) for key in data.files if key != "__meta__" and not key.startswith("flag__")}
+            loaded: dict[str, F64] = {
+                key: np.asarray(data[key], dtype=np.float64) for key in data.files if key != "__meta__" and not key.startswith("flag__") and not key.startswith("sector_matrix__")
+            }
             flags: dict[str, Flags] = {key.removeprefix("flag__"): np.asarray(data[key], dtype=np.bool_) for key in data.files if key.startswith("flag__")}
+            parts = (np.asarray(data["sector_matrix__data"], dtype=np.float64), np.asarray(data["sector_matrix__indices"], dtype=np.int64), np.asarray(data["sector_matrix__indptr"], dtype=np.int64))
         vectors = {name: loaded[name] for name in _VECTOR_FIELDS}
         columns = {key.removeprefix("col__"): array for key, array in loaded.items() if key.startswith("col__")}
+        shape = (len(meta["sector_names"]), len(meta["security_ids"]))
         return cls(
             portfolio_id=str(meta["portfolio_id"]),
             as_of=datetime.fromisoformat(str(meta["as_of"])),
@@ -240,7 +273,7 @@ class ProblemSpec:
             cash_lb=float(meta["cash_lb"]),
             cash_ub=float(meta["cash_ub"]),
             min_trade_notional=float(meta["min_trade_notional"]),
-            sector_matrix=loaded["sector_matrix"],
+            sector_matrix=csr_array(parts, shape=shape),
             sector_lb=loaded["sector_lb"],
             sector_ub=loaded["sector_ub"],
             columns=columns,

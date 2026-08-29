@@ -6,6 +6,7 @@ from decimal import Decimal
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.sparse import csr_array
 
 from portfolio_optimizer.engine.build import LONG_TERM_HOLDING, BuildError, build_problem_spec, to_float64
 from tests.conftest import AS_OF, Factories, Frames
@@ -23,10 +24,18 @@ def test_spec_aligns_to_the_sorted_universe(make: Factories) -> None:
     np.testing.assert_array_equal(spec.ub, [1.0, 1.0, 1.0])
     np.testing.assert_allclose(spec.adv_capacity, [100.0, 50.0, 1.0])
     assert spec.sector_names == ("TECH",)
-    np.testing.assert_array_equal(spec.sector_matrix, [[1.0, 1.0, 1.0]])
+    np.testing.assert_array_equal(spec.sector_matrix.toarray(), [[1.0, 1.0, 1.0]])
     assert output.order_inputs.price == (Decimal(100), Decimal(50), Decimal(10))
     assert output.order_inputs.shares_held == (5000, 10000, 0)
     assert output.order_inputs.nav == Decimal(1_000_000)
+
+
+def test_sector_matrix_is_sparse_with_one_nonzero_per_security(make: Factories, frames: Frames) -> None:
+    universe = frames.three_security_universe().assign(sector=pd.Series(["TECH", "FIN", "TECH"], dtype="string"))
+    spec = build_problem_spec(make.portfolio_data(universe=universe)).spec
+    assert spec.sector_names == ("FIN", "TECH")
+    assert isinstance(spec.sector_matrix, csr_array) and spec.sector_matrix.nnz == 3
+    np.testing.assert_array_equal(spec.sector_matrix.toarray(), [[0.0, 1.0, 0.0], [1.0, 0.0, 1.0]])
 
 
 def test_current_weights_sum_to_one_minus_cash(make: Factories) -> None:

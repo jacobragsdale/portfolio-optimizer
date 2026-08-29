@@ -66,7 +66,7 @@ def _sector_bounds(spec: ProblemSpec, sol: Solution, chain: ChainState, params: 
     if len(spec.sector_names) == 0:
         return []
     tolerance = param(params, "tolerance", 0.0)
-    exposure = spec.sector_matrix @ sol.w
+    exposure = np.asarray(spec.sector_matrix @ sol.w, dtype=np.float64)
     return [("sector_lb", spec.sector_lb - tolerance - exposure), ("sector_ub", exposure - spec.sector_ub - tolerance)]
 
 

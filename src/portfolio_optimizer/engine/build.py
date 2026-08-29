@@ -12,6 +12,7 @@ from decimal import Decimal
 
 import numpy as np
 import pandas as pd
+from scipy.sparse import csc_array, csr_array
 
 from portfolio_optimizer.domain.data import PortfolioData
 from portfolio_optimizer.domain.results import F64, Flags, OrderInputs, ProblemSpec
@@ -80,8 +81,7 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
     tcost = [_decimal(value) / BPS for value in universe["tcost_bps"]] if "tcost_bps" in universe.columns else [Decimal(0)] * n
     lb, ub = _bounds(data, universe, ids, w0)
     sector_names = tuple(sorted({str(value) for value in universe["sector"]}))
-    sectors = [str(value) for value in universe["sector"]]
-    sector_matrix = np.array([[1.0 if sector == name else 0.0 for sector in sectors] for name in sector_names], dtype=np.float64).reshape(len(sector_names), n)
+    sector_matrix = _membership(universe["sector"], sector_names)
     sector_lb = [data.style.sector_bounds[name][0] if name in data.style.sector_bounds else Decimal(0) for name in sector_names]
     sector_ub = [data.style.sector_bounds[name][1] if name in data.style.sector_bounds else Decimal(1) for name in sector_names]
     adv_capacity = [data.style.max_adv_participation * Decimal(int(adv)) * px / nav for adv, px in zip(universe["adv_shares"], price, strict=True)]
@@ -116,6 +116,18 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
         security_ids=ids, price=tuple(price), shares_held=tuple(shares_held), lot_size=tuple(lot_size), w0=tuple(w0), ub=tuple(ub), nav=nav, min_trade_notional=data.style.min_trade_notional
     )
     return BuildOutput(spec=spec, order_inputs=inputs)
+
+
+def _membership(column: pd.Series, names: tuple[str, ...]) -> csr_array:
+    """The *K*-by-*N* 0/1 matrix of which group each security belongs to, built in numpy and carried sparse.
+
+    One nonzero per column, so it is a megabyte at 100,000 names however many groups there are; the
+    dense form is 8 *K* *N* bytes and was most of every large spec.
+    """
+    codes = np.asarray(pd.Categorical(column.astype("string"), categories=list(names)).codes, dtype=np.int64)
+    n = len(codes)
+    by_column = csc_array((np.ones(n, dtype=np.float64), codes, np.arange(n + 1, dtype=np.int64)), shape=(len(names), n))
+    return csr_array(by_column)
 
 
 def _int(value: object) -> int:

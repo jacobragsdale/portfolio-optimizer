@@ -68,7 +68,8 @@ order is exactly quantity times price" a guarantee rather than a hope.
 
 ## The spec is pure data
 
-`ProblemSpec` holds every input the solver will see as plain numpy arrays aligned to a sorted list of
+`ProblemSpec` holds every input the solver will see as plain numpy arrays — and the sector membership as a
+sparse matrix, one nonzero per security, since dense it was most of every large spec — aligned to a sorted list of
 securities, plus a content hash. cvxpy objects are created only inside `solve()` and never leave it. This
 buys three things: the spec is built on a worker and stays there until it is solved; it can be persisted as an `.npz` file that an auditor can open without the solver stack; and the hash pins down
 exactly what was optimized, so a change in any input changes the hash and shows up in `diff-manifests`.

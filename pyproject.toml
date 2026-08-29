@@ -13,6 +13,7 @@ dependencies = [
     "pyarrow>=25.0.1",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
+    "scipy>=1.18.1",
 ]
 
 [project.scripts]
@@ -91,6 +92,8 @@ ignore = [
 "**/tests/**" = ["SLF001", "INP001"]
 "**/test_*.py" = ["SLF001", "INP001"]
 "**/conftest.py" = ["SLF001", "INP001"]
+# Benchmarks are scripts run by path, not a package.
+"benchmarks/*.py" = ["INP001"]
 
 [tool.ruff.lint.isort]
 split-on-trailing-comma = false  # Do not preserve comma-forced import line breaks.

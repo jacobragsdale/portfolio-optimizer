@@ -4,70 +4,102 @@ Threads for expanding the template that are not yet decisions. Each one states t
 engine has it today, the options, and a leaning; none is a commitment. When a thread becomes a
 decision it moves into the code and [the architecture explanation](docs/explanation-architecture.md)
 and leaves this file. The last section is the exception: known defects and trailing work, decided
-already and waiting only to be done. Numbers below are estimates for a book of *N* = 100,000 unique
-securities, which a business unit can exceed.
+already and waiting only to be done. Numbers below are for a book of *N* = 100,000 unique securities,
+which a business unit can exceed — measured where the text says so, estimated otherwise.
 
-## Building the cvxpy problem is probably the expensive half; nobody has measured
+## Where the time goes at 100k names: the solver, not the build
+
+Measured 2026-08-29 with `benchmarks/profile_portfolio.py` — one portfolio, the shipped rules, terms,
+and constraints, a synthetic book of 100,000 names with 25,000 held, in one process, Clarabel:
+
+| Stage | Seconds | Where it runs |
+|---|---:|---|
+| validate the bundle | 0.4 | build task, parallel |
+| rules (`restrict_low_liquidity`, `add_zero_alpha`) | 1.5 | build task, parallel |
+| spec build | 0.7 | build task, parallel |
+| content hash | 0.01 | build task |
+| expression tree + `is_dcp` | 0.003 | solve task, critical path |
+| canonicalization (`get_problem_data`) | 0.6 | solve task, critical path |
+| **Clarabel**, 29 iterations | **7.5** | solve task, critical path |
+| unpack, classify | 0.1 | solve task |
+| verify | 0.01 | solve task |
+| orders + rounding drift | 0.55 | solve task |
+| persist spec + solution (`.npz`) | 0.01 | client |
+
+The canonical form is *P* 400k × 400k with 100k nonzeros and *A* 900k × 400k with 1.9M nonzeros; the
+process peaks at 1.4–1.8 GB, canonicalization and the solve each adding about half a gigabyte, which
+is what a worker needs per concurrent solve at this size.
+
+So the premise this section used to open with — that building the cvxpy problem is the expensive
+half — is wrong by an order of magnitude. Canonicalization is 7% of the solve task; Clarabel is 85%.
+The build side is two and a half seconds and runs for every portfolio at once, most of it bundle
+validation (0.4 s per pass, and every rule's output is validated again). Verification, hashing, and
+orders are noise. Two conclusions follow and one thread stays open:
+
+- **The direct assembler is off the table.** It would save at most 0.6 s of a 9 s critical path at a
+  real cost in readability. Removed from this file; the numbers above are why.
+- **The sector matrix was the size problem, and it is fixed.** Dense, at 160 sub-industries, it was 128
+  of the spec's 137 MB, 142 MB per portfolio in `problem_specs/`, and — the part the old estimate
+  missed — 147 MB in every `PortfolioResult` returning to the client, since the result carries the
+  spec. Built in numpy from category codes and carried as CSR (one nonzero per security) it is 1.6 MB
+  whatever *K* is: spec 10 MB, `.npz` 15 MB, result 20 MB, spec build 1.5 → 0.7 s, hash 0.08 → 0.01 s.
+- **What is left is the solver**, which is the thread below.
+
+### The solver thread
+
+Clarabel spends about 0.26 s per interior-point iteration here, in a KKT factorization over *A*. *P* is
+diagonal — the shipped `tracking_error` is a plain sum of squares — so this is very nearly an LP with
+300k variables and 900k rows, and the per-iteration cost is the sparse factorization, not the
+objective. Things to measure, in the order they are cheap:
+
+1. **Clarabel's linear solver.** The default is QDLDL, single-threaded. Clarabel also offers `faer`
+   (multi-threaded) and, where the wheel carries it, MKL, through `direct_solve_method` in
+   `solver.options` — no engine change, one config key. Workers run with `--nthreads 1` and
+   `OMP_NUM_THREADS=1`, which is right for many small portfolios and wrong for a few enormous ones;
+   the worker thread count may want to be a setting rather than a constant.
+2. **Other solvers, same problem.** OSQP at its defaults hits its iteration limit (`user_limit`) on this
+   book and the engine correctly refuses the answer; a first-order method on 400k variables needs its
+   tolerances and `max_iter` set deliberately, and the answer it then gives is a looser optimum the
+   verifier still has to accept at `violation_tol`. HiGHS and SCS: measure with the same script.
+3. **Warm starts** move from "pointless" to worth trying, but only for the solvers that use them
+   (OSQP, SCS); Clarabel does not. See the thread under *Other threads*.
+4. **The formulation.** Three variables per name (`w`, `buy`, `sell`) plus the slack every inequality
+   adds is what makes *A* 900k rows. A formulation that lets the solver see `buy` and `sell` as the
+   positive and negative parts of one trade vector without an explicit equality row would shrink the
+   KKT system; whether cvxpy's reductions already do this is a question for the canonical data, not
+   for reasoning.
+
+### The result carries the spec back
+
+Every `PortfolioResult` returns to the client with its `ProblemSpec` inside — 20 MB at 100k names now
+that the sector matrix is sparse, 10 MB of it the spec's own vectors — because the client persists
+`problem_specs/<portfolio>.npz` for `verify` and `diff-manifests`. A thousand portfolios is 20 GB into
+one process over one NIC, held until each is written. The spec is also exactly what the worker already
+has. Options, none decided: write the `.npz` from the worker when the run directory is a shared or
+object-store path and return only the hash; or return the spec lazily, as a Dask future the client
+pulls while persisting, so the transfer overlaps the solves instead of following them. The
+`Contribution` a dependent solve receives is a few kilobytes and is unaffected either way.
+
+### Considered and rejected: build the problem elsewhere and ship it
+
+Every variant — pickle the `cp.Problem` back, ship `get_problem_data`'s output and unpack in the
+client, the DPP split with the chain as `Parameter`s — moves canonicalization, and canonicalization
+is 0.6 s. What the variants would move instead is data: the canonical form is a 3–5× expansion of the
+spec, `unpack_results` needs the same `Problem` object on both sides (`inverse_data` refers to
+per-process variable ids), and a private canonicalization cache is not part of any pickle contract.
+Dropped 2026-08-29 on the numbers above.
 
 ### Three things are called "build"
+
+For the record, since the word is overloaded:
 
 1. **The spec build** (`engine/build.py`): rules, Decimal arithmetic, alignment to the sorted universe,
    the one Decimal→float64 conversion. Pure numpy out. Runs in workers, every portfolio at once.
 2. **The expression tree** (`engine/solve.py` → the terms and constraints → `cvx/adapter.py`): a few
-   dozen cvxpy nodes holding references to the spec's arrays. Cheap — cvxpy does no numeric work here.
-3. **Canonicalization** — inside `problem.solve()`: DCP verification, the reduction chain to the solver's
-   conic or QP form, coefficient extraction into sparse matrices. This is what people mean when they say
-   "building the problem is slower than solving it": for a few hundred thousand variables and a few
-   million nonzeros it is seconds to tens of seconds in pure Python and scipy, often several times the
-   solver's own time on a well-conditioned QP.
-
-The engine parallelizes (1), which at *N* = 100k is a second or two of Decimal loops, and runs (2) and
-(3) inside each solve task — on the worker, but on the critical path of that portfolio's chain, since a
-solve cannot start before its predecessors finish. Taking (3) off that path with a DPP split — build
-and canonicalize once with the chain as cvxpy `Parameter`s, then set the parameters and solve on the
-worker that holds the problem — was considered and dropped on 2026-08-29. What remains is to measure
-where the time actually goes at *N* = 100k and, if canonicalization is on top, the direct assembler
-below.
-
-### Why "build in the worker and pickle the problem back" does not work
-
-It is the obvious fix and it fails on three counts.
-
-**The pickle carries the wrong thing.** A `cp.Problem` pickled before `.solve()` is the expression tree:
-the spec's constants plus node overhead. Canonicalization has not happened, so the main process pays
-it anyway; the pickle bought nothing. A `Problem` pickled *after* a solve may carry cvxpy's
-canonicalization cache, but that cache is a private attribute, not part of the pickle contract, and
-nothing promises it survives a round trip or a version bump. Designing around it means designing around
-an accident.
-
-**Size.** What is actually in a 100 MB problem pickle at *N* = 100k:
-
-| Object | Size | Note |
-|---|---|---|
-| One float64 vector | 0.8 MB | |
-| `ProblemSpec`, shipped fields | ~10 MB | ten vectors, ids, flags; already what workers return today |
-| Dense sector matrix, 11 sectors | 9 MB | `build_problem_spec` builds it dense, by Python comprehension |
-| Dense sector matrix, ~160 sub-industries | 128 MB | same code; *this alone is a 100 MB pickle* |
-| Same matrix, sparse | ~1 MB | one nonzero per security |
-| Factor loadings, 50 factors, dense | 40 MB | genuinely dense data; unavoidable if the term exists |
-| Canonical solver data, shipped terms only | ~20–25 MB | ~16 nonzeros per security in *A*, CSC |
-| Canonical solver data with a 50-factor risk term | ~80–90 MB | the factor block expands into *A* or *P* |
-| `ChainState` projected onto the spec | 0.8 MB | one float per security |
-| A predecessor's contribution (its BUY rows) | a few KB | what a dependent solve receives |
-
-The spec is the minimal representation of the problem; the expression tree is the spec plus overhead;
-the canonical form is a 3–5× expansion of it. Every representation that skips canonicalization on the
-main side is bigger than the one we already ship.
-
-**Bandwidth on one process.** Even if the pickle carried the cache, every portfolio's result funnels
-into the client. At 100 MB and 1 Gb/s that is ~0.8 s each, faster than re-canonicalizing — but 1,000
-portfolios is 100 GB of ingress on one NIC, 13 minutes of serialized transfer on the critical path, and
-every one of them held in worker memory until its solve runs. Canonicalization
-would be replaced by a transfer bottleneck, not removed.
-
-What is *not* an objection: pickle fragility across environments. `_accept` in `engine/runner.py`
-already rejects any result from a process whose fingerprint (interpreter, cvxpy, solver, image digest)
-differs from the run's, so a pickled cvxpy object would only ever cross between identical images.
+   dozen cvxpy nodes holding references to the spec's arrays. Milliseconds.
+3. **Canonicalization** — inside `problem.solve()`: DCP verification, the reduction chain to the
+   solver's conic or QP form, coefficient extraction into sparse matrices. 0.6 s at 100k names with
+   the shipped terms.
 
 ### The chain is a graph, not a line — done
 
@@ -107,39 +139,15 @@ The cost to expect: the moment any sell-side step is configured, every held secu
 edge again — the bonds the buy filter removed re-couple accounts through the sell side — and components
 grow to match. The manifest's derived-graph record is how to watch that happen.
 
-### If canonicalization dominates: assemble the solver data directly
-
-The verifier already has a numpy twin of every shipped term and constraint. A direct assembler that
-produces the QP or conic data as scipy sparse matrices from a spec — for the shipped structure only —
-would be one to two orders of magnitude faster than cvxpy's general reduction chain, and the chain's
-right-hand-side rows are a plain index write. cvxpy stays for custom terms
-and as the cross-check on small problems (assemble both ways, solve both, compare). It is a large
-scope with a real cost in readability — terms would no longer be "just write the cvxpy atoms" — so it
-is only justified once the profile below shows canonicalization on top.
-
-### Considered and rejected: ship canonical data, unpack in the main process
-
-`problem.get_problem_data(solver)` in the worker, `chain.solve_via_data(...)` and
-`problem.unpack_results(...)` in the main process. Unpacking needs the same `Problem` object on both
-sides — `inverse_data` refers to variable ids, which are a per-process counter — so the main process
-would have to rebuild the tree and hope the ids match. And the canonical data is the largest
-representation in the table. It answers the wrong half of the question.
-
 ### Cheap things to do first, whatever else happens
 
-- **Build the sector matrix in numpy and carry it sparse.** `build_problem_spec` builds a dense
-  *K* × *N* matrix by a nested Python comprehension: at 160 sub-industries and 100k names that is 16
-  million Python iterations and 128 MB per portfolio — plausibly most of any "100 MB pickle". A
-  broadcast comparison of two arrays builds it in milliseconds; a `scipy.sparse` matrix holds it in a
-  megabyte; cvxpy's `matmul` and the verifier's `@` both accept it unchanged. The content hash and
-  `to_npz` need a sparse encoding (`indptr`, `indices`, `data`), which is the only real work.
+- **Build the sector matrix in numpy and carry it sparse.** Done 2026-08-29; numbers above.
 - **Keep the factor risk term structured when it returns.** `sum_squares(F½ · B · w) + sum_squares(√D ∘ w)`,
   never a dense *N* × *N* covariance (80 GB at 100k). The 50 × *N* loadings are the one genuinely dense
-  block and they set the floor on every size above.
-- **Profile before deciding.** One portfolio at *N* = 100k with the shipped terms, timed as spec build /
-  expression tree / `get_problem_data` / `solve_via_data` / verify / orders. Everything in this section
-  is reasoning from the code; the split between canonicalization and solve is solver- and
-  structure-dependent, and Clarabel on a QP with a factor term may not look like OSQP on one without.
+  block, 40 MB, and they set the floor on every size above the moment the term exists.
+- **Re-profile when a term changes.** `uv run python benchmarks/profile_portfolio.py --securities 100000`
+  prints the table above for the shipped config; the split between canonicalization and solve is
+  solver- and structure-dependent, and a factor term will not look like the diagonal *P* measured here.
 
 ## Acceptance scenarios the business writes, and a harness that runs them
 
@@ -280,7 +288,7 @@ alongside `group_bounds(column="rating", ...)`. Most of this works already; thre
   is in the spec: `sector_matrix` / `sector_lb` / `sector_ub` generalize to `groups: Mapping[str,
   GroupBlock]` keyed by the universe column they were built from, and `sector_bounds` becomes
   `group_bounds(column="sector")` — the shipped constraint is one instantiation of the general one. Build
-  it once, sparse, for every grouping, which is also the fix for the dense *K* × *N* matrix costed above.
+  it once, sparse, for every grouping, the way the sector matrix already is.
 - **The numbers have two homes.** A builder's params are per-run; `sector_bounds` gets its numbers per
   portfolio from the style. So a param must be able to say *where* rather than *what*: a literal table,
   or `{"from_style": "sector_bounds"}`, with the style overriding the config default per portfolio. This
@@ -496,7 +504,8 @@ graph — nothing an aggregator does can feed back into which portfolio waits fo
 - **Warm starts.** OSQP and SCS benefit from starting at `w0` or at yesterday's solution; Clarabel, an
   interior-point method, does not. The solutions of every run are already persisted as `.npz`; a loader
   could hand the previous run's in as a `warm_start` column and the adapter could pass it through.
-  Pointless until the solver is the bottleneck, which the section above argues it currently is not.
+  The solver *is* the bottleneck (measured above), so this is worth trying — but only once OSQP or SCS
+  is made to converge on a 100k book at all, which at their defaults they do not.
 - **Re-solve from the persisted spec.** `problem_specs/<portfolio>.npz` plus `chain/<portfolio>.npz` is
   everything the solver saw. A `resolve` CLI subcommand that rebuilds the problem from those files and
   compares the result with `solutions/<portfolio>.npz` turns the audit artifacts into a reproducibility
@@ -508,6 +517,36 @@ graph — nothing an aggregator does can feed back into which portfolio waits fo
 ## Bugs and cleanup
 
 Not threads: known, decided, and only waiting for someone to do them.
+
+### The canonical split can move the objective, and the verifier then refuses the portfolio
+
+`_classify` in `engine/solve.py` replaces the solver's buy/sell pair with the minimal split
+`buy = max(w − w0, 0)`, `sell = max(w0 − w, 0)`, on the grounds that the minimal split cannot make any
+shipped term worse. That is false for `tax_cost` on a loss: `tax_per_dollar` is negative there, so
+selling *earns*, and a sell-and-rebuy of *x* dollars in such a name changes the objective by
+`(τ + 2c)·x` — profitable whenever the tax saving beats two transaction costs, which at 20–40% tax
+rates and single-digit-bps costs is every loss position in a book. The solver's optimum is then full of
+round trips (the guard in `tax_cost` only checks that *some* transaction cost is positive, not that a
+round trip is unprofitable), the canonical split strips them, the objective the twins recompute is
+higher than the one the solver reported, and `verify` fails the portfolio with an objective gap:
+`VerificationError`, "objective gap 2.8e-03", nothing about why. The orders would have been right
+regardless — they derive from `w` alone (`engine/orders.py`), and a round trip does not change `w`.
+
+Found on 2026-08-29 by the profile's synthetic book (`benchmarks/profile_portfolio.py`): 500 held
+names, half at a loss, 5 bps `tcost_bps`. The example data cannot show it: no losses, no cost column.
+
+Two fixes, both small:
+
+- **The refusal has to name the round trip.** In `_classify`, measure `min(raw.buy, raw.sell)` before
+  canonicalizing; where it exceeds the verifier's tolerance, fail the solve with an error that lists the
+  names the solver round-tripped and says a term rewards a wash trade — the same refusal, with its cause
+  in the message. Keep the canonical split for the other case, where it is a harmless tidy-up of
+  interior-point slack.
+- **The shipped tax term's guard should be the real condition.** Refuse per security when
+  `−tax_per_dollar > 2 · (tcost_per_dollar + cost_bps / 10⁴)` rather than when no cost is positive at
+  all. The honest modelling fix is a wash-sale-aware term or constraint, which belongs to the selling
+  thread above; until then the tighter guard turns a cryptic verification failure into an error that
+  says what to change.
 
 ### Smaller things noticed in passing
 

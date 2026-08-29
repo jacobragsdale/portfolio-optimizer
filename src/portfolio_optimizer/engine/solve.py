@@ -123,8 +123,9 @@ def diagnose_infeasibility(spec: ProblemSpec, chain: ChainState) -> Infeasibilit
         findings.append(f"lower bounds sum to {spec.lb.sum():.6f} > allowed investment {invested_ub:.6f}")
     if len(spec.sector_names) and spec.sector_lb.sum() > invested_ub + 1e-12:
         findings.append(f"sector lower bounds sum to {spec.sector_lb.sum():.6f} > allowed investment {invested_ub:.6f}")
+    capacities = np.asarray(spec.sector_matrix @ spec.ub, dtype=np.float64)
     for index, name in enumerate(spec.sector_names):
-        capacity = float((spec.sector_matrix[index] * spec.ub).sum())
+        capacity = float(capacities[index])
         if capacity < spec.sector_lb[index] - 1e-12:
             findings.append(f"sector {name!r} can hold at most {capacity:.6f} < its lower bound {spec.sector_lb[index]:.6f}")
     clamped = np.clip(spec.w0, spec.lb, spec.ub)
