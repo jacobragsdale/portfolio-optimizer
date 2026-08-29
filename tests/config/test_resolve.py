@@ -31,11 +31,11 @@ def plain_rule(data: PortfolioData) -> PortfolioData:
 
 
 def rule_with_params(data: PortfolioData, params: TiltParams) -> PortfolioData:
-    return data.with_changes(rule=f"tilt:{params.strength}")
+    return data.with_rule_applied(f"tilt:{params.strength}")
 
 
 def chained_rule(data: PortfolioData, ctx: SolveContext) -> PortfolioData:
-    return data.with_changes(rule=f"chained:{ctx.portfolios_done}")
+    return data.with_rule_applied(f"chained:{ctx.portfolios_done}")
 
 
 def rule_wrong_data_annotation(data: pd.DataFrame) -> PortfolioData:  # the annotation is the case under test

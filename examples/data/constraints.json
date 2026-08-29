@@ -1,0 +1,4 @@
+{
+  "P1": {"max_weight": "1", "max_turnover": "2", "min_trade_notional": "0", "cash_bounds": ["0", "0"], "max_adv_participation": "0.25", "sector_bounds": {}},
+  "P2": {"max_weight": "1", "max_turnover": "2", "min_trade_notional": "0", "cash_bounds": ["0", "0"], "max_adv_participation": "0.25", "sector_bounds": {}}
+}

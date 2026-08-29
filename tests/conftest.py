@@ -6,19 +6,28 @@ Builders are exposed as fixtures because ``--import-mode=importlib`` keeps ``tes
 ``sys.path``.
 """
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails, StyleConstraints
+from portfolio_optimizer.config.models import RunConfig, load_run_config
+from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
+from portfolio_optimizer.cvx.adapter import DecisionVars, ObjectiveTerm
+from portfolio_optimizer.domain.data import IoContext, LoadRequest, PortfolioData, PortfolioDetails, StyleConstraints
 from portfolio_optimizer.domain.frames import FrameSchema
-from portfolio_optimizer.domain.results import F64, ProblemSpec
+from portfolio_optimizer.domain.results import F64, Artifact, ProblemSpec
 from portfolio_optimizer.domain.schemas import COVARIANCE, DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
+EXAMPLE_DATA = REPO_ROOT / "examples" / "data"
 
 AS_OF = datetime(2026, 8, 28, tzinfo=UTC)
 ACQUIRED = datetime(2024, 1, 15, tzinfo=UTC)
@@ -219,3 +228,43 @@ def frames() -> Frames:
 def make() -> Factories:
     """Domain-object factories."""
     return Factories(details=make_details, style=make_style, portfolio_data=make_portfolio_data, spec=make_spec, schemas=_SCHEMAS)
+
+
+# --- steps that satisfy the resolver's contracts, for tests that need a resolvable config ---
+
+
+def noop_term(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:
+    """Never invoked; exists so a config can resolve before real terms are exercised."""
+    raise NotImplementedError
+
+
+def noop_sink(orders: pd.DataFrame, io: IoContext) -> tuple[Artifact, ...]:
+    """Publish nothing."""
+    del orders, io
+    return ()
+
+
+def lying_loader(request: LoadRequest) -> pd.DataFrame:
+    """Annotated as a frame loader but returns a dict; the engine must catch it."""
+    del request
+    return {}  # ty: ignore[invalid-return-type]  # the lie is the case under test
+
+
+def lying_rule(data: PortfolioData) -> PortfolioData:
+    """Annotated correctly but returns a frame; the pipeline must catch it."""
+    return data.universe  # ty: ignore[invalid-return-type]  # the lie is the case under test
+
+
+def example_config(**overrides: object) -> RunConfig:
+    """The shipped example config with sections replaced; objective, constraints, and sink default to no-ops."""
+    body = json.loads(EXAMPLE_CONFIG.read_text())
+    body["objective"] = {"terms": ["tests.conftest:noop_term"]}
+    body["constraints"] = []
+    body["sink"] = "tests.conftest:noop_sink"
+    body.update(overrides)
+    return load_run_config(json.dumps(body))
+
+
+def resolved_example(**overrides: object) -> ResolvedConfig:
+    """``example_config`` resolved."""
+    return resolve_config(example_config(**overrides), config_sha256="example")

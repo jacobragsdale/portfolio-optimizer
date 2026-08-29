@@ -163,14 +163,13 @@ class PortfolioData:
     def with_changes(
         self,
         *,
-        rule: str,
         holdings: pd.DataFrame | None = None,
         universe: pd.DataFrame | None = None,
         targets: pd.DataFrame | None = None,
         covariance: pd.DataFrame | None = None,
         style: StyleConstraints | None = None,
     ) -> "PortfolioData":
-        """Return a re-validated copy with the given frames or style replaced and ``rule`` recorded."""
+        """Return a re-validated copy with the given frames or style replaced."""
         return replace(
             self,
             holdings=self.holdings if holdings is None else holdings,
@@ -178,8 +177,11 @@ class PortfolioData:
             targets=self.targets if targets is None else targets,
             covariance=self.covariance if covariance is None else covariance,
             style=self.style if style is None else style,
-            applied_rules=(*self.applied_rules, rule),
         )
+
+    def with_rule_applied(self, qualname: str) -> "PortfolioData":
+        """Record that ``qualname`` ran; called by the pipeline, not by rules."""
+        return replace(self, applied_rules=(*self.applied_rules, qualname))
 
 
 @dataclass(frozen=True, slots=True)

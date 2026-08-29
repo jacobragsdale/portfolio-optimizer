@@ -55,12 +55,12 @@ def test_naive_as_of_is_rejected(make: Factories) -> None:
 
 def test_with_changes_revalidates_and_records_the_rule(make: Factories, frames: Frames) -> None:
     data = make.portfolio_data()
-    updated = data.with_changes(rule="drop_b", holdings=data.holdings[data.holdings["security_id"] != "B"])
+    updated = data.with_changes(holdings=data.holdings[data.holdings["security_id"] != "B"]).with_rule_applied("drop_b")
     assert updated.applied_rules == ("drop_b",)
     assert list(updated.holdings["security_id"]) == ["A"]
     assert list(data.holdings["security_id"]) == ["A", "B"]
     with pytest.raises(PortfolioDataError):
-        data.with_changes(rule="bad", holdings=frames.holdings({"security_id": "Z"}))
+        data.with_changes(holdings=frames.holdings({"security_id": "Z"}))
 
 
 def test_details_from_frame_types_the_matching_row(frames: Frames) -> None:

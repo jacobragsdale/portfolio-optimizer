@@ -1,0 +1,4 @@
+portfolio_id,security_id,quantity,avg_cost,acquired_on
+P1,A,5000,100,2024-01-15T00:00:00Z
+P1,B,10000,50,2024-01-15T00:00:00Z
+P2,C,100000,10,2025-11-01T00:00:00Z
