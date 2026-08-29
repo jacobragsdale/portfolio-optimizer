@@ -42,7 +42,6 @@ extend-select = [  # Ruff's own defaults stay on; these are additions to them.
     "C4",  # Remove wasteful collection constructions.
     "RUF",  # Apply additional correctness and modernization checks.
     "PTH",  # Use pathlib instead of legacy os.path calls.
-    "TC",  # Keep type-only imports out of the runtime namespace.
     "N",  # Enforce standard naming conventions.
     "A",  # Prevent names from shadowing builtins.
     "SLF",  # Reject access to another object's private members.
@@ -83,11 +82,6 @@ ignore = [
 "**/tests/**" = ["SLF001", "INP001"]
 "**/test_*.py" = ["SLF001", "INP001"]
 "**/conftest.py" = ["SLF001", "INP001"]
-
-[tool.ruff.lint.flake8-type-checking]
-runtime-evaluated-base-classes = [
-    "pydantic.BaseModel",
-]  # Keep model field types importable at runtime.
 
 [tool.ruff.lint.isort]
 split-on-trailing-comma = false  # Do not preserve comma-forced import line breaks.
