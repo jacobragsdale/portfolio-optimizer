@@ -158,7 +158,8 @@ class DaskBackend:
         return client
 
     def _local_cluster(self) -> _Cluster:
-        return _Cluster(LocalCluster(n_workers=self._min_workers, threads_per_worker=1, processes=True, dashboard_address=None, silence_logs=logging.WARNING))
+        # An ephemeral dashboard port: `None` falls back to distributed's default 8787, which a second cluster in the same process cannot bind.
+        return _Cluster(LocalCluster(n_workers=self._min_workers, threads_per_worker=1, processes=True, dashboard_address=":0", worker_dashboard_address=":0", silence_logs=logging.WARNING))
 
     def _kube_cluster(self) -> _Cluster:
         """A ``DaskCluster`` resource managed by the Dask Kubernetes operator, running this run's image.

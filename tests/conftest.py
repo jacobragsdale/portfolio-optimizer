@@ -361,7 +361,7 @@ _protocols_hold(FixedClock(), FixedIds())
 @pytest.fixture(scope="session")
 def scheduler_address() -> Iterator[str]:
     """A two-worker ``LocalCluster`` shared by every test that runs portfolios through workers."""
-    cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None, silence_logs=logging.WARNING)
+    cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, dashboard_address=":0", worker_dashboard_address=":0", silence_logs=logging.WARNING)
     try:
         yield str(cluster.scheduler_address)
     finally:
