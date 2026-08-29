@@ -1,0 +1,104 @@
+# Tutorial: your first run
+
+In this tutorial you will run the shipped example — two portfolios over three securities — inspect the
+orders it produces, prove the run is reproducible, and re-verify a solution without the solver.
+
+## Prerequisites
+
+- [uv](https://docs.astral.sh/uv/) installed and a Python 3.12+ interpreter available to it.
+- A clone of this repository, with the working directory at its root.
+
+## 1. Install the locked environment
+
+```bash
+uv sync --locked
+```
+
+This creates `.venv` with the exact dependency versions in `uv.lock`, including cvxpy and the Clarabel
+solver. Nothing else needs to be installed.
+
+## 2. Point the engine at the example data
+
+Every run needs three environment variables. The example file sets them to the shipped data:
+
+```bash
+cp .env.example .env
+```
+
+`.env` now says where data is read from (`examples/data`), where runs are written (`./out`), and how
+loudly to log. There are no defaults: a missing variable stops the run before it starts.
+
+## 3. Check the config before touching any data
+
+```bash
+uv run --env-file .env portfolio-optimizer validate-config configs/example_run.json
+```
+
+You should see `config ok` followed by one line per step. Notice the line
+
+```text
+  constraint          portfolio_optimizer.terms:cumulative_adv_participation [chain]
+```
+
+The `[chain]` marker means this constraint reads what earlier portfolios in the run have already
+ordered — it is why the run's execution mode solves portfolios one after another.
+
+## 4. Run it
+
+```bash
+uv run --env-file .env portfolio-optimizer run configs/example_run.json
+```
+
+Expected output (the run id will differ):
+
+```text
+run run-4d9cb20e40db: manifest out/run-4d9cb20e40db/manifest.json
+  P1: solved, 3 order(s)
+  P2: solved, 0 order(s)
+exit code 0
+```
+
+P1 holds 500,000 of A and 500,000 of B against an equal-weight target and may trade at most a quarter
+of each name's daily volume. C's daily volume is 100,000 shares at 10, so P1 can buy at most 25,000
+shares (a 0.25 weight); the optimizer puts the remaining weight equally into A and B. P2 holds only C
+and would like to diversify, but P1 has already used C's whole trading budget for the day — so P2
+correctly produces no orders. That is the chain at work.
+
+## 5. Look at the orders
+
+```bash
+uv run --env-file .env python -c "import pandas as pd, glob; print(pd.read_parquet(glob.glob('out/*/orders/orders.parquet')[0]).to_string())"
+```
+
+You should see exactly three orders: sell 1,250 A, sell 2,500 B, buy 25,000 C — the hand-computed
+optimum, to the share.
+
+## 6. Prove the run is reproducible
+
+Run it a second time and compare the two manifests:
+
+```bash
+uv run --env-file .env portfolio-optimizer run configs/example_run.json
+uv run --env-file .env portfolio-optimizer diff-manifests out/<first-run-id>/manifest.json out/<second-run-id>/manifest.json
+```
+
+Expected: `no differences`. Every dataset hash, rule source hash, problem-spec hash, objective value,
+and orders hash matched. If anything had drifted, the output would name the portfolio and the first
+stage at which it diverged.
+
+## 7. Re-verify a solution without the solver
+
+```bash
+uv run --env-file .env portfolio-optimizer verify --manifest out/<first-run-id>/manifest.json --portfolio P1
+```
+
+This reloads the persisted problem, solution, and chain state and recomputes every constraint and the
+objective in plain numpy — cvxpy is never imported. Expected: a list of `ok` lines and
+`VERIFIED P1`. Notice that the recomputed objective equals the solver's to nine digits.
+
+## What you accomplished
+
+You ran the engine end to end, saw a cross-portfolio constraint change a second portfolio's answer,
+confirmed two runs are byte-for-byte equivalent where it matters, and audited a solution independently.
+
+Next: [How to add a rule](how-to-add-a-rule.md) shows how to put your own business logic into that pipeline.
