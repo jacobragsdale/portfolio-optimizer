@@ -2,8 +2,7 @@
 
 The schema is derived from the Pydantic models, so it cannot disagree with what the engine accepts,
 and then tightened with what the models alone cannot say: a separate definition per kind of step
-with the parameter schema of every shipped function, the required dataset names, and the execution
-rule that `parallel` needs a process executor. The checked-in ``configs/run-config.schema.json`` is
+with the parameter schema of every shipped function and the required dataset names. The checked-in ``configs/run-config.schema.json`` is
 this function's output; a test fails when the two drift apart.
 """
 
@@ -29,7 +28,6 @@ type JsonObject = dict[str, object]
 
 _ENUM_DESCRIPTIONS: Mapping[str, str] = {
     "ExecutionMode": "Where build and solve happen; see `execution.mode`.",
-    "ExecutorKind": "Worker pool type: spawned processes or threads.",
     "JoinCardinality": "Expected key cardinality of a join, enforced by pandas.",
     "JoinHow": "Join type: keep every left row, or only matched rows.",
     "OnError": "What happens after a portfolio fails.",
@@ -77,7 +75,6 @@ def run_config_schema() -> JsonObject:
     objective_properties["terms"] = _with_items(objective_properties["terms"], "TermStep")
     objective["properties"] = objective_properties
     defs["ObjectiveConfig"] = objective
-    defs["ExecutionConfig"] = _execution_schema(_object(defs["ExecutionConfig"]))
     return {
         "$schema": SCHEMA_DIALECT,
         "$id": SCHEMA_ID,
@@ -197,14 +194,6 @@ def _portfolios_schema(property_schema: object) -> JsonObject:
     schema.pop("$ref", None)
     schema.pop("allOf", None)
     return {**schema, "anyOf": [{"$ref": "#/$defs/LoaderStep"}, {"$ref": "#/$defs/DatasetConfig"}], "$comment": 'A bare step is shorthand for {"loader": step}.'}
-
-
-def _execution_schema(execution: JsonObject) -> JsonObject:
-    return {
-        **execution,
-        "if": {"properties": {"mode": {"const": "parallel"}}, "required": ["mode"]},
-        "then": {"properties": {"executor": {"const": "process"}}, "$comment": "cvxpy solves are not thread-safe"},
-    }
 
 
 def _with_ref(property_schema: object, definition: str) -> JsonObject:

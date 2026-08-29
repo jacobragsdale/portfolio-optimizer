@@ -7,9 +7,9 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from portfolio_optimizer.domain.data import PortfolioDataError, details_from_frame, style_constraints_from_mapping
+from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError, details_from_frame, style_constraints_from_mapping
 from portfolio_optimizer.domain.types import PortfolioId
-from tests.conftest import Factories, Frames
+from tests.conftest import AS_OF, Factories, Frames
 
 
 def test_canonical_bundle_is_valid(make: Factories) -> None:
@@ -96,6 +96,17 @@ def test_with_changes_revalidates_and_records_the_rule(make: Factories, frames: 
     with pytest.raises(PortfolioDataError):
         data.with_changes(holdings=frames.holdings({"portfolio_id": "P2"}))
     assert data.with_changes(extras={"tags": frames.universe()[["security_id"]]}).extras.keys() == {"tags"}
+
+
+def test_prevalidated_frames_are_trusted_until_a_rule_replaces_them(make: Factories, frames: Frames) -> None:
+    invalid = frames.universe({"price": Decimal(0)})  # fails the universe schema; the bundle would normally refuse it
+    trusted = PortfolioData(details=make.details(), holdings=frames.holdings(), universe=invalid, targets=frames.targets(), style=make.style(), as_of=AS_OF, prevalidated=frozenset({"universe"}))
+    assert trusted.universe is invalid
+    assert trusted.with_changes(style=make.style()).prevalidated == frozenset({"universe"})  # untouched frames keep their standing
+    with pytest.raises(PortfolioDataError, match="universe: column 'price'"):
+        trusted.with_changes(universe=invalid)  # a replaced frame is validated even when it is the same object
+    with pytest.raises(PortfolioDataError, match="prevalidated names unknown frames \\['details'\\]"):
+        make.portfolio_data(prevalidated=frozenset({"details"}))
 
 
 def test_details_from_frame_types_the_matching_row(frames: Frames) -> None:

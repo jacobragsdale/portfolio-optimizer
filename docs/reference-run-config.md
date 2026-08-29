@@ -24,7 +24,8 @@ Ways to validate a config:
 
 The schema cannot express two rules the models enforce: `as_of` must carry a time zone, and chain-aware
 steps (those declaring `ctx`/`chain`) are only allowed under the sequential modes with `fail_fast`.
-`validate-config` reports both.
+`validate-config` reports both. A third rule crosses into settings — `execution.mode: parallel` needs an
+executor that can solve (`process` or `dask`, not `thread`) — and `run` reports it before loading.
 
 ## Top level
 
@@ -41,7 +42,7 @@ steps (those declaring `ctx`/`chain`) are only allowed under the sequential mode
 | `solver` | object | no | `name` (default `CLARABEL`; must be installed in cvxpy), `options` (map of solver options passed verbatim to `Problem.solve`, default `{}`), `time_limit_s` (number > 0 or absent; mapped to `time_limit` for `CLARABEL`, `OSQP`, and `HIGHS` and to `time_limit_secs` for `SCS`; any other solver rejects it), `verbose` (default `false`). |
 | `post_solve` | object | no | `violation_tol` (default `1e-6`), `objective_rel_tol` (`1e-5`), `objective_abs_tol` (`1e-9`); all > 0. |
 | `sink` | step | yes | Where orders go. |
-| `execution` | object | yes | See below. |
+| `execution` | object | yes | See below. Where the work runs and how many workers are settings, not config. |
 
 ## Step references
 
@@ -147,19 +148,18 @@ Unmatched rows of a Decimal (`object`) column are `None`.
 | Key | Type | Required | Description |
 |---|---|---|---|
 | `mode` | `sequential` \| `parallel_build_sequential_solve` \| `parallel` | yes | See table. |
-| `executor` | `process` \| `thread` | no | Default `process`. `parallel` requires `process`. |
-| `max_workers` | integer ≥ 1 | no | Default `1`. |
 | `on_error` | `fail_fast` \| `continue` | no | Default `fail_fast`. |
 
-| Mode | Rules and build | Solve | Chain-aware steps allowed |
+| Mode | Slice, rules, and build | Solve | Chain-aware steps allowed |
 |---|---|---|---|
 | `sequential` | main process, solve order, live context | main process | rules (`ctx`), terms and constraints (`chain`) |
-| `parallel_build_sequential_solve` | executor, no context | main process, solve order | terms and constraints (`chain`) only |
-| `parallel` | executor, whole pipeline per portfolio | in the worker | none |
+| `parallel_build_sequential_solve` | workers, no context | main process, solve order, as each build arrives | terms and constraints (`chain`) only |
+| `parallel` | workers, whole pipeline per portfolio | in the worker | none |
 
 Config-load errors: a chain-aware step under `parallel`; a `ctx` rule under
-`parallel_build_sequential_solve`; `executor: thread` with `parallel`; any chain-aware step with
-`on_error: continue`.
+`parallel_build_sequential_solve`; any chain-aware step with `on_error: continue`. Where the workers
+are — a process pool, threads, or a Dask cluster the run provisions — and how many, are the execution
+settings below; they are recorded in the manifest's `settings` block and never affect the config hash.
 
 ## Shipped steps
 
@@ -190,6 +190,20 @@ Per portfolio id, an object validated into `StyleConstraints`:
 
 ## Environment
 
-`PORTFOLIO_OPTIMIZER_OUTPUT_DIR`, `PORTFOLIO_OPTIMIZER_DATA_ROOT`, `PORTFOLIO_OPTIMIZER_LOG_LEVEL`
-(`DEBUG` \| `INFO` \| `WARNING` \| `ERROR`). All required; no defaults; an unknown
-`PORTFOLIO_OPTIMIZER_*` variable is an error. `run --data-root` and `run --output` override the first two.
+All required unless stated; no defaults; an unknown `PORTFOLIO_OPTIMIZER_*` variable is an error. `run
+--data-root`, `run --output`, and `run --max-workers` override the corresponding setting for one run.
+
+| Variable | Values | Description |
+|---|---|---|
+| `PORTFOLIO_OPTIMIZER_OUTPUT_DIR` | path | Where `<run_id>/` directories are written. |
+| `PORTFOLIO_OPTIMIZER_DATA_ROOT` | path | `request.data_root` for the shipped file loaders. |
+| `PORTFOLIO_OPTIMIZER_LOG_LEVEL` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` | |
+| `PORTFOLIO_OPTIMIZER_EXECUTOR` | `process` \| `thread` \| `dask` | Where per-portfolio tasks run: spawned interpreters, threads (cannot solve), or a Dask cluster the run owns. |
+| `PORTFOLIO_OPTIMIZER_MAX_WORKERS` | integer ≥ 1 | Pool size, or the cluster size after assembly. The run keeps twice this many tasks outstanding. |
+| `PORTFOLIO_OPTIMIZER_CLUSTER` | `local` \| `kubernetes` \| `auto` \| `tcp://host:port` | `dask` only, required. `auto` becomes `kubernetes` when `KUBERNETES_SERVICE_HOST` is set and `local` otherwise; the manifest records the resolved value. |
+| `PORTFOLIO_OPTIMIZER_MIN_WORKERS` | integer ≥ 1, ≤ max | `dask` only, required. Workers provisioned before the load stage. |
+| `PORTFOLIO_OPTIMIZER_CLUSTER_TIMEOUT_S` | number > 0 | `dask` only, required. How long to wait, after assembly, for the first worker. |
+| `PORTFOLIO_OPTIMIZER_WORKER_IMAGE` | image reference | Required when the cluster resolves to `kubernetes`: the image worker pods run, normally this run's own. |
+| `PORTFOLIO_OPTIMIZER_IMAGE_DIGEST` | string | Optional; set by the platform. Part of every process's environment fingerprint and forwarded to worker pods. |
+
+The cluster variables are refused unless the executor is `dask`. See [how to run on a cluster](how-to-run-on-a-cluster.md).

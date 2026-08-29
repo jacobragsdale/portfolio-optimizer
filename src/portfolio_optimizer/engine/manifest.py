@@ -1,11 +1,8 @@
 """The run manifest: everything needed to reproduce a run and localize any drift between two runs."""
 
-import importlib.metadata
 import json
 import platform
-import subprocess
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -14,6 +11,7 @@ from pydantic import AwareDatetime, Field
 
 from portfolio_optimizer.domain.results import Artifact, AssemblyAuditRecord, ConstraintReport, DriftReport, PortfolioFailure, PortfolioResult, RuleAuditRecord, StepRef
 from portfolio_optimizer.domain.types import StrictModel
+from portfolio_optimizer.engine.environment import WorkerEnvironment, distribution_version
 from portfolio_optimizer.engine.hashing import frame_sha256, json_sha256
 from portfolio_optimizer.engine.load import DatasetAudit
 
@@ -21,22 +19,12 @@ MANIFEST_FILENAME = "manifest.json"
 STAGES: tuple[str, ...] = ("config", "datasets", "assembly", "rules", "spec", "solve", "orders")
 
 
-@dataclass(frozen=True, slots=True)
-class GitInfo:
-    """The code revision a run executed."""
+class WorkerRecord(StrictModel):
+    """One environment that executed tasks for the run, the hosts it ran on, and how many portfolios it handled."""
 
-    sha: str
-    dirty: bool
-
-
-def read_git_info(repo: Path) -> GitInfo:
-    """Ask git for the current revision; ``unknown`` when not in a repository."""
-    try:
-        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, timeout=10).stdout.strip()
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True, timeout=10).stdout
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        return GitInfo(sha="unknown", dirty=False)
-    return GitInfo(sha=sha, dirty=bool(status.strip()))
+    environment: WorkerEnvironment
+    hosts: tuple[str, ...]
+    portfolios: int
 
 
 class VersionInfo(StrictModel):
@@ -45,6 +33,9 @@ class VersionInfo(StrictModel):
     ``packages`` maps the distribution behind each step named outside the template modules to its
     installed version (``{"my-firm-quant": "1.4.2"}``); a module that no distribution claims is
     recorded under its own name as ``unknown``. Steps from the template modules are covered by ``git_sha``.
+    ``workers`` lists every distinct environment that executed a task — normally exactly one, equal to
+    the run's own — with the hosts it ran on; a worker whose fingerprint differed failed its portfolio
+    at stage ``worker`` and still appears here.
     """
 
     python: str
@@ -54,6 +45,26 @@ class VersionInfo(StrictModel):
     solver: str
     solver_version: str
     packages: dict[str, str] = Field(default_factory=dict)
+    workers: tuple[WorkerRecord, ...] = ()
+
+
+class ClusterRecord(StrictModel):
+    """The backend's lifetime: what the run asked for, when it answered, and when it was released.
+
+    ``provision_started_at`` is before the load stage and ``first_worker_ready_at`` after assembly, so
+    their difference is the start-up the load stage hid; ``workers_ready`` is how many workers had
+    joined when the first task could run.
+    """
+
+    executor: str
+    kind: str
+    min_workers: int
+    max_workers: int
+    workers_ready: int | None
+    scheduler_address: str | None
+    provision_started_at: AwareDatetime | None
+    first_worker_ready_at: AwareDatetime | None
+    closed_at: AwareDatetime | None
 
 
 class ConfigInfo(StrictModel):
@@ -181,6 +192,7 @@ class RunManifest(StrictModel):
     git_sha: str
     git_dirty: bool
     execution_mode: str
+    cluster: ClusterRecord | None = None
     versions: VersionInfo
     config: ConfigInfo
     settings: dict[str, str]
@@ -194,40 +206,18 @@ class RunManifest(StrictModel):
     manifest_sha256: str = Field(default="")
 
 
-def versions(solver: str, solver_version: str, packages: Mapping[str, str]) -> VersionInfo:
+def versions(solver: str, solver_version: str, packages: Mapping[str, str], workers: Sequence[WorkerRecord] = ()) -> VersionInfo:
     """Collect the versions that matter for reproducibility."""
     return VersionInfo(
-        python=platform.python_version(), cvxpy=_version("cvxpy"), numpy=_version("numpy"), pandas=_version("pandas"), solver=solver, solver_version=solver_version, packages=dict(packages)
+        python=platform.python_version(),
+        cvxpy=distribution_version("cvxpy"),
+        numpy=distribution_version("numpy"),
+        pandas=distribution_version("pandas"),
+        solver=solver,
+        solver_version=solver_version,
+        packages=dict(packages),
+        workers=tuple(workers),
     )
-
-
-def package_versions(module_names: Iterable[str]) -> dict[str, str]:
-    """The installed version of the distribution behind each module, keyed by distribution name.
-
-    A module's top-level package is looked up among the installed distributions; an editable install
-    that the metadata does not index is found by name when the distribution is named after the package.
-    A module no distribution claims is recorded under its own top-level name as ``unknown``.
-    """
-    claimed = importlib.metadata.packages_distributions()
-    found: dict[str, str] = {}
-    for top_level in sorted({name.partition(".")[0] for name in module_names}):
-        distributions = claimed.get(top_level)
-        if distributions is None:
-            try:
-                distributions = [str(importlib.metadata.distribution(top_level).metadata["Name"])]
-            except importlib.metadata.PackageNotFoundError:
-                found[top_level] = "unknown"
-                continue
-        for distribution in distributions:
-            found[distribution] = _version(distribution)
-    return found
-
-
-def _version(package: str) -> str:
-    try:
-        return importlib.metadata.version(package)
-    except importlib.metadata.PackageNotFoundError:
-        return "unknown"
 
 
 def step_records(refs: Sequence[StepRef]) -> tuple[StepRecord, ...]:
@@ -357,7 +347,7 @@ def diff_manifests(left: RunManifest, right: RunManifest) -> list[str]:
         lines.append("config: resolved config differs")
     if left.git_sha != right.git_sha:
         lines.append(f"code: git sha {left.git_sha[:12]} vs {right.git_sha[:12]}")
-    if left.versions != right.versions:
+    if _versions_identity(left) != _versions_identity(right):
         lines.append("versions: library, solver, or step-package versions differ")
     left_datasets = {d.name: d.content_sha256 for d in left.datasets}
     right_datasets = {d.name: d.content_sha256 for d in right.datasets}
@@ -375,6 +365,12 @@ def diff_manifests(left: RunManifest, right: RunManifest) -> list[str]:
             lines.append(f"{portfolio.portfolio_id}: first divergence at {stage}")
     lines.extend(f"{portfolio_id}: missing from the first manifest" for portfolio_id in sorted(set(right_portfolios) - {p.portfolio_id for p in left.portfolios}))
     return lines
+
+
+def _versions_identity(manifest: RunManifest) -> tuple[dict[str, object], frozenset[WorkerEnvironment]]:
+    """Versions compare on what determines results: the libraries and every worker environment, not the hosts that happened to run them."""
+    libraries: dict[str, object] = {str(key): value for key, value in manifest.versions.model_dump(exclude={"workers"}).items()}
+    return (libraries, frozenset(worker.environment for worker in manifest.versions.workers))
 
 
 def _assembly_identity(manifest: RunManifest) -> list[tuple[str, str, str, dict[str, int], dict[str, tuple[str, ...]]]]:

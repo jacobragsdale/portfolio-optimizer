@@ -55,7 +55,7 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 | Path | Role |
 |---|---|
 | `src/portfolio_optimizer/{loaders,assembly,rules,terms,sinks}.py` | **Yours to edit.** Each ships worked, tested examples. Shared steps live in your own installed package instead and are named `package.module:function`. |
-| `src/portfolio_optimizer/engine/` | Loading and assembly, the rule pipeline, build, solve, cvxpy-free verification, orders, scheduling, manifest. Rarely edited. |
+| `src/portfolio_optimizer/engine/` | Loading and assembly, the rule pipeline, build, solve, cvxpy-free verification, orders, the per-portfolio tasks, the backend seam (process pool, threads, a Dask cluster the run owns), scheduling, manifest. Rarely edited. |
 | `src/portfolio_optimizer/domain/` | Frame schemas, the per-portfolio data bundle and its optimizer frame, the pure-data problem spec and results. |
 | `src/portfolio_optimizer/config/` | The run-config models and the step resolver. |
 | `src/portfolio_optimizer/cvx/adapter.py` | The only module that imports cvxpy. |
@@ -70,6 +70,7 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 - [How to add a loader or a sink](docs/how-to-add-a-loader-or-sink.md)
 - [How to add security analytics columns to holdings and the universe](docs/how-to-add-security-analytics.md)
 - [How to add an objective term or a constraint](docs/how-to-add-a-term.md)
+- [How to run on a cluster](docs/how-to-run-on-a-cluster.md)
 - [Reference: the run config](docs/reference-run-config.md)
 - [Reference: the per-portfolio bundle and the optimizer frame](docs/reference-portfolio-data.md)
 - [Reference: outputs, the manifest, and the CLI](docs/reference-manifest.md)
@@ -83,6 +84,11 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 uv sync --locked
 uv run pre-commit run --all-files   # ruff format, ruff check --fix, ty, uv lock, prettier for JSON
 uv run pytest                       # unit, property, and smoke tests; warnings are errors
+uv run pytest -m integration        # the run-owned Dask cluster, on a LocalCluster
 ```
+
+Where per-portfolio work runs is a setting, not config: `PORTFOLIO_OPTIMIZER_EXECUTOR=process` needs
+nothing beyond the locked environment; `dask` needs the `dask` extra (`uv sync --locked --extra dask`)
+and, on Kubernetes, the `kubernetes` extra and the Dask operator.
 
 Python 3.12 or newer. Dependencies are locked in `uv.lock`; solver versions are recorded in every manifest.

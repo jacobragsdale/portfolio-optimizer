@@ -83,10 +83,10 @@ def test_engine_frames_may_come_from_assembly_steps_but_constraints_must_be_load
         load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": ["my_pkg.assembly:everything"]}))
 
 
-def test_parallel_mode_cannot_use_threads(example_dict: dict[str, object]) -> None:
-    execution = {"mode": "parallel", "executor": "thread", "max_workers": 2}
-    with pytest.raises(ValidationError, match="not thread-safe"):
-        load_run_config(json.dumps(example_dict | {"execution": execution}))
+@pytest.mark.parametrize("mechanic", [{"executor": "thread"}, {"max_workers": 2}])
+def test_execution_mechanics_are_settings_not_config(example_dict: dict[str, object], mechanic: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        load_run_config(json.dumps(example_dict | {"execution": section(example_dict, "execution") | mechanic}))
 
 
 def test_naive_as_of_is_rejected(example_dict: dict[str, object]) -> None:
@@ -95,9 +95,9 @@ def test_naive_as_of_is_rejected(example_dict: dict[str, object]) -> None:
         load_run_config(json.dumps(example_dict | {"run": run}))
 
 
-@pytest.mark.parametrize(("field", "value"), [("max_workers", 0), ("time_limit_s", 0), ("violation_tol", 0)])
+@pytest.mark.parametrize(("field", "value"), [("time_limit_s", 0), ("violation_tol", 0)])
 def test_numeric_limits_just_past_their_bounds_are_rejected(example_dict: dict[str, object], field: str, value: int) -> None:
-    key = "execution" if field == "max_workers" else "solver" if field == "time_limit_s" else "post_solve"
+    key = "solver" if field == "time_limit_s" else "post_solve"
     patched = section(example_dict, key) | {field: value}
     with pytest.raises(ValidationError):
         load_run_config(json.dumps(example_dict | {key: patched}))
@@ -126,7 +126,7 @@ def test_defaults_fill_optional_sections() -> None:
     }
     config = RunConfig.model_validate_json(json.dumps(minimal))
     assert config.solver.name == "CLARABEL"
-    assert config.execution.executor == "process"
+    assert config.execution.on_error == "fail_fast"
     assert config.assembly == ()
     assert config.rules == ()
 

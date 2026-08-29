@@ -300,6 +300,15 @@ def _columns_added(before: Frames, after: Frames) -> dict[str, tuple[str, ...]]:
     return added
 
 
+PREVALIDATED_AT_SLICE: frozenset[str] = frozenset({"holdings", "universe", "targets"})
+"""Frames the bundle need not re-validate when sliced from assembled datasets.
+
+:func:`assemble` validated all three against their schemas. The universe is passed whole; the
+holdings and targets slices are row subsets, and a row subset keeps every per-column check, the
+key's uniqueness, and — because targets are sliced by whole benchmark — the sum-to-one invariant.
+"""
+
+
 def slice_portfolio(assembled: AssembledDatasets, portfolio_id: PortfolioId) -> PortfolioData:
     """Build the validated per-portfolio bundle: its own holdings, constraints, and extras rows; its benchmark's targets; the whole universe."""
     details = details_from_frame(assembled.details, portfolio_id)
@@ -314,6 +323,7 @@ def slice_portfolio(assembled: AssembledDatasets, portfolio_id: PortfolioId) -> 
         style=style_constraints_from_mapping(assembled.constraints[portfolio_id]),
         as_of=assembled.as_of,
         extras=extras,
+        prevalidated=PREVALIDATED_AT_SLICE,
     )
 
 

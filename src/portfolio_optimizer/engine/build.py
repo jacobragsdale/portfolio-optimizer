@@ -7,7 +7,7 @@ combine it with a ``ChainState`` at solve time.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import numpy as np
@@ -33,6 +33,13 @@ class BuildOutput:
 
     spec: ProblemSpec
     order_inputs: OrderInputs
+
+
+@dataclass(frozen=True, slots=True)
+class _Position:
+    quantity: int
+    avg_cost: Decimal
+    acquired_on: datetime
 
 
 def to_float64(values: Sequence[Decimal | int], name: str) -> F64:
@@ -63,13 +70,13 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
     n = len(ids)
     nav = data.details.nav
     price = [_decimal(value) for value in universe["price"]]
-    held = data.holdings.set_index("security_id")
-    shares_held = [_int(held.loc[security, "quantity"]) if security in held.index else 0 for security in ids]
+    positions = _positions(data.holdings)
+    shares_held = [positions[security].quantity if security in positions else 0 for security in ids]
     lot_size = [int(value) for value in universe["lot_size"]]
     w0 = [Decimal(shares) * px / nav for shares, px in zip(shares_held, price, strict=True)]
     targets = {str(security): _decimal(weight) for security, weight in zip(data.targets["security_id"], data.targets["weight"], strict=True)}
     w_target = [targets.get(security, Decimal(0)) for security in ids]
-    tax = [_tax_per_dollar(data, security, px) for security, px in zip(ids, price, strict=True)]
+    tax = [_tax_per_dollar(data, positions.get(security), px) for security, px in zip(ids, price, strict=True)]
     tcost = [_decimal(value) / BPS for value in universe["tcost_bps"]] if "tcost_bps" in universe.columns else [Decimal(0)] * n
     lb, ub = _bounds(data, universe, ids, w0)
     sector_names = tuple(sorted({str(value) for value in universe["sector"]}))
@@ -125,15 +132,33 @@ def _decimal(value: object) -> Decimal:
     raise BuildError(msg)
 
 
-def _tax_per_dollar(data: PortfolioData, security: str, price: Decimal) -> Decimal:
+def _datetime(value: object) -> datetime:
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    if isinstance(value, datetime):
+        return value
+    msg = f"expected a timestamp, got {type(value).__name__}"
+    raise BuildError(msg)
+
+
+def _positions(holdings: pd.DataFrame) -> dict[str, _Position]:
+    """Every held name by id, read from the frame once.
+
+    The build asks for each universe security in turn, so a per-security scan of the holdings
+    frame would cost universe times holdings per portfolio; this dict makes each lookup constant.
+    """
+    return {
+        str(security): _Position(quantity=_int(quantity), avg_cost=_decimal(cost), acquired_on=_datetime(acquired))
+        for security, quantity, cost, acquired in zip(holdings["security_id"], holdings["quantity"], holdings["avg_cost"], holdings["acquired_on"], strict=True)
+    }
+
+
+def _tax_per_dollar(data: PortfolioData, position: _Position | None, price: Decimal) -> Decimal:
     """Signed tax owed per dollar sold: gain fraction times the rate for the holding period. Losses are negative."""
-    rows = data.holdings[data.holdings["security_id"] == security]
-    if len(rows) == 0:
+    if position is None:
         return Decimal(0)
-    avg_cost = _decimal(rows["avg_cost"].iloc[0])
-    acquired = rows["acquired_on"].iloc[0].to_pydatetime()
-    rate = data.details.lt_tax_rate if data.as_of - acquired > LONG_TERM_HOLDING else data.details.st_tax_rate
-    return (price - avg_cost) / price * rate
+    rate = data.details.lt_tax_rate if data.as_of - position.acquired_on > LONG_TERM_HOLDING else data.details.st_tax_rate
+    return (price - position.avg_cost) / price * rate
 
 
 def _bounds(data: PortfolioData, universe: pd.DataFrame, ids: tuple[str, ...], w0: list[Decimal]) -> tuple[list[Decimal], list[Decimal]]:

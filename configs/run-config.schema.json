@@ -649,33 +649,11 @@
     },
     "ExecutionConfig": {
       "additionalProperties": false,
-      "description": "How portfolios are scheduled across the build and solve phases.",
-      "if": {
-        "properties": {
-          "mode": {
-            "const": "parallel"
-          }
-        },
-        "required": [
-          "mode"
-        ]
-      },
+      "description": "How portfolios are scheduled across the build and solve phases, and what a failure means.\n\nWhere the work runs — a process pool, threads, or a Dask cluster — and how many workers are\nsettings (`PORTFOLIO_OPTIMIZER_EXECUTOR`, `PORTFOLIO_OPTIMIZER_MAX_WORKERS`, ...), not config, so the\nsame config hashes the same on a laptop and on a cluster. Results are consumed in solve order\nwhatever the executor, so neither changes the output.",
       "properties": {
-        "executor": {
-          "$ref": "#/$defs/ExecutorKind",
-          "default": "process",
-          "description": "`process` (spawned workers; required for `parallel` because cvxpy solves are not thread-safe) or `thread` (for I/O-bound builds)."
-        },
-        "max_workers": {
-          "default": 1,
-          "description": "Worker count. Results are consumed in solve order, so this never changes the output.",
-          "minimum": 1,
-          "title": "Max Workers",
-          "type": "integer"
-        },
         "mode": {
           "$ref": "#/$defs/ExecutionMode",
-          "description": "`sequential`: build and solve one after another with a live chain context. `parallel_build_sequential_solve`: build in workers, solve in order (constraints may use `chain`, rules may not use `ctx`). `parallel`: everything in workers; no chain-aware steps allowed."
+          "description": "`sequential`: build and solve one after another with a live chain context. `parallel_build_sequential_solve`: build in workers, solve in order (constraints may use `chain`, rules may not use `ctx`). `parallel`: everything in workers; no chain-aware steps allowed, and the executor must be able to solve (`process` or `dask`, not `thread`)."
         },
         "on_error": {
           "$ref": "#/$defs/OnError",
@@ -686,14 +664,6 @@
       "required": [
         "mode"
       ],
-      "then": {
-        "$comment": "cvxpy solves are not thread-safe",
-        "properties": {
-          "executor": {
-            "const": "process"
-          }
-        }
-      },
       "title": "ExecutionConfig",
       "type": "object"
     },
@@ -703,14 +673,6 @@
         "sequential",
         "parallel_build_sequential_solve",
         "parallel"
-      ],
-      "type": "string"
-    },
-    "ExecutorKind": {
-      "description": "Worker pool type: spawned processes or threads.",
-      "enum": [
-        "process",
-        "thread"
       ],
       "type": "string"
     },

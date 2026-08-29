@@ -5,6 +5,7 @@ import os
 import sys
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
@@ -17,9 +18,11 @@ from portfolio_optimizer.config.schema import run_config_schema, schema_json
 from portfolio_optimizer.domain.data import IoContext
 from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec, Solution, StepRef, Tolerances
 from portfolio_optimizer.domain.types import Clock, IdFactory
+from portfolio_optimizer.engine.backends import ExecutionSettingsError, check_execution
 from portfolio_optimizer.engine.check import verify
+from portfolio_optimizer.engine.environment import read_git_info
 from portfolio_optimizer.engine.logging import configure_logging
-from portfolio_optimizer.engine.manifest import diff_manifests, load_manifest, read_git_info
+from portfolio_optimizer.engine.manifest import diff_manifests, load_manifest
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_INPUT_REJECTED, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, run
 from portfolio_optimizer.settings import SettingsError, load_settings
 
@@ -72,6 +75,7 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument("config", type=Path)
     run_parser.add_argument("--data-root", type=Path, default=None, help="override PORTFOLIO_OPTIMIZER_DATA_ROOT")
     run_parser.add_argument("--output", type=Path, default=None, help="override PORTFOLIO_OPTIMIZER_OUTPUT_DIR")
+    run_parser.add_argument("--max-workers", type=int, default=None, help="override PORTFOLIO_OPTIMIZER_MAX_WORKERS")
     validate = commands.add_parser("validate-config", help="validate and resolve a config without loading data")
     validate.add_argument("config", type=Path)
     verify_parser = commands.add_parser("verify", help="re-verify a persisted solution without cvxpy")
@@ -103,10 +107,21 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, ids:
         return EXIT_INPUT_REJECTED
     data_root = Path(args.data_root) if args.data_root is not None else settings.data_root
     output_dir = Path(args.output) if args.output is not None else settings.output_dir
-    io = IoContext(data_root=data_root, output_dir=output_dir, run_id=ids.new_run_id(), clock=clock)
-    shown_settings = {"data_root": str(data_root), "output_dir": str(output_dir), "log_level": settings.log_level}
+    execution = settings.execution()
+    if args.max_workers is not None:
+        if int(args.max_workers) < 1:
+            stderr.write("--max-workers must be at least 1\n")
+            return EXIT_INPUT_REJECTED
+        execution = replace(execution, max_workers=int(args.max_workers))
     try:
-        report = run(resolved, io, git=read_git_info(Path.cwd()), config_path=str(config_path), settings=shown_settings)
+        check_execution(config, execution)
+    except ExecutionSettingsError as error:
+        stderr.write(f"config rejected: {error}\n")
+        return EXIT_INPUT_REJECTED
+    io = IoContext(data_root=data_root, output_dir=output_dir, run_id=ids.new_run_id(), clock=clock)
+    shown_settings = settings.shown() | {"data_root": str(data_root), "output_dir": str(output_dir), "max_workers": str(execution.max_workers)}
+    try:
+        report = run(resolved, io, execution=execution, git=read_git_info(Path.cwd()), config_path=str(config_path), settings=shown_settings)
     except InputRejectedError as error:
         stderr.write(f"{error}\n")
         return EXIT_INPUT_REJECTED

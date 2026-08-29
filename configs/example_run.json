@@ -27,5 +27,5 @@
   "solver": {"name": "CLARABEL", "options": {"max_iter": 200}, "time_limit_s": 60.0, "verbose": false},
   "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9},
   "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},
-  "execution": {"mode": "parallel_build_sequential_solve", "executor": "process", "max_workers": 2, "on_error": "fail_fast"}
+  "execution": {"mode": "parallel_build_sequential_solve", "on_error": "fail_fast"}
 }

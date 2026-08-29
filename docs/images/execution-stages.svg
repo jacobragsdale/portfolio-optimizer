@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 380" role="img" aria-label="Two lanes. The run's main process: resolve config, start the backend without blocking, load, assemble, wait for the first worker, share the run data once, keep a window of tasks outstanding and consume results in solve order, run the solve chain in parallel-build-sequential-solve mode, close the backend, then persist, publish, and write the manifest. The workers: warm up, receive the shared data once, then per task slice, apply rules, build, and in parallel mode solve, verify, and round to orders. The solve chain and the final persist stage are outlined as serial.">
+  <style>
+    svg { color: #1a211f; font-family: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+    .accent { stroke: #1f6f78; }
+    .accent-text { fill: #1f6f78; }
+    .hot { stroke: #b8432f; }
+    @media (prefers-color-scheme: dark) {
+      svg { color: #e6ebe9; }
+      .accent { stroke: #63bcc4; }
+      .accent-text { fill: #63bcc4; }
+      .hot { stroke: #e8785f; }
+    }
+    .box { fill: none; stroke: currentColor; stroke-width: 1.2; }
+    .lane { fill: none; stroke: currentColor; stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.5; }
+    .label { fill: currentColor; text-anchor: middle; }
+    .note { fill: currentColor; font-size: 10.5px; opacity: 0.75; text-anchor: middle; }
+    .free { fill: currentColor; font-size: 11px; }
+    .dim { fill: currentColor; font-size: 11px; opacity: 0.75; }
+    .arrow { fill: none; stroke: currentColor; stroke-width: 1; marker-end: url(#arrow); }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <rect class="lane" x="16" y="18" width="1068" height="150" rx="4"/>
+  <text class="dim" x="28" y="38">main process — one per run; loaders on an asyncio loop, everything else one thread</text>
+  <rect class="lane" x="16" y="206" width="1068" height="150" rx="4"/>
+  <text class="dim" x="28" y="226">workers — spawned interpreters, threads, or the run's own Dask cluster; the same task functions whichever it is</text>
+
+  <!-- main lane, y=72 h=44 -->
+  <rect class="box" x="28" y="72" width="70" height="44" rx="3"/>
+  <rect class="box accent" x="108" y="72" width="110" height="44" rx="3" stroke-width="1.8"/>
+  <rect class="box" x="228" y="72" width="70" height="44" rx="3"/>
+  <rect class="box" x="308" y="72" width="90" height="44" rx="3"/>
+  <rect class="box accent" x="408" y="72" width="90" height="44" rx="3" stroke-width="1.8"/>
+  <rect class="box accent" x="508" y="72" width="70" height="44" rx="3" stroke-width="1.8"/>
+  <rect class="box" x="588" y="72" width="170" height="44" rx="3"/>
+  <rect class="box hot" x="768" y="72" width="130" height="44" rx="3" stroke-width="2"/>
+  <rect class="box" x="908" y="72" width="60" height="44" rx="3"/>
+  <rect class="box hot" x="978" y="72" width="100" height="44" rx="3" stroke-width="2"/>
+  <text class="label" x="63" y="90">resolve</text><text class="note" x="63" y="106">config</text>
+  <text class="label" x="163" y="90">start backend</text><text class="note" x="163" y="106">non-blocking</text>
+  <text class="label" x="263" y="90">load</text><text class="note" x="263" y="106">async</text>
+  <text class="label" x="353" y="90">assemble</text><text class="note" x="353" y="106">once</text>
+  <text class="label" x="453" y="90">wait ≥ 1</text><text class="note" x="453" y="106">worker</text>
+  <text class="label" x="543" y="90">share</text><text class="note" x="543" y="106">once</text>
+  <text class="label" x="673" y="90">window of tasks</text><text class="note" x="673" y="106">consume in solve order</text>
+  <text class="label" x="833" y="90">solve chain</text><text class="note" x="833" y="106">pbss · live chain</text>
+  <text class="label" x="938" y="90">close</text><text class="note" x="938" y="106">finally</text>
+  <text class="label" x="1028" y="90">persist</text><text class="note" x="1028" y="106">sink · manifest</text>
+  <line class="arrow" x1="98" y1="94" x2="106" y2="94"/>
+  <line class="arrow" x1="218" y1="94" x2="226" y2="94"/>
+  <line class="arrow" x1="298" y1="94" x2="306" y2="94"/>
+  <line class="arrow" x1="398" y1="94" x2="406" y2="94"/>
+  <line class="arrow" x1="498" y1="94" x2="506" y2="94"/>
+  <line class="arrow" x1="578" y1="94" x2="586" y2="94"/>
+  <line class="arrow" x1="758" y1="94" x2="766" y2="94"/>
+  <line class="arrow" x1="898" y1="94" x2="906" y2="94"/>
+  <line class="arrow" x1="968" y1="94" x2="976" y2="94"/>
+
+  <!-- worker lane, y=262 h=44 -->
+  <rect class="box" x="108" y="262" width="160" height="44" rx="3" stroke-dasharray="5 3"/>
+  <rect class="box accent" x="508" y="262" width="70" height="44" rx="3" stroke-width="1.8"/>
+  <rect class="box" x="588" y="262" width="60" height="44" rx="3"/>
+  <rect class="box" x="658" y="262" width="60" height="44" rx="3"/>
+  <rect class="box" x="728" y="262" width="60" height="44" rx="3"/>
+  <rect class="box" x="798" y="262" width="280" height="44" rx="3" stroke-dasharray="5 3"/>
+  <text class="label" x="188" y="280">warm up</text><text class="note" x="188" y="296">import cvxpy under load</text>
+  <text class="label" x="543" y="280">keep</text><text class="note" x="543" y="296">shared data</text>
+  <text class="label" x="618" y="280">slice</text>
+  <text class="label" x="688" y="280">rules</text>
+  <text class="label" x="758" y="280">build</text>
+  <text class="label" x="938" y="280">solve · verify · orders</text><text class="note" x="938" y="296">parallel mode only, empty chain</text>
+  <line class="arrow" x1="648" y1="284" x2="656" y2="284"/>
+  <line class="arrow" x1="718" y1="284" x2="726" y2="284"/>
+  <line class="arrow" x1="788" y1="284" x2="796" y2="284"/>
+
+  <!-- cross-lane -->
+  <line class="arrow accent" x1="163" y1="116" x2="163" y2="260" stroke-width="1.6"/>
+  <line class="arrow accent" x1="543" y1="116" x2="543" y2="260" stroke-width="1.6"/>
+  <text class="free" x="534" y="150" text-anchor="end">shared run data: datasets + config</text>
+  <text class="dim" x="534" y="165" text-anchor="end">once per worker, never per task</text>
+  <line class="arrow" x1="612" y1="116" x2="612" y2="260"/>
+  <text class="free" x="620" y="150">task(portfolio_id)</text>
+  <text class="dim" x="620" y="165">2 × max_workers outstanding</text>
+  <line class="arrow" x1="750" y1="260" x2="750" y2="118"/>
+  <text class="free" x="758" y="225">result + environment fingerprint</text>
+  <text class="dim" x="758" y="240">a stale worker fails its portfolio</text>
+
+  <!-- legend -->
+  <rect class="box hot" x="28" y="332" width="14" height="10" rx="2" stroke-width="2"/>
+  <text class="dim" x="50" y="341">serial in the main process whatever the worker count</text>
+  <rect class="box accent" x="480" y="332" width="14" height="10" rx="2" stroke-width="1.8"/>
+  <text class="dim" x="502" y="341">the run's three interactions with the backend's lifetime</text>
+</svg>

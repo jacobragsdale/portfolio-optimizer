@@ -102,15 +102,43 @@ bound fails the portfolio.
 
 Portfolios in one run often depend on each other: the second portfolio to trade a thinly traded name
 should see how much of its daily volume the first already used. The engine models this as an immutable
-`SolveContext` that accumulates results in solve order and is projected, per solve, into a `ChainState`
-aligned to that portfolio's securities.
+`SolveContext` that accumulates results — and a running total of shares ordered per security — in solve
+order and is projected, per solve, into a `ChainState` aligned to that portfolio's securities.
 
 The three execution modes differ only in where build and solve happen. `sequential` gives rules and
 constraints the live context. `parallel_build_sequential_solve` builds every portfolio's spec in workers
-(rules cannot see the context there) and solves in order in the main process (constraints can). `parallel`
-runs everything in workers and therefore permits no chain-aware steps at all — the resolver rejects such a
-config rather than silently dropping the dependency. Whatever the mode, results are consumed in configured
-solve order, so the number of workers and the order in which they finish never affect the output.
+(rules cannot see the context there) and solves in order in the main process (constraints can), each
+build as it arrives. `parallel` runs everything in workers and therefore permits no chain-aware steps at
+all — the resolver rejects such a config rather than silently dropping the dependency. Whatever the mode,
+results are consumed in configured solve order, so the number of workers and the order in which they
+finish never affect the output.
+
+## Where the work runs is a setting, and the run owns its cluster
+
+A mode says which stages may depend on earlier portfolios; it says nothing about machines. Where the
+workers are — a pool of spawned interpreters, threads, or a Dask cluster — and how many, are settings,
+so the same config hashes identically on a laptop and on a cluster and `diff-manifests` never blames the
+wiring for where a run happened to execute. Every kind of worker sits behind one seam: the runner starts
+the backend before the load stage so its start-up hides under the slow part, waits for the first worker
+only after assembly, hands it the assembled datasets once, submits tasks that carry a portfolio id and
+nothing else, and closes it in a `finally`.
+
+![Where each stage runs](images/execution-stages.svg)
+
+The cluster is the run's own. It is provisioned when the config resolves — a `LocalCluster` on a
+laptop, a `DaskCluster` resource on Kubernetes running the run's own image — sized up after assembly,
+and deleted when the run ends. That is deliberate: a shared, long-lived cluster has to be operated,
+pushes fairness between runs onto the scheduler's priorities, and can only prove which code solved a
+portfolio through a fingerprint check. Per-run clusters use the run's image, let Kubernetes quotas
+arbitrate between runs, and cost start-up latency that the load stage mostly hides.
+
+![The run owns its cluster: provisioning overlaps the load stage](images/cluster-lifecycle.svg)
+
+The fingerprint is kept anyway, because it is cheap and it is what makes any shared machine safe: every
+task returns the environment of the process that ran it — interpreter, libraries, solver, the versions of
+the packages behind external steps, git revision, image digest — and a worker whose environment differs
+from the run's fails its portfolio at stage `worker` rather than answering. The manifest records the
+backend's lifetime and every environment that did work.
 
 ## Failure semantics
 

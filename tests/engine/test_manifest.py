@@ -7,19 +7,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from portfolio_optimizer.engine.manifest import (
-    ConfigInfo,
-    OrdersRecord,
-    PortfolioRecord,
-    RunManifest,
-    VersionInfo,
-    diff_manifests,
-    finalize,
-    load_manifest,
-    package_versions,
-    read_git_info,
-    write_manifest,
-)
+from portfolio_optimizer.engine.environment import WorkerEnvironment, package_versions, read_git_info
+from portfolio_optimizer.engine.manifest import ConfigInfo, OrdersRecord, PortfolioRecord, RunManifest, VersionInfo, WorkerRecord, diff_manifests, finalize, load_manifest, write_manifest
 from tests.conftest import AS_OF
 
 
@@ -99,6 +88,29 @@ def test_identical_manifests_do_not_differ() -> None:
 )
 def test_diff_names_the_first_divergence(overrides: dict[str, object], expected: str) -> None:
     assert expected in diff_manifests(manifest(), manifest(**overrides))
+
+
+def _worker(host: str, **overrides: object) -> WorkerRecord:
+    base: dict[str, object] = {
+        "python": "3.13",
+        "cvxpy": "1.9",
+        "numpy": "2.5",
+        "pandas": "3.0",
+        "solver": "CLARABEL",
+        "solver_version": "0.11",
+        "packages": (),
+        "git_sha": "abc",
+        "image_digest": None,
+    }
+    return WorkerRecord(environment=WorkerEnvironment.model_validate(base | overrides), hosts=(host,), portfolios=1)
+
+
+def test_worker_hosts_do_not_differ_but_worker_environments_do() -> None:
+    left = manifest(versions=manifest().versions.model_copy(update={"workers": (_worker("laptop"),)}))
+    same_environment_elsewhere = manifest(versions=manifest().versions.model_copy(update={"workers": (_worker("pod-1"), _worker("pod-2"))}))
+    stale_worker = manifest(versions=manifest().versions.model_copy(update={"workers": (_worker("pod-1"), _worker("pod-2", git_sha="old"))}))
+    assert diff_manifests(left, same_environment_elsewhere) == []
+    assert "versions: library, solver, or step-package versions differ" in diff_manifests(left, stale_worker)
 
 
 def test_package_versions_name_the_distribution_behind_each_external_module() -> None:

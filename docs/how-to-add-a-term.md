@@ -47,6 +47,16 @@ is not convex is rejected when the problem is built, before the solver runs.
 Read numbers from `spec` or from `params`; never from a file or a global. The spec is hashed into the
 manifest, so anything the term used is recorded.
 
+One modeling rule the engine relies on: **a term must never reward selling** — a negative cost per unit
+of `x.sell` that no other term outweighs. After a solve the engine replaces the solver's buy/sell split
+with the canonical one (`buy = max(w − w0, 0)`, `sell = max(w0 − w, 0)`) and the verifier recomputes
+the objective on that split. With a term that pays for a round trip, the solver sells and rebuys the
+same name, the canonical split removes the round trip, and the recomputed objective no longer matches
+the solver's: the portfolio fails verification. The shipped `tax_cost` refuses to run with a loss-harvest
+incentive and no transaction cost for exactly this reason, and a realistic transaction cost is rarely
+enough. If the model needs a harvest reward, price the round trip explicitly with a constraint or a
+term the verifier can mirror.
+
 ## 2. Name it in the config
 
 ```json

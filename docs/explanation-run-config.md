@@ -358,13 +358,15 @@ so the run's evidence survives a failed handoff.
 ## `execution`
 
 ```json
-"execution": {
-  "mode": "parallel_build_sequential_solve", "executor": "process", "max_workers": 2, "on_error": "fail_fast"
-}
+"execution": {"mode": "parallel_build_sequential_solve", "on_error": "fail_fast"}
 ```
 
-This block answers two questions: where does each portfolio's work run, and what happens when one
-fails.
+This block answers two questions: which stages of each portfolio's work may depend on earlier
+portfolios, and what happens when one fails. It deliberately does *not* say where the work runs or how
+many workers there are — those are settings (`PORTFOLIO_OPTIMIZER_EXECUTOR`,
+`PORTFOLIO_OPTIMIZER_MAX_WORKERS`, and the cluster variables), so a laptop run and a cluster run of
+one config hash identically and differ only in the manifest's `settings` block, where `diff-manifests`
+can name the difference.
 
 `mode` picks one of three schedules, and the choice is really about the *chain* — whether later
 portfolios may depend on earlier ones' results:
@@ -381,12 +383,14 @@ The resolver enforces these rules in the first pass by looking at which function
 `chain`, so a mismatch is a config error with the offending step named, not a runtime surprise. The
 mode you can use is therefore determined by the steps you list, not the other way round.
 
-`executor` and `max_workers` are about throughput and never about output: results are consumed in
+The executor and worker count are about throughput and never about output: results are consumed in
 solve order regardless of which worker finishes first, so two runs with different worker counts
-produce identical manifests. `process` workers are spawned fresh and re-resolve the config themselves
-(function objects are never pickled, only names). `thread` is allowed only where nothing is solved in
-the worker, because cvxpy solves are not thread-safe; the config model refuses `parallel` with
-`thread`.
+produce identical portfolio records. Workers — spawned interpreters, threads, or the pods of a Dask
+cluster the run provisions for itself — receive the assembled datasets and the config once and
+re-resolve step names themselves (function objects are never pickled, only names). `thread` is allowed
+only where nothing is solved in the worker, because cvxpy solves are not thread-safe; `run` refuses
+`parallel` with it before loading anything. [How to run on a cluster](how-to-run-on-a-cluster.md) covers
+the settings.
 
 `on_error` decides what one failed portfolio does to the rest. `fail_fast` marks every portfolio after
 the first failure as `skipped`; `continue` isolates the failure and lets the rest proceed. The engine

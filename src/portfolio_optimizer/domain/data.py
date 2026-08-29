@@ -138,6 +138,10 @@ def details_from_frame(frame: pd.DataFrame, portfolio_id: PortfolioId) -> Portfo
     return PortfolioDetails.model_validate(record)
 
 
+_SCHEMA_FRAMES: tuple[str, ...] = ("holdings", "universe", "targets")
+"""The bundle's frames that have a schema, and the only names ``prevalidated`` may carry."""
+
+
 class PortfolioDataError(ValueError):
     """The per-portfolio bundle is internally inconsistent."""
 
@@ -159,7 +163,12 @@ class PortfolioData:
 
     Rules return a new instance via :meth:`with_changes`; every construction re-validates each frame
     against its schema and the cross-frame invariants, so a rule cannot hand the optimizer an
-    inconsistent bundle.
+    inconsistent bundle. The one exception is deliberate: ``prevalidated`` names frames the engine
+    already validated against the same schema before slicing (the shared universe, a row subset of
+    validated holdings or targets), and those are not checked again — a run over a thousand
+    portfolios would otherwise validate the same universe a thousand times per rule. Only the
+    engine sets it, and :meth:`with_changes` drops the name of any frame that is replaced, so a
+    rule's output is always validated.
     """
 
     details: PortfolioDetails
@@ -170,11 +179,17 @@ class PortfolioData:
     as_of: datetime
     extras: Mapping[str, pd.DataFrame] = field(default_factory=dict)
     applied_rules: tuple[str, ...] = field(default=())
+    prevalidated: frozenset[str] = field(default=frozenset())
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "extras", dict(self.extras))
         failures: list[str] = []
+        unknown = sorted(self.prevalidated - set(_SCHEMA_FRAMES))
+        if unknown:
+            failures.append(f"prevalidated names unknown frames {unknown}")
         for name, frame, schema in (("holdings", self.holdings, HOLDINGS), ("universe", self.universe, UNIVERSE), ("targets", self.targets, TARGETS)):
+            if name in self.prevalidated:
+                continue
             try:
                 validate_frame(frame, schema)
             except FrameSchemaError as error:
@@ -248,7 +263,11 @@ class PortfolioData:
         style: StyleConstraints | None = None,
         extras: Mapping[str, pd.DataFrame] | None = None,
     ) -> "PortfolioData":
-        """Return a re-validated copy with the given frames, style, or extras replaced."""
+        """Return a re-validated copy with the given frames, style, or extras replaced.
+
+        A replaced frame loses its ``prevalidated`` standing and is checked against its schema.
+        """
+        replaced = {name for name, frame in (("holdings", holdings), ("universe", universe), ("targets", targets)) if frame is not None}
         return replace(
             self,
             holdings=self.holdings if holdings is None else holdings,
@@ -256,6 +275,7 @@ class PortfolioData:
             targets=self.targets if targets is None else targets,
             style=self.style if style is None else style,
             extras=self.extras if extras is None else extras,
+            prevalidated=self.prevalidated - replaced,
         )
 
     def with_rule_applied(self, qualname: str) -> "PortfolioData":

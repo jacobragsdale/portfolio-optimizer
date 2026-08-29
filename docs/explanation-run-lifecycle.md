@@ -16,10 +16,16 @@ fails at the earliest stage that can detect it, with a message naming what is wr
 
 ## 1. Startup: nothing touches data yet
 
-**Settings** (`settings.py`) come from three environment variables: `PORTFOLIO_OPTIMIZER_DATA_ROOT`,
-`PORTFOLIO_OPTIMIZER_OUTPUT_DIR`, and `PORTFOLIO_OPTIMIZER_LOG_LEVEL`. There are no defaults, `.env`
-files are read only when you pass `--env-file`, and an *unknown* `PORTFOLIO_OPTIMIZER_*` variable is an
-error — a typo fails loudly instead of being ignored.
+**Settings** (`settings.py`) come from environment variables: where data is read from
+(`PORTFOLIO_OPTIMIZER_DATA_ROOT`), where runs are written (`PORTFOLIO_OPTIMIZER_OUTPUT_DIR`), how loudly
+to log, and — deliberately here rather than in the config — where per-portfolio work runs and how many
+workers there are (`PORTFOLIO_OPTIMIZER_EXECUTOR`, `PORTFOLIO_OPTIMIZER_MAX_WORKERS`, and, for a Dask
+cluster, which cluster, how many workers to provision up front, and how long to wait for the first).
+There are no defaults, `.env` files are read only when you pass `--env-file`, an *unknown*
+`PORTFOLIO_OPTIMIZER_*` variable is an error — a typo fails loudly instead of being ignored — and the
+cluster variables are refused unless the executor is `dask`. `PORTFOLIO_OPTIMIZER_CLUSTER=auto` is
+resolved right here, to `kubernetes` inside a pod and `local` anywhere else, so what the manifest
+records is what happened.
 
 **The config** (`config/models.py`) is a strict pydantic model: unknown keys are errors, money is written
 as strings (`"0.05"`) so it becomes exact `Decimal`, and `as_of` must carry a timezone. The validated
@@ -44,7 +50,11 @@ steps; `parallel_build_sequential_solve` cannot run rules that take `ctx`, becau
 workers; and `on_error: continue` is refused alongside chain-aware steps, because a skipped portfolio
 would silently change what later solves see. Every failure is collected and reported together.
 
-`portfolio-optimizer validate-config` stops here and prints one line per resolved step.
+`portfolio-optimizer validate-config` stops here and prints one line per resolved step. `run` checks
+one more thing the settings decide — `parallel` needs an executor that can solve, so `thread` is
+refused — and then, **before any data loads, asks for its backend**: a process pool spawns its
+interpreters, a Dask cluster is provisioned. Neither blocks; the point is that they come up underneath
+the slow stage that follows.
 
 ## 2. Loading and assembly: validation, first layer
 
@@ -97,7 +107,14 @@ Anything failing here raises `InputRejectedError` and the run exits with code 2.
 `PortfolioDetails` model, its holdings, the full universe, its benchmark's targets, its style
 constraints typed into `StyleConstraints` (round-tripped through JSON so money strings become
 `Decimal`), and its share of the extras — a dataset with a `portfolio_id` column reduced to this
-portfolio's rows, one without passed whole.
+portfolio's rows, one without passed whole. In the parallel modes this happens *in the worker*, which
+received the assembled datasets once: a task carries a portfolio id and nothing else.
+
+The three frames the slice produces are marked `prevalidated`: assembly already checked them against
+their schemas, the universe is passed whole, and a row subset of validated holdings or targets keeps
+every per-column check, the key's uniqueness, and — because targets are sliced by whole benchmark — the
+sum-to-one invariant. So the bundle does not check them again, here or after a rule that leaves them
+untouched. A rule that returns a *new* frame loses that standing for it, and the new frame is validated.
 
 `PortfolioData.__post_init__` (`domain/data.py`) holds the cross-frame invariants: `as_of` is UTC,
 holdings contain only this portfolio, targets belong to this benchmark and every target name is held or
@@ -198,38 +215,58 @@ count for audit.
 solved weights. The tolerance is derived, not configured: one lot of the priciest name plus one
 dust-filtered trade, both as fractions of NAV. Exceeding it raises `DriftError`.
 
-## 9. The chain and the three execution modes
+## 9. The chain, the three execution modes, and where the work runs
 
 Portfolios in one run can depend on each other. The example's `cumulative_adv_participation` constraint
 says "buy plus sell in each name may not exceed the ADV budget that earlier portfolios have not already
 consumed."
 
-The mechanism is small. `SolveContext` is an immutable tuple of completed results in solve order. Before
-each solve, `derive_chain_state` sums the absolute shares ordered so far per security and projects them
-into a `ChainState` aligned to *this* portfolio's securities. Terms and constraints that declare
-`chain: ChainState` receive it; rules that declare `ctx: SolveContext` receive the full context. The
-chain state's hash is recorded per portfolio in the manifest.
+The mechanism is small. `SolveContext` is an immutable tuple of completed results in solve order,
+alongside a running total of absolute shares ordered per security that `with_result` folds each new
+result into. Before each solve, `derive_chain_state` projects that total onto *this* portfolio's
+securities as a `ChainState`. Terms and constraints that declare `chain: ChainState` receive it; rules
+that declare `ctx: SolveContext` receive the full context. The chain state's hash is recorded per
+portfolio in the manifest.
 
 `engine/runner.py` dispatches on `execution.mode`; all three modes funnel through the same
-`build_portfolio` → `finish_portfolio` functions.
+`slice_and_build` → `finish_or_fail` functions in `engine/tasks.py`.
 
 - **`sequential`** — one loop in the main process. Rules see `ctx`, constraints see `chain`. Slowest,
   most expressive.
-- **`parallel_build_sequential_solve`** (the example) — every portfolio's payload (its bundle, the
-  config, the config hash) is submitted to a pool. Workers **re-resolve the config themselves** —
-  function objects are never pickled, only their names — apply rules with no `ctx`, build the spec, and
-  return pure numpy. The main process then solves in order with a live chain. Rules cannot be
-  chain-aware; constraints can.
+- **`parallel_build_sequential_solve`** (the example) — workers slice, apply rules with no `ctx`, build
+  the spec, and return pure numpy. The main process solves **as each build arrives**, in order, with a
+  live chain, while the workers keep building. Rules cannot be chain-aware; constraints can.
 - **`parallel`** — the whole pipeline runs in the worker with an empty context. No chain-aware steps
   are permitted, and the resolver already refused them in stage 1.
 
-Process workers use the `spawn` start method. The `thread` executor is allowed only where nothing is
-solved in the worker, because cvxpy solves are not thread-safe; the config model rejects `parallel`
-with `thread`. The scheduler submits every task and then **consumes results in configured solve order**,
-so the worker count and the order in which workers finish can never change the output. Under
-`fail_fast`, once any consumed outcome is a failure the remaining futures are cancelled and recorded as
-`skipped`. A worker that dies — for instance on an unpicklable result — becomes a per-portfolio failure
-at stage `worker`.
+![Where each stage runs](images/execution-stages.svg)
+
+Where the workers are is a *setting*, and every kind sits behind the same seam (`engine/backends.py`):
+a pool of `spawn`-ed interpreters, threads, or a Dask cluster the run owns — a `LocalCluster` on a
+laptop, a `KubeCluster` on Kubernetes, or a scheduler address (`engine/dask_backend.py`). The runner
+drives each through the same lifetime: **start** it before the load stage, so interpreters import the
+solver stack and pods come up while the loaders wait on their sources; **scale** it and **wait** for the
+first worker after assembly; **share** the assembled datasets and the config with it once, so a task
+carries a portfolio id and nothing else; **submit** a window of tasks — twice the worker count — and
+**consume results in configured solve order**, so the worker count and the order in which workers
+finish can never change the output; **close** it in a `finally`. Workers re-resolve the config
+themselves — function objects are never pickled, only their names.
+
+![The run owns its cluster: provisioning overlaps the load stage](images/cluster-lifecycle.svg)
+
+Every task returns the **fingerprint of the process that ran it** — interpreter, numerical libraries,
+solver, the versions of the packages behind external steps, the git revision, the image digest — and
+the runner compares it with its own. A worker running different code fails its portfolio at stage
+`worker` rather than answering, and the manifest lists every environment that did work. On a laptop
+pool the fingerprints agree by construction; on a cluster this is what makes sharing machines safe.
+
+The `thread` executor is allowed only where nothing is solved in the worker, because cvxpy solves are
+not thread-safe; `run` refuses `parallel` with it before loading. Under `fail_fast`, once any consumed
+outcome is a failure nothing more is submitted, what is queued is cancelled, and the rest are recorded
+as `skipped`. A worker that dies — for instance on an unpicklable result — becomes a per-portfolio
+failure at stage `worker`; a cluster that never produces a worker within its timeout is an
+infrastructure failure, exit code 3, with a `cluster` record in the manifest and every portfolio
+skipped. [How to run on a cluster](how-to-run-on-a-cluster.md) has the settings.
 
 ## 10. Failure semantics and exit codes
 
@@ -237,7 +274,8 @@ Every portfolio ends as a `PortfolioResult` or a `PortfolioFailure` naming its s
 `solve`, `worker`, or `skipped` — with the exception type and message. Under `fail_fast`, later
 portfolios are `skipped`; under `continue`, each failure is isolated. The process exit code is **0**
 when every portfolio solved, **1** when any failed, **2** when the inputs were rejected before anything
-was solved, and **3** for infrastructure: a sink failure, invalid settings, an unreadable config.
+was solved, and **3** for infrastructure: a sink failure, a cluster that never came up, invalid
+settings, an unreadable config.
 
 ## 11. Persist, publish, record
 
@@ -251,11 +289,13 @@ CSV, atomically, via a temp file and rename. A sink failure is exit code 3, but 
 written.
 
 The **manifest** (`engine/manifest.py`) records the run id, name, and timestamps; the git revision and
-whether the tree was dirty; the Python, cvxpy, numpy, pandas, and solver versions; the resolved config
-and its hash; the settings; every term and constraint with its params; every dataset's provenance and
-content hash; and, per portfolio, the rule audits, spec hash, chain-input hash, solver statistics,
-verification outcome, drift, and the orders' count, hash, and gross notional. The manifest is then
-self-hashed, and `load_manifest` refuses one whose hash does not match its content.
+whether the tree was dirty; the Python, cvxpy, numpy, pandas, and solver versions, and every worker
+environment that executed a task; the backend's lifetime — what was asked for, when the first worker
+answered, when it was released; the resolved config and its hash; the settings, with the executor and
+worker counts; every term and constraint with its params; every dataset's provenance and content hash;
+and, per portfolio, the rule audits, spec hash, chain-input hash, solver statistics, verification
+outcome, drift, and the orders' count, hash, and gross notional. The manifest is then self-hashed, and
+`load_manifest` refuses one whose hash does not match its content.
 
 `portfolio-optimizer diff-manifests` compares two manifests and names the **first stage at which they
 diverge**: config, code, versions, datasets, and then per portfolio status → rules → spec → solve →
@@ -266,7 +306,8 @@ orders. "Did the data change, or did the solver?" is a one-command question. The
 
 `configs/example_run.json` declares two portfolios over three securities, a `prices` dataset joined into
 the universe by an assembly step and dropped by the next, two rules, three terms (tracking error, tax cost, transaction cost), seven constraints,
-the Clarabel solver, and `parallel_build_sequential_solve` with two workers.
+the Clarabel solver, and `parallel_build_sequential_solve`; how many workers build is the
+`PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting.
 
 P1 holds 500,000 shares each of A and B against an equal-weight target. C trades 100,000 shares a day at
 10, and the style allows 25% participation, so P1 may buy at most 25,000 shares of C. The optimizer
@@ -277,7 +318,7 @@ produces no orders. Run the config twice and `diff-manifests` reports `no differ
 
 ## Where validation happens, in one list
 
-1. **Settings** — unknown or missing environment variables.
+1. **Settings** — unknown or missing environment variables; cluster variables without the Dask executor.
 2. **Config** — strict models; money as strings; timestamps with a zone.
 3. **Resolver** — the function exists, its signature matches the contract, its params validate, and the
    execution mode is compatible with the steps.
@@ -286,7 +327,7 @@ produces no orders. Run the config twice and `diff-manifests` reports `no differ
    union); then the required frames exist and every frame schema holds; then details and constraints
    for every portfolio.
 6. **`PortfolioData`** — cross-frame invariants including holdings/universe dtype agreement, re-run
-   after every rule.
+   after every rule; a frame a rule replaces is re-validated against its schema.
 7. **`ProblemSpec`** — shapes, finiteness, bound ordering, read-only arrays.
 8. **Solver** — installed, DCP-compliant, status classified, infeasibility diagnosed.
 9. **Verifier** — every shipped constraint and the objective, independently of cvxpy.

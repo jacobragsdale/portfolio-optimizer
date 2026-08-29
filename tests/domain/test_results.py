@@ -132,6 +132,14 @@ def test_solve_context_with_result_does_not_mutate_the_original(prior_results: S
     extended = prior_results.with_result(prior_results.results[0])
     assert prior_results.portfolios_done == 2
     assert extended.portfolios_done == 3
+    assert extended.cumulative_shares == {"A": 2500.0, "C": 45000.0}
+    assert prior_results.cumulative_shares == {"A": 1250.0, "C": 25000.0}
+
+
+def test_a_context_built_from_results_agrees_with_one_accumulated_result_by_result(prior_results: SolveContext) -> None:
+    rebuilt = SolveContext(results=prior_results.results)
+    assert rebuilt.cumulative_shares == prior_results.cumulative_shares
+    np.testing.assert_array_equal(derive_chain_state(rebuilt, ("A", "C", "Z")).cumulative_shares, derive_chain_state(prior_results, ("A", "C", "Z")).cumulative_shares)
 
 
 @pytest.fixture

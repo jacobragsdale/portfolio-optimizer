@@ -485,13 +485,24 @@ class PortfolioFailure:
 
 @dataclass(frozen=True, slots=True)
 class SolveContext:
-    """Immutable accumulation of prior portfolios' results, in solve order."""
+    """Immutable accumulation of prior portfolios' results, in solve order.
+
+    ``cumulative_shares`` — absolute shares ordered so far, by security — is folded in by
+    :meth:`with_result` as each result arrives, so deriving a chain state costs one pass over the
+    spec's securities rather than a walk over every prior portfolio's orders. A context built
+    directly from ``results`` computes it once on construction.
+    """
 
     results: tuple[PortfolioResult, ...] = ()
+    cumulative_shares: Mapping[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.results and not self.cumulative_shares:
+            object.__setattr__(self, "cumulative_shares", _fold_orders({}, *(result.orders for result in self.results)))
 
     def with_result(self, result: PortfolioResult) -> "SolveContext":
         """Return a new context that also carries ``result``."""
-        return SolveContext(results=(*self.results, result))
+        return SolveContext(results=(*self.results, result), cumulative_shares=_fold_orders(self.cumulative_shares, result.orders))
 
     @property
     def portfolios_done(self) -> int:
@@ -499,12 +510,17 @@ class SolveContext:
         return len(self.results)
 
 
-def derive_chain_state(context: SolveContext, security_ids: tuple[str, ...]) -> ChainState:
-    """Sum the absolute shares ordered so far per security, aligned to ``security_ids``."""
-    totals: dict[str, float] = dict.fromkeys(security_ids, 0.0)
-    for result in context.results:
-        for security, quantity in zip(result.orders["security_id"], result.orders["quantity"], strict=True):
+def _fold_orders(totals: Mapping[str, float], *orders: pd.DataFrame) -> dict[str, float]:
+    """``totals`` plus the absolute quantity of every order, by security."""
+    folded = dict(totals)
+    for frame in orders:
+        for security, quantity in zip(frame["security_id"], frame["quantity"], strict=True):
             key = str(security)
-            if key in totals:
-                totals[key] += float(int(quantity))
-    return ChainState(security_ids=security_ids, cumulative_shares=np.array([totals[s] for s in security_ids], dtype=np.float64), portfolios_done=context.portfolios_done)
+            folded[key] = folded.get(key, 0.0) + float(int(quantity))
+    return folded
+
+
+def derive_chain_state(context: SolveContext, security_ids: tuple[str, ...]) -> ChainState:
+    """Project the shares ordered so far onto ``security_ids``; a name no prior portfolio traded is zero."""
+    totals = context.cumulative_shares
+    return ChainState(security_ids=security_ids, cumulative_shares=np.array([totals.get(s, 0.0) for s in security_ids], dtype=np.float64), portfolios_done=context.portfolios_done)

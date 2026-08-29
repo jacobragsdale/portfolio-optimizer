@@ -21,7 +21,6 @@ STEP_NAME_PATTERN = r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:)?
 _STEP_NAME = re.compile(STEP_NAME_PATTERN)
 
 type ExecutionMode = Literal["sequential", "parallel_build_sequential_solve", "parallel"]
-type ExecutorKind = Literal["process", "thread"]
 type OnError = Literal["fail_fast", "continue"]
 
 STEP_NAME_DESCRIPTION = (
@@ -137,23 +136,20 @@ class PostSolveConfig(StrictModel):
 
 
 class ExecutionConfig(StrictModel):
-    """How portfolios are scheduled across the build and solve phases."""
+    """How portfolios are scheduled across the build and solve phases, and what a failure means.
+
+    Where the work runs — a process pool, threads, or a Dask cluster — and how many workers are
+    settings (`PORTFOLIO_OPTIMIZER_EXECUTOR`, `PORTFOLIO_OPTIMIZER_MAX_WORKERS`, ...), not config, so the
+    same config hashes the same on a laptop and on a cluster. Results are consumed in solve order
+    whatever the executor, so neither changes the output.
+    """
 
     mode: ExecutionMode = Field(
-        description="`sequential`: build and solve one after another with a live chain context. `parallel_build_sequential_solve`: build in workers, solve in order (constraints may use `chain`, rules may not use `ctx`). `parallel`: everything in workers; no chain-aware steps allowed."
+        description="`sequential`: build and solve one after another with a live chain context. `parallel_build_sequential_solve`: build in workers, solve in order (constraints may use `chain`, rules may not use `ctx`). `parallel`: everything in workers; no chain-aware steps allowed, and the executor must be able to solve (`process` or `dask`, not `thread`)."
     )
-    executor: ExecutorKind = Field(default="process", description="`process` (spawned workers; required for `parallel` because cvxpy solves are not thread-safe) or `thread` (for I/O-bound builds).")
-    max_workers: int = Field(default=1, ge=1, description="Worker count. Results are consumed in solve order, so this never changes the output.")
     on_error: OnError = Field(
         default="fail_fast", description="`fail_fast` stops after the first failed portfolio and records the rest as skipped; `continue` isolates failures. Chain-aware steps require `fail_fast`."
     )
-
-    @model_validator(mode="after")
-    def _threads_cannot_solve_concurrently(self) -> Self:
-        if self.mode == "parallel" and self.executor == "thread":
-            msg = "mode 'parallel' requires executor 'process': cvxpy solves are not thread-safe"
-            raise ValueError(msg)
-        return self
 
 
 class RunConfig(StrictModel):

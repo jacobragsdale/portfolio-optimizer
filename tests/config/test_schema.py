@@ -79,8 +79,7 @@ REJECTED: list[tuple[str, dict[str, object], str]] = [
     ("shipped rule with a wrong param type", {"rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": "many"}}]}, "rules/0"),
     ("shipped rule with an unknown param", {"rules": [{"name": "add_zero_alpha", "params": {"fill": 0}}]}, "rules/0"),
     ("shipped term with a negative weight", {"objective": {"terms": [{"name": "tracking_error", "params": {"weight": -1}}]}}, "objective/terms/0"),
-    ("threads with parallel mode", {"execution": {"mode": "parallel", "executor": "thread"}}, "execution"),
-    ("zero workers", {"execution": {"mode": "sequential", "max_workers": 0}}, "execution/max_workers"),
+    ("execution mechanics in the config", {"execution": {"mode": "sequential", "max_workers": 2}}, "execution"),
     ("shipped assembly step missing a required param", {"assembly": [{"name": "join", "params": {"into": "universe", "source": "prices", "on": ["security_id"]}}]}, "assembly/0"),
     ("engine frame neither loaded nor assembled", {"datasets": {name: {"loader": "csv"} for name in ("holdings", "universe", "details", "constraints")}, "assembly": []}, "datasets"),
 ]

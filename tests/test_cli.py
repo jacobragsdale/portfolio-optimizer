@@ -1,6 +1,7 @@
 """Tier 5: one smoke test per entry point over the shipped example, plus the exit-code contract."""
 
 import io
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -19,7 +20,13 @@ def cli(argv: Sequence[str], env: dict[str, str] | None = None, run_id: str = "r
 
 @pytest.fixture
 def env(tmp_path: Path) -> dict[str, str]:
-    return {"PORTFOLIO_OPTIMIZER_OUTPUT_DIR": str(tmp_path / "out"), "PORTFOLIO_OPTIMIZER_DATA_ROOT": str(EXAMPLE_DATA), "PORTFOLIO_OPTIMIZER_LOG_LEVEL": "WARNING"}
+    return {
+        "PORTFOLIO_OPTIMIZER_OUTPUT_DIR": str(tmp_path / "out"),
+        "PORTFOLIO_OPTIMIZER_DATA_ROOT": str(EXAMPLE_DATA),
+        "PORTFOLIO_OPTIMIZER_LOG_LEVEL": "WARNING",
+        "PORTFOLIO_OPTIMIZER_EXECUTOR": "process",
+        "PORTFOLIO_OPTIMIZER_MAX_WORKERS": "2",
+    }
 
 
 def test_run_produces_the_golden_orders_and_a_manifest(tmp_path: Path, env: dict[str, str]) -> None:
@@ -76,7 +83,21 @@ def test_exit_code_contract(tmp_path: Path, env: dict[str, str]) -> None:
 
 
 def test_run_flags_override_settings(tmp_path: Path, env: dict[str, str]) -> None:
-    code, out, _ = cli(["run", str(EXAMPLE_CONFIG), "--output", str(tmp_path / "elsewhere")], env)
+    code, out, _ = cli(["run", str(EXAMPLE_CONFIG), "--output", str(tmp_path / "elsewhere"), "--max-workers", "1"], env)
     assert code == 0
-    assert (tmp_path / "elsewhere" / "run-smoke" / "manifest.json").exists()
+    manifest = json.loads((tmp_path / "elsewhere" / "run-smoke" / "manifest.json").read_text())
     assert "elsewhere" in out
+    assert manifest["settings"]["max_workers"] == "1"
+    assert manifest["cluster"]["kind"] == "process"
+    assert cli(["run", str(EXAMPLE_CONFIG), "--max-workers", "0"], env)[0] == 2
+
+
+def test_a_mode_the_executor_cannot_run_is_rejected_before_loading(tmp_path: Path, env: dict[str, str]) -> None:
+    config = json.loads(EXAMPLE_CONFIG.read_text())
+    config["execution"] = {"mode": "parallel"}
+    config["constraints"] = [c for c in config["constraints"] if c != "cumulative_adv_participation"]
+    path = tmp_path / "parallel.json"
+    path.write_text(json.dumps(config))
+    code, _, err = cli(["run", str(path)], env | {"PORTFOLIO_OPTIMIZER_EXECUTOR": "thread"})
+    assert code == 2
+    assert "not thread-safe" in err

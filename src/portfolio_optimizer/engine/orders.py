@@ -8,7 +8,6 @@ against the solved weights and bounded by :func:`rounding_drift`; verification o
 happens on the solved weights before rounding.
 """
 
-from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 
 import numpy as np
@@ -48,7 +47,7 @@ def solution_to_orders(spec: ProblemSpec, solution: Solution, inputs: OrderInput
                 "as_of": spec.as_of,
             }
         )
-    return validate_frame(_orders_frame(rows, spec.as_of), ORDERS)
+    return validate_frame(_orders_frame(rows), ORDERS)
 
 
 def _shares(index: int, spec: ProblemSpec, solution: Solution, inputs: OrderInputs) -> tuple[int, float]:
@@ -65,12 +64,9 @@ def _shares(index: int, spec: ProblemSpec, solution: Solution, inputs: OrderInpu
     return magnitude, unrounded
 
 
-def _orders_frame(rows: list[dict[str, object]], as_of: datetime) -> pd.DataFrame:
-    frame = pd.DataFrame.from_records(rows, columns=[column.name for column in ORDERS.columns])
-    if not rows:
-        frame = frame.assign(as_of=pd.Series([], dtype="datetime64[ns, UTC]"))
-    del as_of
-    return frame.astype({name: dtype for name, dtype in ORDERS.dtypes.items() if name != "as_of"}).astype({"as_of": "datetime64[ns, UTC]"})
+def _orders_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
+    """Assemble the frame one typed column at a time: no record scan, no cast pass, and an empty frame keeps every dtype."""
+    return pd.DataFrame({column.name: pd.Series([row[column.name] for row in rows], dtype=column.dtype) for column in ORDERS.columns})
 
 
 def rounding_drift(spec: ProblemSpec, solution: Solution, orders: pd.DataFrame, inputs: OrderInputs) -> DriftReport:

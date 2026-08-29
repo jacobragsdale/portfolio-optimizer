@@ -9,8 +9,9 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.results import PortfolioFailure, PortfolioResult
-from portfolio_optimizer.engine.manifest import GitInfo
+from portfolio_optimizer.engine.environment import GitInfo
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunReport, run
+from portfolio_optimizer.settings import ExecutionSettings, Executor
 from tests.conftest import EXAMPLE_DATA, io_context, resolved_example_real
 
 GIT = GitInfo(sha="0123456789abcdef", dirty=False)
@@ -21,7 +22,7 @@ def execute(
     tmp_path: Path,
     *,
     mode: str,
-    executor: str = "process",
+    executor: Executor = "process",
     max_workers: int = 2,
     on_error: str = "fail_fast",
     data_root: Path = EXAMPLE_DATA,
@@ -29,9 +30,11 @@ def execute(
     sink: str = "orders_to_parquet",
     **overrides: object,
 ) -> RunReport:
-    execution = {"mode": mode, "executor": executor, "max_workers": max_workers, "on_error": on_error}
-    resolved = resolved_example_real(execution=execution, sink=sink, **overrides)
-    return run(resolved, io_context(tmp_path / run_id, data_root=data_root, run_id=run_id), git=GIT, config_path="configs/example_run.json", settings={"data_root": str(data_root)})
+    resolved = resolved_example_real(execution={"mode": mode, "on_error": on_error}, sink=sink, **overrides)
+    execution = ExecutionSettings(executor=executor, max_workers=max_workers)
+    return run(
+        resolved, io_context(tmp_path / run_id, data_root=data_root, run_id=run_id), execution=execution, git=GIT, config_path="configs/example_run.json", settings={"data_root": str(data_root)}
+    )
 
 
 def test_sequential_run_reproduces_the_hand_checked_orders(tmp_path: Path) -> None:
@@ -56,7 +59,7 @@ def test_sequential_run_reproduces_the_hand_checked_orders(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize(("executor", "max_workers"), [("process", 2), ("thread", 2), ("process", 1)])
-def test_parallel_build_matches_the_sequential_run(tmp_path: Path, executor: str, max_workers: int) -> None:
+def test_parallel_build_matches_the_sequential_run(tmp_path: Path, executor: Executor, max_workers: int) -> None:
     sequential = execute(tmp_path, mode="sequential", run_id="seq")
     parallel_build = execute(tmp_path, mode="parallel_build_sequential_solve", executor=executor, max_workers=max_workers, run_id="pbss")
     assert parallel_build.exit_code == EXIT_OK

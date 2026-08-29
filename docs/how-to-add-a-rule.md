@@ -54,8 +54,10 @@ row counts before and after, so a rule that reads the world would make the manif
 
 Rules run in list order. A bare string is a rule without params. A qualified name such as
 `"my_firm.rules:exclude_sector"` resolves a function outside this module — useful when a firm keeps
-its rules in a separate package. Under a process executor that package must be importable by the
-worker processes, exactly as any Python import.
+its rules in a separate package. That package must be importable wherever tasks run — the spawned
+workers of a process pool, or the pods of a Dask cluster — exactly as any Python import; every task
+reports the version it found, and a worker that has a different one fails its portfolio rather than
+answering with different code.
 
 ## 3. Check it resolves
 

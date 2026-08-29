@@ -9,11 +9,11 @@
 | `0` | Every portfolio solved (or, for `verify`/`diff-manifests`, the check passed / no differences). |
 | `1` | At least one portfolio failed, or nothing solved; for `verify`, verification failed; for `diff-manifests`, differences found. |
 | `2` | Inputs rejected before anything ran: settings, config, resolution, schema, or usage errors. |
-| `3` | Infrastructure: a file could not be read or written, or the sink failed. |
+| `3` | Infrastructure: a file could not be read or written, the sink failed, or the cluster never produced a worker. |
 
 | Command | Arguments | Description |
 |---|---|---|
-| `run CONFIG` | `--data-root PATH`, `--output PATH` | Load, solve, verify, publish, and write the manifest. Prints the run id, the manifest path, and one line per portfolio. |
+| `run CONFIG` | `--data-root PATH`, `--output PATH`, `--max-workers N` | Load, solve, verify, publish, and write the manifest. Prints the run id, the manifest path, and one line per portfolio. |
 | `validate-config CONFIG` | | Validate and resolve a config without loading data; lists every resolved step with `[external]` and `[ctx]`/`[chain]` markers. |
 | `verify` | `--manifest PATH --portfolio ID` | Reload the persisted spec, solution, and chain state and recompute every shipped constraint and term in numpy. Never imports cvxpy. |
 | `diff-manifests LEFT RIGHT` | | Print the first stage at which two runs diverge, overall and per portfolio. |
@@ -61,9 +61,10 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `run_id`, `run_name`, `created_at_utc`, `as_of` | Identity. `created_at_utc` comes from the injected clock. |
 | `git_sha`, `git_dirty` | The code revision, or `unknown` outside a repository. |
 | `execution_mode` | |
-| `versions` | `python`, `cvxpy`, `numpy`, `pandas`, `solver`, `solver_version`, and `packages`: the installed version of every distribution that supplied a step named outside the template modules (`{"my-firm-quant": "1.4.2"}`; a module no distribution provides is listed under its own name as `unknown`). |
+| `cluster` | Absent in `sequential` mode. Otherwise the backend's lifetime: `executor`, `kind` (`process`, `thread`, `local`, `kubernetes`, `address`), `min_workers`, `max_workers`, `workers_ready` (workers joined when the first task could run), `scheduler_address`, `provision_started_at` (before the load stage), `first_worker_ready_at` (after assembly), `closed_at`. |
+| `versions` | `python`, `cvxpy`, `numpy`, `pandas`, `solver`, `solver_version`, `packages`: the installed version of every distribution that supplied a step named outside the template modules (`{"my-firm-quant": "1.4.2"}`; a module no distribution provides is listed under its own name as `unknown`), and `workers[]`: every distinct environment that executed a task (`environment` — interpreter, libraries, solver, step packages, git sha, image digest — with `hosts` and `portfolios`). Normally one entry, equal to the run's own environment. |
 | `config` | `path`, `sha256` of the canonical resolved config, and `resolved` (the full config). |
-| `settings` | Non-secret settings the run used. |
+| `settings` | Every setting the run used, including the executor and worker counts, with `cluster` resolved. |
 | `terms`, `constraints` | Qualified name and params of every configured step, in order; `verify` uses these. |
 | `datasets[]` | `name`, `loader_qualname`, `loader_source_sha256`, `params_sha256`, `rows`, `columns`, `content_sha256`, `load_time_s` (wall-clock seconds the loader took). |
 | `assembly[]` | Per assembly step, in order: `qualname`, `source_sha256`, `params_sha256`, `rows_in` and `rows_out` (rows per dataset before and after), `columns_added` (per dataset, the columns the step introduced). |
@@ -83,7 +84,7 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `check` | Tolerances, `max_violation`, `violated`, `objective_gap`, `objective_passed`, `unverified`, `passed`. |
 | `drift` | `max_weight_error`, `tolerance`, `dropped_orders`, `passed` — the effect of rounding to shares. |
 | `orders` | `count`, `sha256` (content hash excluding `run_id`), `gross_notional`. |
-| `failure_stage`, `error` | For failed portfolios: `slice`, `build`, `solve`, `worker`, `skipped`, or `sink`, and the error. |
+| `failure_stage`, `error` | For failed portfolios: `slice`, `build`, `solve`, `worker` (the worker died, or its environment fingerprint differed from the run's), `skipped`, `sink`, or `cluster` (on the `*` record: no worker came up), and the error. |
 
 ### Content hashes
 
@@ -94,6 +95,6 @@ metadata. Source hashes are of the function's source text.
 
 ### `diff-manifests` stages
 
-Checked in order: `config`, `code` (git sha), `versions` (libraries, solver, and step packages), `datasets` (per dataset), `assembly` (the steps, their source and params hashes, and their `rows_out` and `columns_added`), then per portfolio
+Checked in order: `config`, `code` (git sha), `versions` (libraries, solver, step packages, and the set of worker environments — not the hosts they ran on), `datasets` (per dataset), `assembly` (the steps, their source and params hashes, and their `rows_out` and `columns_added`), then per portfolio
 `status`, `rules`, `spec`, `solve` (objective value), `orders`. Only the first divergence per portfolio
 is reported.

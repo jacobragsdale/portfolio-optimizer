@@ -161,6 +161,7 @@ def make_portfolio_data(
     style: StyleConstraints | None = None,
     as_of: datetime = AS_OF,
     extras: Mapping[str, pd.DataFrame] | None = None,
+    prevalidated: frozenset[str] = frozenset(),
 ) -> PortfolioData:
     """The canonical small bundle: P1 holds A 5000 and B 10000 against the three-security universe."""
     frames = Frames()
@@ -172,6 +173,7 @@ def make_portfolio_data(
         style=style if style is not None else make_style(),
         as_of=as_of,
         extras=extras if extras is not None else {},
+        prevalidated=prevalidated,
     )
 
 
