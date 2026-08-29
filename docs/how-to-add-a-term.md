@@ -87,10 +87,13 @@ test `test_every_shipped_term_and_constraint_has_a_twin` pins the shipped set; e
 
 ## 4. If the step needs earlier portfolios' results
 
-Add `chain: ChainState`. It carries `cumulative_shares` per security ordered by earlier portfolios,
-aligned to `spec.security_ids`; `cumulative_adv_participation` is the worked example. Chain-aware steps
-require `execution.mode` to be `sequential` or `parallel_build_sequential_solve`, and `on_error` to be
-`fail_fast`; both are checked at config load.
+Add `chain: ChainState`. It carries `bought_shares` per security — what higher-priority portfolios
+*bought*, aligned to `spec.security_ids`, and zero wherever this portfolio cannot buy — plus the
+`predecessors` it was folded from; `cumulative_adv_participation` is the worked example. Sells never
+reach a later portfolio: portfolios couple through buys only. Declaring `chain` is what makes a
+portfolio wait for every higher-priority portfolio that can buy a security it can buy too; with no
+chain-aware step in the config, nothing waits. Use it to *limit* buys, and only buys — the engine's
+guarantee that the schedule never changes the answer rests on the chain reaching nothing else.
 
 ## 5. Test
 

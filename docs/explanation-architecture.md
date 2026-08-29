@@ -70,8 +70,7 @@ order is exactly quantity times price" a guarantee rather than a hope.
 
 `ProblemSpec` holds every input the solver will see as plain numpy arrays aligned to a sorted list of
 securities, plus a content hash. cvxpy objects are created only inside `solve()` and never leave it. This
-buys three things: the spec can cross a process boundary in `parallel_build_sequential_solve` mode; it can
-be persisted as an `.npz` file that an auditor can open without the solver stack; and the hash pins down
+buys three things: the spec is built on a worker and stays there until it is solved; it can be persisted as an `.npz` file that an auditor can open without the solver stack; and the hash pins down
 exactly what was optimized, so a change in any input changes the hash and shows up in `diff-manifests`.
 
 ## Verification is independent of the solver
@@ -98,24 +97,42 @@ exact 1,250-share answer into 1,249, which is worse in practice. Instead the rou
 against the solved weights and bounded by what one lot and one dust-filtered trade can cost; exceeding the
 bound fails the portfolio.
 
-## Execution modes and the chain
+## Portfolios couple through buys only, so the schedule is a graph
 
-Portfolios in one run often depend on each other: the second portfolio to trade a thinly traded name
-should see how much of its daily volume the first already used. The engine models this as an immutable
-`SolveContext` that accumulates results — and a running total of shares ordered per security — in solve
-order and is projected, per solve, into a `ChainState` aligned to that portfolio's securities.
+Portfolios in one run often depend on each other: the second portfolio to buy a thinly traded name
+should see how much of its daily volume the first already used. The engine allows exactly this kind of
+dependency and no other — **what a higher-priority portfolio bought may limit what a later one buys;
+what anyone sold never reaches anyone.** That is a product decision (2026-08-29), and it is what makes
+the schedule derivable instead of configured.
 
-The three execution modes differ only in where build and solve happen. `sequential` gives rules and
-constraints the live context. `parallel_build_sequential_solve` builds every portfolio's spec in workers
-(rules cannot see the context there) and solves in order in the main process (constraints can), each
-build as it arrives. `parallel` runs everything in workers and therefore permits no chain-aware steps at
-all — the resolver rejects such a config rather than silently dropping the dependency. Whatever the mode,
-results are consumed in configured solve order, so the number of workers and the order in which they
-finish never affect the output.
+Every portfolio builds at once, chain-free: rules never see other portfolios. A build reports its
+**buyable set** — the securities its problem allows a positive buy in (`ub > w0`) — and its solve-order
+key, a priority from an optional `solve_order` step or the portfolios frame's column, ties broken on
+`portfolio_id`. From those the engine derives the dependency graph (`engine/schedule.py`): portfolio *j*
+depends on every higher-priority *i* whose buyable set intersects its own, and on nothing else; with no
+chain-aware step there are no edges. The graph is what `execution.mode` used to approximate by hand,
+and the manifest records its shape — edges, components, the longest chain of solves — so a slow batch
+explains itself.
+
+Each solve folds its predecessors' BUY orders into a `ChainState` aligned to its own securities and
+**masked to its own buyable set**. The mask is load-bearing: a predecessor's buys lie inside *its*
+buyable set, the mask keeps only *this* portfolio's, so what a solve sees is a function of the
+overlapping predecessors alone — the same array whether every higher-priority portfolio was folded or
+only those sharing a buyable name. That is the exactness argument, and a property test asserts it: the
+graph schedule and the total order produce identical orders and identical chain hashes. Order rounding
+clamps a buy to the room under its upper bound so solver noise can never produce a buy the graph could
+not have seen, and the pipeline asserts every BUY is buyable. `execution.dependencies: "all"` keeps the
+total order available for diagnosis.
+
+Dask enforces the graph: a solve is submitted with its predecessors' contributions — their BUY rows —
+as dependencies and runs where its build lives. Outcomes are classified in solve order whatever
+finished first, so the number of workers and the order in which they finish never affect the output.
+Selling-side coupling — ADV spent by sells, wash sales, internal crossing — is a recorded non-goal;
+`IDEAS.md` says what it would cost.
 
 ## Where the work runs is a setting, and the run owns its cluster
 
-A mode says which stages may depend on earlier portfolios; it says nothing about machines. Which
+The graph says which portfolios wait for which; it says nothing about machines. Which
 cluster the run provisions — worker processes on this machine, pods on Kubernetes, or a scheduler
 someone else runs — and how many workers, are settings, so the same config hashes identically on a
 laptop and on a cluster and `diff-manifests` never blames the wiring for where a run happened to
@@ -143,10 +160,11 @@ backend's lifetime and every environment that did work.
 
 ## Failure semantics
 
-Every portfolio ends as a `PortfolioResult` or a `PortfolioFailure` naming the stage that failed. Under
-`fail_fast` the first failure stops further processing and later portfolios are recorded as `skipped`;
-under `continue` the failure is isolated. Chain-aware steps forbid `continue`, because a skipped portfolio
-would silently change what later solves see. The sink is called once, only when at least one portfolio
+Every portfolio ends as a `PortfolioResult` or a `PortfolioFailure` naming the stage that failed. A
+failure follows the edges: the portfolios that depended on it are skipped, each naming the predecessor,
+and the rest are untouched under `continue`; under `fail_fast` every lower-priority portfolio is skipped
+by position, whatever it had finished, so the manifest never depends on timing. A failed build has an
+unknown buyable set and is treated as overlapping everything after it. The sink is called once, only when at least one portfolio
 solved, and a sink failure is an infrastructure exit code with the manifest still written. There is no
 path on which the engine returns the current portfolio as a default answer: an infeasible problem raises,
 with an arithmetic diagnosis of why.

@@ -29,7 +29,7 @@ class ExecutionSettings:
 
     ``cluster`` is the resolved kind (``local``, ``kubernetes``) or a scheduler address — never
     ``auto``. ``min_workers`` is what is provisioned before the load stage and ``max_workers`` what the
-    run scales to after assembly; ``window`` is how many tasks the run keeps outstanding.
+    run scales to after assembly.
     """
 
     cluster: str
@@ -38,11 +38,6 @@ class ExecutionSettings:
     cluster_timeout_s: float
     worker_image: str | None = None
     image_digest: str | None = None
-
-    @property
-    def window(self) -> int:
-        """Outstanding tasks per run: enough to keep every worker busy with one queued behind it."""
-        return 2 * self.max_workers
 
     @property
     def cluster_kind(self) -> ClusterKind:

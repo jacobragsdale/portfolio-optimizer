@@ -142,8 +142,9 @@ def _validate_config(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO
     except (ValidationError, ConfigResolutionError) as error:
         stderr.write(f"config rejected: {error}\n")
         return EXIT_INPUT_REJECTED
+    coupling = "none" if not resolved.chain_aware_steps else config.execution.dependencies
     stdout.write(
-        f"config ok (sha256 {resolved.config_sha256[:12]}): {len(resolved.rules)} rule(s), {len(resolved.terms)} term(s), {len(resolved.constraints)} constraint(s), mode {config.execution.mode}\n"
+        f"config ok (sha256 {resolved.config_sha256[:12]}): {len(resolved.rules)} rule(s), {len(resolved.terms)} term(s), {len(resolved.constraints)} constraint(s), dependencies {coupling}\n"
     )
     stdout.writelines(f"  {step.kind:19} {step.qualname}{' [external]' if step.is_external else ''}{' [' + step.context_name + ']' if step.context_name else ''}\n" for step in resolved.all_steps)
     return EXIT_OK
@@ -174,6 +175,9 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
         return EXIT_INFRASTRUCTURE
     if record.check is None or spec.content_hash() != record.problem_spec_sha256:
         stderr.write("persisted spec does not match the manifest's spec hash\n")
+        return EXIT_PORTFOLIO_FAILED
+    if chain.content_hash() != record.chain_inputs_sha256:
+        stderr.write("persisted chain state does not match the manifest's chain hash\n")
         return EXIT_PORTFOLIO_FAILED
     terms = [StepRef(t.qualname, t.params) for t in manifest.terms]
     constraints = [StepRef(c.qualname, c.params) for c in manifest.constraints]

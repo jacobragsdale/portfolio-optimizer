@@ -60,7 +60,7 @@ def test_settings_load_from_an_explicit_environment() -> None:
     assert settings.output_dir == Path("/tmp/out")
     assert settings.log_level == "DEBUG"
     execution = settings.execution()
-    assert (execution.cluster, execution.cluster_kind, execution.min_workers, execution.max_workers, execution.cluster_timeout_s, execution.window) == ("local", "local", 2, 4, 60.0, 8)
+    assert (execution.cluster, execution.cluster_kind, execution.min_workers, execution.max_workers, execution.cluster_timeout_s) == ("local", "local", 2, 4, 60.0)
     assert execution.image_digest == "sha256:abc"
     assert settings.shown() == {
         "output_dir": "/tmp/out",

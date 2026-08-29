@@ -1,6 +1,6 @@
-"""Tier 1/2: the backend seam — a window of tasks consumed in order, fail-fast cancellation, a dead worker, a stale worker, and a cluster that never comes up."""
+"""Tier 1/2: the backend seam — builds first, solves along the schedule with dependencies, fail-fast cancellation, dead and stale workers, and a cluster that never comes up."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import BrokenExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,49 +9,53 @@ from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.results import PortfolioFailure, PortfolioResult
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.engine.backends import Backend, ClusterError, Pending, SharedRunData, Task, TaskOutput, WorkersReady
+from portfolio_optimizer.engine.backends import Backend, ClusterError, Pending, SharedRunData, TaskOutput, WorkersReady
 from portfolio_optimizer.engine.environment import GitInfo, WorkerEnvironment, environment_for, external_modules
 from portfolio_optimizer.engine.load import assemble, load_datasets
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, RunReport, run
 from portfolio_optimizer.engine.tasks import BuildResult, build_task
 from portfolio_optimizer.settings import ExecutionSettings
-from tests.conftest import EXAMPLE_DATA, example_config, example_config_real, execution_on, io_context, resolved_example_real
+from tests.conftest import EXAMPLE_DATA, NO_CHAIN_CONSTRAINTS, example_config, example_config_real, execution_on, io_context, resolved_example_real
 
 GIT = GitInfo(sha="0123456789abcdef", dirty=False)
-NO_CHAIN_CONSTRAINTS = ["trade_balance", "long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds"]
 
 type Tamper = Callable[[TaskOutput[object]], TaskOutput[object]]
 
 
 @dataclass(slots=True)
 class LazyPending:
-    """A future that runs its task when the result is first asked for, so a test can see how many were queued ahead."""
+    """A future that runs its function when first asked — resolving pending arguments first, as Dask does — and remembers the answer."""
 
-    run: Callable[[], object]
-    portfolio_id: PortfolioId
+    fn: Callable[..., object]
+    args: tuple[object, ...]
+    key: str
     backend: "LazyBackend"
-    cancelled: bool = False
+    done: bool = False
+    value: object = None
+    error: Exception | None = None
 
-    def result(self, timeout: float | None = None) -> TaskOutput[object]:
+    def result(self, timeout: float | None = None) -> object:
         del timeout
-        self.backend.outstanding_at_first_result = self.backend.outstanding_at_first_result or len(self.backend.pending)
-        self.backend.pending.remove(self)
-        if self.backend.dead_worker:
+        if not self.done:
+            self.done = True
+            try:
+                self.value = self._run()
+            except Exception as error:  # noqa: BLE001  # remembered and re-raised on every ask, as a Dask future does
+                self.error = error
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+    def _run(self) -> object:
+        resolved = [argument.result() if isinstance(argument, LazyPending) else argument for argument in self.args]  # a dead dependency raises here, before fn runs
+        if self.key in self.backend.dead_keys:
             msg = "worker died"
             raise BrokenExecutor(msg)
-        output = self.run()
-        assert isinstance(output, TaskOutput)
-        erased: TaskOutput[object] = TaskOutput(outcome=output.outcome, environment=output.environment, host=output.host)
-        return self.backend.tamper(erased)
-
-    def cancel(self) -> None:
-        self.cancelled = True
-        self.backend.cancelled.append(self.portfolio_id)
-
-
-def _shared_arg(shared: object) -> SharedRunData:
-    assert isinstance(shared, SharedRunData)
-    return shared
+        output = self.fn(*resolved)
+        if isinstance(output, TaskOutput):
+            erased: TaskOutput[object] = TaskOutput(outcome=output.outcome, environment=output.environment, host=output.host)
+            return self.backend.tamper(erased)
+        return output
 
 
 @dataclass(slots=True)
@@ -60,16 +64,15 @@ class LazyBackend:
 
     kind: str = "lazy"
     fail_ready: bool = False
-    dead_worker: bool = False
+    dead_keys: frozenset[str] = frozenset()
     tamper: Tamper = lambda output: output
     started: bool = False
     closed: bool = False
     scaled_to: int | None = None
     shared_count: int = 0
-    submitted: list[PortfolioId] = field(default_factory=list)
-    pending: list[LazyPending] = field(default_factory=list)
-    cancelled: list[PortfolioId] = field(default_factory=list)
-    outstanding_at_first_result: int = 0
+    submitted: list[str] = field(default_factory=list)
+    priorities: dict[str, int] = field(default_factory=dict)
+    cancelled: list[str] = field(default_factory=list)
 
     def start(self) -> None:
         self.started = True
@@ -88,22 +91,34 @@ class LazyBackend:
         self.shared_count += 1
         return data
 
-    def submit[T](self, task: Task[T], shared: object, portfolio_id: PortfolioId) -> Pending[TaskOutput[T]]:
-        self.submitted.append(portfolio_id)
-        pending = LazyPending(lambda: task(_shared_arg(shared), portfolio_id), portfolio_id, self)
-        self.pending.append(pending)
-        return pending  # ty: ignore[invalid-return-type]  # see above: the fake erases T
+    def submit[T](self, fn: Callable[..., T], /, *args: object, key: str, priority: int) -> Pending[T]:
+        self.submitted.append(key)
+        self.priorities[key] = priority
+        pending = LazyPending(fn, args, key, self)
+        return pending  # ty: ignore[invalid-return-type]  # the fake erases T
+
+    def as_completed(self, pendings: Mapping[PortfolioId, Pending[object]]) -> Iterator[PortfolioId]:
+        yield from list(pendings)
+
+    def cancel(self, pendings: Sequence[Pending[object]]) -> None:
+        self.cancelled.extend(pending.key for pending in pendings if isinstance(pending, LazyPending))
 
     def close(self) -> None:
         self.closed = True
 
 
 def execute(
-    tmp_path: Path, backend: LazyBackend, *, mode: str = "parallel_build_sequential_solve", max_workers: int = 2, on_error: str = "fail_fast", data_root: Path = EXAMPLE_DATA, run_id: str = "run-test"
+    tmp_path: Path,
+    backend: LazyBackend,
+    *,
+    max_workers: int = 2,
+    on_error: str = "fail_fast",
+    dependencies: str = "overlap",
+    data_root: Path = EXAMPLE_DATA,
+    run_id: str = "run-test",
+    **overrides: object,
 ) -> RunReport:
-    constraints = NO_CHAIN_CONSTRAINTS if mode == "parallel" or on_error == "continue" else None
-    overrides: dict[str, object] = {"constraints": constraints} if constraints is not None else {}
-    resolved = resolved_example_real(execution={"mode": mode, "on_error": on_error}, sink="orders_to_parquet", **overrides)
+    resolved = resolved_example_real(execution={"on_error": on_error, "dependencies": dependencies}, sink="orders_to_parquet", **overrides)
     execution = execution_on("tcp://fake:8786", max_workers=max_workers)
 
     def factory(execution: ExecutionSettings, *, run_id: str) -> Backend:
@@ -113,23 +128,48 @@ def execute(
     return run(resolved, io_context(tmp_path / run_id, data_root=data_root, run_id=run_id), execution=execution, git=GIT, config_path="c.json", settings={}, backend_factory=factory)
 
 
-def test_the_runner_drives_the_lifecycle_and_keeps_a_window_of_tasks_outstanding(tmp_path: Path) -> None:
+def test_the_runner_builds_everything_first_then_solves_along_the_schedule(tmp_path: Path) -> None:
     backend = LazyBackend()
     report = execute(tmp_path, backend, max_workers=1)
     assert report.exit_code == EXIT_OK
     assert backend.started and backend.closed
     assert backend.scaled_to == 1
     assert backend.shared_count == 1, "shared data is delivered once per run, not once per task"
-    assert backend.submitted == ["P1", "P2"]
-    assert backend.outstanding_at_first_result == 2, "window is twice max_workers, so both were queued before the first result was needed"
+    assert backend.submitted == [
+        "run-test/P1/build",
+        "run-test/P1/summary",
+        "run-test/P2/build",
+        "run-test/P2/summary",
+        "run-test/P1/solve",
+        "run-test/P1/contribution",
+        "run-test/P2/solve",
+        "run-test/P2/contribution",
+    ]
+    assert backend.priorities["run-test/P1/solve"] > backend.priorities["run-test/P2/solve"] > backend.priorities["run-test/P1/build"], (
+        "the head of the longest chain solves first, and any solve beats any build"
+    )
     assert backend.cancelled == []
+    schedule = report.manifest.schedule
+    assert schedule is not None
+    assert (schedule.coupling, schedule.portfolios, schedule.edges, schedule.components, schedule.largest_component, schedule.critical_path) == ("overlap", 2, 1, 1, 2, 2)
+    assert [(record.solve_order, record.predecessors) for record in report.manifest.portfolios] == [("0", 0), ("1", 1)]
     cluster = report.manifest.cluster
     assert cluster is not None
     assert (cluster.kind, cluster.min_workers, cluster.max_workers, cluster.workers_ready, cluster.scheduler_address) == ("lazy", 1, 1, 1, "fake://scheduler")
     assert cluster.provision_started_at is not None and cluster.first_worker_ready_at is not None and cluster.closed_at is not None
     (worker,) = report.manifest.versions.workers
-    same_config = resolved_example_real(execution={"mode": "parallel_build_sequential_solve", "on_error": "fail_fast"}, sink="orders_to_parquet").config
+    same_config = resolved_example_real(execution={"on_error": "fail_fast"}, sink="orders_to_parquet").config
     assert worker.portfolios == 2 and worker.environment == environment_for(same_config, cwd=Path.cwd(), image_digest=None)
+
+
+def test_nothing_reading_the_chain_means_no_portfolio_waits(tmp_path: Path) -> None:
+    report = execute(tmp_path, LazyBackend(), constraints=NO_CHAIN_CONSTRAINTS)
+    assert report.exit_code == EXIT_OK
+    schedule = report.manifest.schedule
+    assert schedule is not None and (schedule.coupling, schedule.edges, schedule.components) == ("none", 0, 2)
+    p1, p2 = report.solved
+    assert len(p1.orders) == 3 and len(p2.orders) == 3, "without the chained ADV cap P2 buys C too"
+    assert p2.chain_state.predecessors == ()
 
 
 def test_a_worker_whose_environment_differs_fails_its_portfolios_at_stage_worker(tmp_path: Path) -> None:
@@ -145,16 +185,35 @@ def test_a_worker_whose_environment_differs_fails_its_portfolios_at_stage_worker
         assert "git_sha: '0" not in outcome.message and "'stale' there" in outcome.message
     (worker,) = report.manifest.versions.workers
     assert worker.hosts == ("pod-7",) and worker.environment.git_sha == "stale"
+    assert report.manifest.schedule is not None and report.manifest.schedule.edges == 1, "two failed builds are treated as overlapping"
 
 
-def test_a_worker_that_dies_is_a_per_portfolio_failure_and_fail_fast_cancels_the_rest(tmp_path: Path) -> None:
-    backend = LazyBackend(dead_worker=True)
+def test_a_dead_worker_under_a_solve_is_a_worker_failure_and_fail_fast_cancels_the_rest(tmp_path: Path) -> None:
+    backend = LazyBackend(dead_keys=frozenset({"run-test/P1/solve"}))
     report = execute(tmp_path, backend)
     assert report.exit_code == EXIT_PORTFOLIO_FAILED
     first, second = report.outcomes
     assert isinstance(first, PortfolioFailure) and (first.stage, first.error_type) == ("worker", "BrokenExecutor")
     assert isinstance(second, PortfolioFailure) and second.stage == "skipped"
-    assert backend.cancelled == ["P2"]
+    assert backend.cancelled == ["run-test/P2/solve"]
+
+
+def test_under_continue_a_dead_predecessor_skips_only_the_portfolios_that_depended_on_it(tmp_path: Path) -> None:
+    backend = LazyBackend(dead_keys=frozenset({"run-test/P1/solve"}))
+    report = execute(tmp_path, backend, on_error="continue")
+    first, second = report.outcomes
+    assert isinstance(first, PortfolioFailure) and first.stage == "worker"
+    assert isinstance(second, PortfolioFailure) and second.stage == "skipped" and "predecessor 'P1' failed at stage 'worker'" in second.message
+    assert backend.cancelled == []
+
+
+def test_a_dead_worker_under_a_build_stops_a_fail_fast_run_before_any_solve(tmp_path: Path) -> None:
+    backend = LazyBackend(dead_keys=frozenset({"run-test/P1/build"}))
+    report = execute(tmp_path, backend)
+    first, second = report.outcomes
+    assert isinstance(first, PortfolioFailure) and (first.stage, first.error_type) == ("worker", "BrokenExecutor")
+    assert isinstance(second, PortfolioFailure) and second.stage == "skipped"
+    assert not any(key.endswith("/solve") for key in backend.submitted)
 
 
 def test_a_cluster_that_never_comes_up_is_infrastructure_and_still_leaves_a_manifest(tmp_path: Path) -> None:
@@ -166,17 +225,19 @@ def test_a_cluster_that_never_comes_up_is_infrastructure_and_still_leaves_a_mani
     records = {record.portfolio_id: record for record in report.manifest.portfolios}
     assert records["*"].failure_stage == "cluster" and records["*"].error is not None and "no worker within the timeout" in records["*"].error
     assert report.manifest.cluster is not None and report.manifest.cluster.first_worker_ready_at is None
+    assert report.manifest.schedule is None
     assert report.manifest_path.exists()
 
 
-def test_parallel_mode_through_a_backend_matches_the_sequential_run(tmp_path: Path) -> None:
-    parallel = execute(tmp_path, LazyBackend(), mode="parallel", run_id="par")
-    resolved = resolved_example_real(execution={"mode": "sequential", "on_error": "fail_fast"}, sink="orders_to_parquet", constraints=NO_CHAIN_CONSTRAINTS)
-    sequential = run(resolved, io_context(tmp_path / "seq", run_id="seq"), execution=execution_on("tcp://fake:8786", max_workers=1), git=GIT, config_path="c.json", settings={})
-    assert parallel.exit_code == EXIT_OK
-    for left, right in zip(sequential.solved, parallel.solved, strict=True):
+def test_every_earlier_portfolio_as_a_predecessor_gives_the_same_answer_as_overlap(tmp_path: Path) -> None:
+    overlap = execute(tmp_path, LazyBackend(), run_id="overlap")
+    line = execute(tmp_path, LazyBackend(), dependencies="all", run_id="line")
+    assert overlap.exit_code == line.exit_code == EXIT_OK
+    for left, right in zip(overlap.solved, line.solved, strict=True):
         assert_frame_equal(left.orders.drop(columns=["run_id"]), right.orders.drop(columns=["run_id"]))
-    assert report_kinds(sequential) == report_kinds(parallel) == [PortfolioResult, PortfolioResult]
+        assert left.chain_state.content_hash() == right.chain_state.content_hash()
+    assert report_kinds(overlap) == report_kinds(line) == [PortfolioResult, PortfolioResult]
+    assert line.manifest.schedule is not None and line.manifest.schedule.coupling == "all"
 
 
 def report_kinds(report: RunReport) -> list[type]:
@@ -197,6 +258,7 @@ def test_build_task_slices_rules_and_builds_from_the_shared_data_and_reports_its
     output = build_task(shared, PortfolioId("P1"))
     assert isinstance(output.outcome, BuildResult)
     assert output.outcome.spec.security_ids == ("A", "B", "C")
+    assert output.outcome.solve_order == 0
     assert output.environment == environment_for(shared.config, cwd=Path.cwd(), image_digest=None)
     assert output.host
     missing = build_task(shared, PortfolioId("P9"))

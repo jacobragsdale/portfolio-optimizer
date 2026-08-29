@@ -14,7 +14,7 @@
 | Command | Arguments | Description |
 |---|---|---|
 | `run CONFIG` | `--data-root PATH`, `--output PATH`, `--max-workers N` | Load, solve, verify, publish, and write the manifest. Prints the run id, the manifest path, and one line per portfolio. |
-| `validate-config CONFIG` | | Validate and resolve a config without loading data; lists every resolved step with `[external]` and `[ctx]`/`[chain]` markers. |
+| `validate-config CONFIG` | | Validate and resolve a config without loading data; prints how dependencies will be derived and lists every resolved step with `[external]` and `[chain]` markers. |
 | `verify` | `--manifest PATH --portfolio ID` | Reload the persisted spec, solution, and chain state and recompute every shipped constraint and term in numpy. Never imports cvxpy. |
 | `diff-manifests LEFT RIGHT` | | Print the first stage at which two runs diverge, overall and per portfolio. |
 | `schema` | | Print the JSON Schema for run configs; `> configs/run-config.schema.json` regenerates the checked-in file. |
@@ -29,7 +29,7 @@
 | `orders/orders.parquet` | Written by the `orders_to_parquet` sink: every solved portfolio's orders, sorted by `(portfolio_id, security_id)`. Absent when no portfolio solved. |
 | `problem_specs/<portfolio_id>.npz` | The `ProblemSpec` as arrays plus JSON metadata; no pickle. |
 | `solutions/<portfolio_id>.npz` | The solver's `w`, `buy`, `sell`, objective, status, and versions. |
-| `chain/<portfolio_id>.npz` | The cumulative shares from earlier portfolios the solve depended on. |
+| `chain/<portfolio_id>.npz` | The chain state the solve depended on: shares its predecessors bought, per security, zero where the portfolio could not buy; the metadata names the predecessors. |
 
 Files are written to a sibling temp file and renamed, so a crash leaves no partial output.
 
@@ -60,8 +60,8 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 |---|---|
 | `run_id`, `run_name`, `created_at_utc`, `as_of` | Identity. `created_at_utc` comes from the injected clock. |
 | `git_sha`, `git_dirty` | The code revision, or `unknown` outside a repository. |
-| `execution_mode` | |
-| `cluster` | Absent in `sequential` mode. Otherwise the cluster's lifetime: `kind` (`local`, `kubernetes`, `address`), `min_workers`, `max_workers`, `workers_ready` (workers joined when the first task could run), `scheduler_address`, `provision_started_at` (before the load stage), `first_worker_ready_at` (after assembly), `closed_at`. |
+| `schedule` | The dependency graph the run derived: `coupling` (`none` when nothing read the chain, `overlap`, or `all`), `portfolios`, `edges`, `components` (independent groups that never waited on each other), `largest_component`, `critical_path` (the longest chain of solves that had to run one after another). Absent when the cluster never came up. |
+| `cluster` | The cluster's lifetime: `kind` (`local`, `kubernetes`, `address`), `min_workers`, `max_workers`, `workers_ready` (workers joined when the first task could run), `scheduler_address`, `provision_started_at` (before the load stage), `first_worker_ready_at` (after assembly), `closed_at`. |
 | `versions` | `python`, `cvxpy`, `numpy`, `pandas`, `solver`, `solver_version`, `packages`: the installed version of every distribution that supplied a step named outside the template modules (`{"my-firm-quant": "1.4.2"}`; a module no distribution provides is listed under its own name as `unknown`), and `workers[]`: every distinct environment that executed a task (`environment` — interpreter, libraries, solver, step packages, git sha, image digest — with `hosts` and `portfolios`). Normally one entry, equal to the run's own environment. |
 | `config` | `path`, `sha256` of the canonical resolved config, and `resolved` (the full config). |
 | `settings` | Every setting the run used, including the worker counts, with `cluster` resolved. |
@@ -76,15 +76,17 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 
 | Field | Description |
 |---|---|
-| `portfolio_id`, `status` | `solved` or `failed`. |
+| `portfolio_id`, `status` | `solved` or `failed`. Records are in solve order. |
+| `solve_order` | The portfolio's solve-order key as a decimal string: the `solve_order` step's value, else the column's, else `0`. |
+| `predecessors` | How many higher-priority portfolios this one waited for and folded into its chain. |
 | `rules[]` | `qualname`, `source_sha256`, `params_sha256`, `rows_in`, `rows_out` per rule; the row counts cover `holdings`, `universe`, `targets`, and every extra dataset in the bundle by name. |
 | `problem_spec_sha256` | Hash of every array and scalar the solver saw. |
-| `chain_inputs_sha256` | Hash of the chain state. |
+| `chain_inputs_sha256` | Hash of the chain state — the security ids and the shares predecessors bought, never which predecessors — so `overlap` and `all` runs hash alike. |
 | `solve` | `solver`, `solver_version`, `cvxpy_version`, `status`, `iterations`, `objective_value`, `solve_time_s`. |
 | `check` | Tolerances, `max_violation`, `violated`, `objective_gap`, `objective_passed`, `unverified`, `passed`. |
 | `drift` | `max_weight_error`, `tolerance`, `dropped_orders`, `passed` — the effect of rounding to shares. |
 | `orders` | `count`, `sha256` (content hash excluding `run_id`), `gross_notional`. |
-| `failure_stage`, `error` | For failed portfolios: `slice`, `build`, `solve`, `worker` (the worker died, or its environment fingerprint differed from the run's), `skipped`, `sink`, or `cluster` (on the `*` record: no worker came up), and the error. |
+| `failure_stage`, `error` | For failed portfolios: `slice`, `build`, `solve`, `worker` (the worker died, or its environment fingerprint differed from the run's), `skipped` (the error names the failed predecessor, or the `fail_fast` cut-off), `sink`, or `cluster` (on the `*` record: no worker came up), and the error. |
 
 ### Content hashes
 
@@ -97,4 +99,7 @@ metadata. Source hashes are of the function's source text.
 
 Checked in order: `config`, `code` (git sha), `versions` (libraries, solver, step packages, and the set of worker environments — not the hosts they ran on), `datasets` (per dataset), `assembly` (the steps, their source and params hashes, and their `rows_out` and `columns_added`), then per portfolio
 `status`, `rules`, `spec`, `solve` (objective value), `orders`. Only the first divergence per portfolio
-is reported.
+is reported. The `schedule` record, `solve_order`, and `predecessors` are never compared: the schedule
+must not change results, and a `dependencies` change already shows at `config`.
+
+Manifests written before the derived schedule existed carry an `execution_mode` field and no longer load.

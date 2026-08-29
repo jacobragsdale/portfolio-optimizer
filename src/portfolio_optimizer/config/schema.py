@@ -14,7 +14,7 @@ from typing import get_type_hints
 
 import pandas as pd
 
-from portfolio_optimizer import assembly, loaders, rules, sinks, terms
+from portfolio_optimizer import assembly, loaders, rules, sinks, solve_order, terms
 from portfolio_optimizer.config.models import STEP_NAME_DESCRIPTION, STEP_NAME_PATTERN, RunConfig
 from portfolio_optimizer.config.resolve import StepKind
 from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm
@@ -27,7 +27,7 @@ SCHEMA_ID = "https://raw.githubusercontent.com/jacobragsdale/portfolio-optimizer
 type JsonObject = dict[str, object]
 
 _ENUM_DESCRIPTIONS: Mapping[str, str] = {
-    "ExecutionMode": "Where build and solve happen; see `execution.mode`.",
+    "Dependencies": "Which higher-priority portfolios a portfolio waits for; see `execution.dependencies`.",
     "JoinCardinality": "Expected key cardinality of a join, enforced by pandas.",
     "JoinHow": "Join type: keep every left row, or only matched rows.",
     "OnError": "What happens after a portfolio fails.",
@@ -41,7 +41,8 @@ _STEP_DEFINITIONS: Mapping[StepKind, tuple[str, str, ModuleType]] = {
         loaders,
     ),
     "assembly": ("AssemblyStep", "An assembly step from `assembly.py`: `(frames: Frames[, params]) -> Frames`, run once over every loaded dataset.", assembly),
-    "rule": ("RuleStep", "A business-logic rule from `rules.py`: `(data: PortfolioData[, params][, ctx: SolveContext]) -> PortfolioData`.", rules),
+    "rule": ("RuleStep", "A business-logic rule from `rules.py`: `(data: PortfolioData[, params]) -> PortfolioData`.", rules),
+    "solve_order": ("SolveOrderStep", "A solve-order step from `solve_order.py`: `(data: PortfolioData[, params]) -> Decimal`; lower keys solve first, ties break on `portfolio_id`.", solve_order),
     "term": ("TermStep", "An objective term from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ObjectiveTerm`.", terms),
     "constraint": ("ConstraintStep", "A constraint from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ConstraintSet`.", terms),
     "sink": ("SinkStep", "An order sink from `sinks.py`: `(orders: DataFrame, io: IoContext[, params]) -> tuple[Artifact, ...]`.", sinks),
@@ -61,6 +62,7 @@ def run_config_schema() -> JsonObject:
     properties["portfolios"] = _portfolios_schema(properties["portfolios"])
     properties["assembly"] = _with_items(properties["assembly"], "AssemblyStep")
     properties["rules"] = _with_items(properties["rules"], "RuleStep")
+    properties["solve_order"] = _with_nullable_ref(properties["solve_order"], "SolveOrderStep")
     properties["constraints"] = _with_items(properties["constraints"], "ConstraintStep")
     properties["sink"] = _with_ref(properties["sink"], "SinkStep")
     properties["datasets"] = _datasets_schema(properties["datasets"])
@@ -113,6 +115,8 @@ def _kind_of(module: ModuleType, returns: object) -> StepKind | None:
         return "assembly"
     if module is rules:
         return "rule"
+    if module is solve_order:
+        return "solve_order"
     if module is sinks:
         return "sink"
     if returns is ObjectiveTerm:
@@ -200,6 +204,13 @@ def _with_ref(property_schema: object, definition: str) -> JsonObject:
     schema = _object(property_schema)
     schema.pop("allOf", None)
     return {**schema, "$ref": f"#/$defs/{definition}"}
+
+
+def _with_nullable_ref(property_schema: object, definition: str) -> JsonObject:
+    """An optional step: pydantic emits ``anyOf [StepSpec, null]``; point the first branch at the kind's definition."""
+    schema = _object(property_schema)
+    schema.pop("anyOf", None)
+    return {**schema, "anyOf": [{"$ref": f"#/$defs/{definition}"}, {"type": "null"}]}
 
 
 def _with_items(property_schema: object, definition: str) -> JsonObject:

@@ -1,4 +1,4 @@
-"""Pure-data results: the problem spec, solutions, verification reports, and chained context.
+"""Pure-data results: the problem spec, solutions, verification reports, and the chain between portfolios.
 
 Everything here is picklable and free of cvxpy, so it can cross process boundaries and be
 persisted for audit.
@@ -6,7 +6,7 @@ persisted for audit.
 
 import hashlib
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -62,6 +62,7 @@ class ProblemSpec:
     independent of prior portfolios; chain-aware constraints combine it with a
     :class:`ChainState` at solve time. ``columns`` are the numeric per-security columns the build
     exported from the universe, ``flags`` the boolean ones; the two namespaces do not overlap.
+    :attr:`buyable` is the set the chain couples this portfolio through.
     """
 
     portfolio_id: str
@@ -164,6 +165,15 @@ class ProblemSpec:
         """Number of securities."""
         return len(self.security_ids)
 
+    @property
+    def buyable(self) -> Flags:
+        """Securities a strictly positive net buy is allowed in: ``ub > w0``.
+
+        Portfolios couple across a run through buys only, so this is the set the dependency graph and
+        the chain state are built from; a security frozen or capped at its current weight is outside it.
+        """
+        return self.ub > self.w0
+
     def column(self, name: str) -> F64:
         """Return a numeric per-security column exported from the universe frame."""
         try:
@@ -250,12 +260,14 @@ class OrderInputs:
     price: tuple[Decimal, ...]
     shares_held: tuple[int, ...]
     lot_size: tuple[int, ...]
+    w0: tuple[Decimal, ...]
+    ub: tuple[Decimal, ...]
     nav: Decimal
     min_trade_notional: Decimal
 
     def __post_init__(self) -> None:
         n = len(self.security_ids)
-        if not (len(self.price) == len(self.shares_held) == len(self.lot_size) == n):
+        if not (len(self.price) == len(self.shares_held) == len(self.lot_size) == len(self.w0) == len(self.ub) == n):
             msg = f"order inputs are not aligned to {n} securities"
             raise ValueError(msg)
 
@@ -421,42 +433,76 @@ class RuleAuditRecord:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class ChainState:
-    """Aggregate of prior portfolios' orders, aligned to one spec's ``security_ids``."""
+    """What higher-priority portfolios bought among the securities this one may buy, aligned to one spec.
+
+    ``bought_shares[i]`` is the whole shares predecessors bought of ``security_ids[i]``, and zero
+    wherever this portfolio cannot buy (``ub == w0``): portfolios couple through buys only, so a
+    security this portfolio cannot buy carries no chain state. That mask is what makes the state a
+    function of the *overlapping* predecessors alone — the same array whether the run folded every
+    earlier portfolio or only those sharing a buyable name. ``predecessors`` names what was folded,
+    in solve order; it is provenance, not an input, so :meth:`content_hash` covers the ids and the
+    shares only.
+    """
 
     security_ids: tuple[str, ...]
-    cumulative_shares: F64
-    portfolios_done: int
+    bought_shares: F64
+    predecessors: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "cumulative_shares", _readonly(self.cumulative_shares))
-        if self.cumulative_shares.shape != (len(self.security_ids),):
-            msg = f"cumulative_shares has shape {self.cumulative_shares.shape}, expected {(len(self.security_ids),)}"
+        object.__setattr__(self, "bought_shares", _readonly(self.bought_shares))
+        if self.bought_shares.shape != (len(self.security_ids),):
+            msg = f"bought_shares has shape {self.bought_shares.shape}, expected {(len(self.security_ids),)}"
             raise ValueError(msg)
 
     def content_hash(self) -> str:
-        """Deterministic sha256 of the chain inputs a solve depended on."""
+        """Deterministic sha256 of the chain inputs a solve depended on; independent of which predecessors produced them."""
         digest = hashlib.sha256()
-        digest.update(json.dumps({"security_ids": list(self.security_ids), "portfolios_done": self.portfolios_done}).encode())
-        digest.update(np.ascontiguousarray(self.cumulative_shares + 0.0).tobytes())
+        digest.update(json.dumps({"security_ids": list(self.security_ids)}).encode())
+        digest.update(np.ascontiguousarray(self.bought_shares + 0.0).tobytes())
         return digest.hexdigest()
 
     @classmethod
     def empty(cls, security_ids: tuple[str, ...]) -> Self:
-        """The state before any portfolio has solved."""
-        return cls(security_ids=security_ids, cumulative_shares=np.zeros(len(security_ids)), portfolios_done=0)
+        """The state of a portfolio with no predecessors."""
+        return cls(security_ids=security_ids, bought_shares=np.zeros(len(security_ids)))
 
     def to_npz(self, path: Path) -> None:
         """Persist the chain inputs a solve depended on."""
-        meta = {"security_ids": list(self.security_ids), "portfolios_done": self.portfolios_done}
-        np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(meta, sort_keys=True)), cumulative_shares=self.cumulative_shares)
+        meta = {"security_ids": list(self.security_ids), "predecessors": list(self.predecessors)}
+        np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(meta, sort_keys=True)), bought_shares=self.bought_shares)
 
     @classmethod
     def from_npz(cls, path: Path) -> Self:
         """Load a chain state written by :meth:`to_npz`."""
         with np.load(path, allow_pickle=False) as data:
             meta = json.loads(str(data["__meta__"]))
-            shares = np.asarray(data["cumulative_shares"], dtype=np.float64)
-        return cls(security_ids=tuple(str(s) for s in meta["security_ids"]), cumulative_shares=shares, portfolios_done=int(meta["portfolios_done"]))
+            shares = np.asarray(data["bought_shares"], dtype=np.float64)
+        return cls(security_ids=tuple(str(s) for s in meta["security_ids"]), bought_shares=shares, predecessors=tuple(str(p) for p in meta["predecessors"]))
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Contribution:
+    """One solved portfolio's buys, as the slim object a dependent solve receives: whole shares bought, by security."""
+
+    portfolio_id: str
+    security_ids: tuple[str, ...]
+    bought_shares: F64
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "bought_shares", _readonly(self.bought_shares))
+        if self.bought_shares.shape != (len(self.security_ids),):
+            msg = f"bought_shares has shape {self.bought_shares.shape}, expected {(len(self.security_ids),)}"
+            raise ValueError(msg)
+
+    @classmethod
+    def from_orders(cls, portfolio_id: str, orders: pd.DataFrame) -> Self:
+        """The BUY rows of an orders frame; sells never reach a later portfolio."""
+        buys = orders[orders["side"] == "BUY"]
+        return cls(
+            portfolio_id=portfolio_id,
+            security_ids=tuple(str(security) for security in buys["security_id"]),
+            bought_shares=np.array([float(int(quantity)) for quantity in buys["quantity"]], dtype=np.float64),
+        )
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -483,44 +529,17 @@ class PortfolioFailure:
     message: str
 
 
-@dataclass(frozen=True, slots=True)
-class SolveContext:
-    """Immutable accumulation of prior portfolios' results, in solve order.
+def derive_chain_state(security_ids: tuple[str, ...], buyable: Flags, contributions: Sequence[Contribution]) -> ChainState:
+    """Fold predecessors' buys onto ``security_ids`` and zero every security this portfolio cannot buy.
 
-    ``cumulative_shares`` — absolute shares ordered so far, by security — is folded in by
-    :meth:`with_result` as each result arrives, so deriving a chain state costs one pass over the
-    spec's securities rather than a walk over every prior portfolio's orders. A context built
-    directly from ``results`` computes it once on construction.
+    ``contributions`` must already be in solve order; a security no predecessor bought is zero.
     """
-
-    results: tuple[PortfolioResult, ...] = ()
-    cumulative_shares: Mapping[str, float] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.results and not self.cumulative_shares:
-            object.__setattr__(self, "cumulative_shares", _fold_orders({}, *(result.orders for result in self.results)))
-
-    def with_result(self, result: PortfolioResult) -> "SolveContext":
-        """Return a new context that also carries ``result``."""
-        return SolveContext(results=(*self.results, result), cumulative_shares=_fold_orders(self.cumulative_shares, result.orders))
-
-    @property
-    def portfolios_done(self) -> int:
-        """Number of portfolios already solved."""
-        return len(self.results)
-
-
-def _fold_orders(totals: Mapping[str, float], *orders: pd.DataFrame) -> dict[str, float]:
-    """``totals`` plus the absolute quantity of every order, by security."""
-    folded = dict(totals)
-    for frame in orders:
-        for security, quantity in zip(frame["security_id"], frame["quantity"], strict=True):
-            key = str(security)
-            folded[key] = folded.get(key, 0.0) + float(int(quantity))
-    return folded
-
-
-def derive_chain_state(context: SolveContext, security_ids: tuple[str, ...]) -> ChainState:
-    """Project the shares ordered so far onto ``security_ids``; a name no prior portfolio traded is zero."""
-    totals = context.cumulative_shares
-    return ChainState(security_ids=security_ids, cumulative_shares=np.array([totals.get(s, 0.0) for s in security_ids], dtype=np.float64), portfolios_done=context.portfolios_done)
+    if buyable.shape != (len(security_ids),):
+        msg = f"buyable has shape {buyable.shape}, expected {(len(security_ids),)}"
+        raise ValueError(msg)
+    totals: dict[str, float] = {}
+    for contribution in contributions:
+        for security, shares in zip(contribution.security_ids, contribution.bought_shares, strict=True):
+            totals[security] = totals.get(security, 0.0) + float(shares)
+    projected = np.array([totals.get(security, 0.0) for security in security_ids], dtype=np.float64)
+    return ChainState(security_ids=security_ids, bought_shares=np.where(buyable, projected, 0.0), predecessors=tuple(contribution.portfolio_id for contribution in contributions))

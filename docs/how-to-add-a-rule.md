@@ -35,13 +35,13 @@ The signature is the whole contract:
 - `data: PortfolioData` — required, exactly this name and type.
 - `params: <Params subclass>` — optional; the engine validates the JSON `params` object against it
   before any data loads. Money and weights arrive as `Decimal`, so write `Decimal` fields for them.
-- `ctx: SolveContext` — optional; declare it only if the rule needs earlier portfolios' results
-  (see step 4).
 - Return `PortfolioData`, built with `data.with_changes(...)`. Construction re-validates every frame
   and the cross-frame invariants, so a rule cannot hand the optimizer an inconsistent bundle.
 
 Keep rules pure: no I/O, no clock, no randomness. The pipeline records the function's source hash and
-row counts before and after, so a rule that reads the world would make the manifest lie.
+row counts before and after, so a rule that reads the world would make the manifest lie. A rule never
+sees other portfolios: it runs in a worker on one bundle before anything is solved, which is what lets
+every portfolio build at once.
 
 ## 2. Name it in the run config
 
@@ -68,16 +68,15 @@ uv run --env-file .env portfolio-optimizer validate-config configs/my_run.json
 A typo in the name, a parameter the model does not declare, a wrong annotation, or an unexpected
 argument is reported here, with the function's qualified name and the reason.
 
-## 4. If the rule needs earlier portfolios' results
+## 4. If you want portfolios to solve concurrently, shrink the buy universe
 
-Add `ctx: SolveContext`. `ctx.results` holds every `PortfolioResult` solved so far in this run, in
-solve order; `avoid_cross_portfolio_wash_sales` in `rules.py` is a worked example. Two consequences,
-both enforced at config load:
-
-- The run's `execution.mode` must be `sequential` (rules run during build, and only the sequential
-  mode builds with a live context).
-- `execution.on_error` must be `fail_fast`; skipping a failed portfolio would silently change what
-  later rules see.
+Portfolios wait on each other only when they can both *buy* the same security. A rule that takes a name
+out of the buy universe — marking it `restricted` (frozen at its current weight, as `restrict_low_liquidity`
+does) or setting `max_weight` to the current weight — removes every dependency that ran through that
+name, while the position stays sellable. A book where every account holds the same bonds but nobody
+buys them solves as many independent groups once a rule says so; the manifest's `schedule` record
+shows how many. A rule that needs what other portfolios did is not a rule: that dependency belongs in a
+constraint that declares `chain` — see [how to add a term or constraint](how-to-add-a-term.md).
 
 ## 5. Test it
 

@@ -32,14 +32,15 @@ def _with_assembly(*steps: object) -> ResolvedConfig:
 
 def _loaded_with(example_loaded: LoadedDatasets, **frames: object) -> LoadedDatasets:
     merged = {**example_loaded.frames, **frames}
-    return LoadedDatasets(portfolio_ids=example_loaded.portfolio_ids, frames=merged, constraints=example_loaded.constraints, audits=example_loaded.audits)  # ty: ignore[invalid-argument-type]  # frames are DataFrames by construction in every caller
+    return LoadedDatasets(portfolio_ids=example_loaded.portfolio_ids, solve_orders=example_loaded.solve_orders, frames=merged, constraints=example_loaded.constraints, audits=example_loaded.audits)  # ty: ignore[invalid-argument-type]  # frames are DataFrames by construction in every caller
 
 
 def test_example_data_loads_in_solve_order_with_audit_records(example_loaded: LoadedDatasets) -> None:
     assert example_loaded.portfolio_ids == ("P1", "P2")
+    assert example_loaded.solve_orders == {"P1": 0, "P2": 1}
     assert set(example_loaded.frames) == {"holdings", "universe", "details", "targets", "prices"}
     audit = {record.name: record for record in example_loaded.audits}
-    assert audit["holdings"].rows == 3
+    assert audit["holdings"].rows == 4
     assert audit["constraints"].rows == 2
     assert len(audit["prices"].content_sha256) == 64
     assert audit["universe"].loader_qualname == "portfolio_optimizer.loaders:csv"
@@ -52,12 +53,12 @@ def test_assembly_joins_prices_into_universe_drops_them_and_slices_each_portfoli
     assert [audit.qualname for audit in assembled.audits] == ["portfolio_optimizer.assembly:join", "portfolio_optimizer.assembly:drop"]
     assert assembled.audits[0].columns_added == {"universe": ("price",)}
     assert assembled.audits[1].rows_in["prices"] == 3
-    assert assembled.audits[1].rows_out == {"holdings": 3, "universe": 3, "details": 2, "targets": 3}
+    assert assembled.audits[1].rows_out == {"holdings": 4, "universe": 3, "details": 2, "targets": 3}
     p1 = slice_portfolio(assembled, PortfolioId("P1"))
     p2 = slice_portfolio(assembled, PortfolioId("P2"))
     assert isinstance(p1, PortfolioData)
     assert p1.holdings["security_id"].tolist() == ["A", "B"]
-    assert p2.holdings["security_id"].tolist() == ["C"]
+    assert p2.holdings["security_id"].tolist() == ["A", "B"]
     assert p1.details.state == "NY"
     assert p2.details.name == "Beta Income"
     assert len(p1.targets) == 3
@@ -144,7 +145,13 @@ def test_analytics_dtype_conflicts_between_holdings_and_universe_fail_at_slice(e
 
 
 def test_missing_constraints_for_a_portfolio_fail_loudly(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
-    partial = LoadedDatasets(portfolio_ids=example_loaded.portfolio_ids, frames=example_loaded.frames, constraints={"P1": example_loaded.constraints["P1"]}, audits=example_loaded.audits)
+    partial = LoadedDatasets(
+        portfolio_ids=example_loaded.portfolio_ids,
+        solve_orders=example_loaded.solve_orders,
+        frames=example_loaded.frames,
+        constraints={"P1": example_loaded.constraints["P1"]},
+        audits=example_loaded.audits,
+    )
     with pytest.raises(LoadError, match="constraints missing for portfolios \\['P2'\\]"):
         assemble(partial, example_resolved)
 

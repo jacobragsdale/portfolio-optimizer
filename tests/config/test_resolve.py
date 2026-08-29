@@ -16,7 +16,7 @@ from portfolio_optimizer.config.models import RunConfig, StepSpec
 from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedStep, StepKind, resolve_config, resolve_step
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
-from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec, SolveContext
+from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec
 from portfolio_optimizer.domain.types import Params
 from tests.conftest import AS_OF
 
@@ -36,8 +36,8 @@ def rule_with_params(data: PortfolioData, params: TiltParams) -> PortfolioData:
     return data.with_rule_applied(f"tilt:{params.strength}")
 
 
-def chained_rule(data: PortfolioData, ctx: SolveContext) -> PortfolioData:
-    return data.with_rule_applied(f"chained:{ctx.portfolios_done}")
+def chained_rule(data: PortfolioData, ctx: ChainState) -> PortfolioData:  # rules never see the chain; the parameter is the case under test
+    raise NotImplementedError
 
 
 def rule_wrong_data_annotation(data: pd.DataFrame) -> PortfolioData:  # the annotation is the case under test
@@ -68,7 +68,11 @@ def rule_untyped_params(data: PortfolioData, params: dict[str, object]) -> Portf
     raise NotImplementedError
 
 
-def rule_wrong_ctx(data: PortfolioData, ctx: ChainState) -> PortfolioData:  # see above
+def solve_order_step(data: PortfolioData) -> Decimal:
+    return Decimal(len(data.holdings))
+
+
+def solve_order_wrong_return(data: PortfolioData) -> float:  # the annotation is the case under test
     raise NotImplementedError
 
 
@@ -142,7 +146,7 @@ def test_qualified_name_resolves_an_external_module(fake_steps: str) -> None:
 
 
 def test_context_parameter_is_detected_by_name_and_type(fake_steps: str) -> None:
-    assert resolve_step(spec(f"{fake_steps}:chained_rule"), "rule").context_name == "ctx"
+    assert resolve_step(spec(f"{fake_steps}:plain_rule"), "rule").context_name is None
     assert resolve_step(spec(f"{fake_steps}:chained_constraint"), "constraint").context_name == "chain"
     assert resolve_step(spec(f"{fake_steps}:term"), "term").context_name is None
 
@@ -153,12 +157,13 @@ VIOLATIONS: list[tuple[str, str, StepKind, Mapping[str, object], str]] = [
     ("attribute is not a function", "fake_steps:NOT_A_FUNCTION", "rule", {}, "has no function"),
     ("wrong data annotation", "fake_steps:rule_wrong_data_annotation", "rule", {}, "'data' must be annotated PortfolioData, got DataFrame"),
     ("missing data parameter", "fake_steps:rule_missing_data", "rule", {}, "missing required parameter 'data'"),
-    ("unexpected parameter", "fake_steps:rule_extra_parameter", "rule", {}, "unexpected parameter 'universe'; allowed: ['data', 'params', 'ctx']"),
+    ("unexpected parameter", "fake_steps:rule_extra_parameter", "rule", {}, "unexpected parameter 'universe'; allowed: ['data', 'params']"),
     ("**kwargs", "fake_steps:rule_var_kwargs", "rule", {}, "no *args, **kwargs"),
     ("wrong return", "fake_steps:rule_wrong_return", "rule", {}, "return annotation must be PortfolioData, got DataFrame"),
     ("no return annotation", "fake_steps:rule_no_return_annotation", "rule", {}, "return annotation must be PortfolioData, got nothing"),
     ("params not a Params model", "fake_steps:rule_untyped_params", "rule", {}, "'params' must be annotated with a Params subclass"),
-    ("wrong ctx annotation", "fake_steps:rule_wrong_ctx", "rule", {}, "'ctx' must be annotated SolveContext, got ChainState"),
+    ("rule asking for the chain", "fake_steps:chained_rule", "rule", {}, "unexpected parameter 'ctx'; allowed: ['data', 'params']"),
+    ("solve-order step returning float", "fake_steps:solve_order_wrong_return", "solve_order", {}, "return annotation must be Decimal, got float"),
     ("params given to a rule without params", "fake_steps:plain_rule", "rule", {"strength": "1"}, "does not take params, but the config supplies ['strength']"),
     ("params missing a required field", "fake_steps:rule_with_params", "rule", {}, "strength: Field required"),
     ("params with an unknown field", "fake_steps:rule_with_params", "rule", {"strength": "1", "tilt": "2"}, "tilt: Extra inputs are not permitted"),
@@ -210,7 +215,7 @@ def test_loaders_may_be_async_and_invoke_async_runs_both_styles(fake_steps: str)
 def test_invoke_supplies_params_and_context(fake_steps: str, make: object) -> None:
     del make
     step = resolve_step(spec(f"{fake_steps}:rule_with_params", strength="0.5"), "rule")
-    chained = resolve_step(spec(f"{fake_steps}:chained_rule"), "rule")
+    chained = resolve_step(spec(f"{fake_steps}:chained_constraint"), "constraint")
     plain_loader = resolve_step(spec(f"{fake_steps}:loader"), "loader")
     from tests.conftest import make_portfolio_data  # local import keeps the header about the unit under test
 
@@ -218,11 +223,8 @@ def test_invoke_supplies_params_and_context(fake_steps: str, make: object) -> No
     result = step.invoke(data=data)
     assert isinstance(result, PortfolioData)
     assert result.applied_rules == ("tilt:0.5",)
-    chained_result = chained.invoke(data=data, context=SolveContext())
-    assert isinstance(chained_result, PortfolioData)
-    assert chained_result.applied_rules == ("chained:0",)
-    with pytest.raises(ValueError, match="requires 'ctx'"):
-        chained.invoke(data=data)
+    with pytest.raises(ValueError, match="requires 'chain'"):
+        chained.invoke(x=None, spec=None)
     frame = plain_loader.invoke(request=LoadRequest(dataset="holdings", portfolio_ids=(), as_of=data.as_of, data_root=Path(), run_id="r"))
     assert isinstance(frame, pd.DataFrame)
 
@@ -230,7 +232,7 @@ def test_invoke_supplies_params_and_context(fake_steps: str, make: object) -> No
 def test_source_hash_is_stable_and_function_specific(fake_steps: str) -> None:
     first = resolve_step(spec(f"{fake_steps}:plain_rule"), "rule")
     second = resolve_step(spec(f"{fake_steps}:plain_rule"), "rule")
-    other = resolve_step(spec(f"{fake_steps}:chained_rule"), "rule")
+    other = resolve_step(spec(f"{fake_steps}:rule_with_params", strength="1"), "rule")
     assert first.source_sha256 == second.source_sha256
     assert first.source_sha256 != other.source_sha256
 
@@ -238,8 +240,8 @@ def test_source_hash_is_stable_and_function_specific(fake_steps: str) -> None:
 # --- resolve_config ---
 
 
-def fake_config(fake_steps: str, *, mode: str = "sequential", on_error: str = "fail_fast", rules: list[str] | None = None, constraints: list[str] | None = None) -> RunConfig:
-    body = {
+def fake_config(fake_steps: str, *, on_error: str = "fail_fast", rules: list[str] | None = None, constraints: list[str] | None = None, solve_order: str | None = None) -> RunConfig:
+    body: dict[str, object] = {
         "run": {"name": "r", "as_of": "2026-01-01T00:00:00Z"},
         "portfolios": f"{fake_steps}:loader",
         "datasets": {name: {"loader": f"{fake_steps}:loader"} for name in ("holdings", "universe", "details", "targets")} | {"constraints": {"loader": f"{fake_steps}:constraints_loader"}},
@@ -247,16 +249,20 @@ def fake_config(fake_steps: str, *, mode: str = "sequential", on_error: str = "f
         "objective": {"terms": [f"{fake_steps}:term"]},
         "constraints": constraints if constraints is not None else [],
         "sink": f"{fake_steps}:sink",
-        "execution": {"mode": mode, "on_error": on_error},
+        "execution": {"on_error": on_error},
     }
+    if solve_order is not None:
+        body["solve_order"] = solve_order
     return RunConfig.model_validate_json(json.dumps(body))
 
 
 def test_resolve_config_resolves_every_step(fake_steps: str) -> None:
-    resolved = resolve_config(fake_config(fake_steps, constraints=[f"{fake_steps}:chained_constraint"]), config_sha256="abc")
-    assert [step.kind for step in resolved.all_steps] == ["portfolios", "loader", "loader", "loader", "loader", "constraints_loader", "rule", "term", "constraint", "sink"]
+    resolved = resolve_config(fake_config(fake_steps, constraints=[f"{fake_steps}:chained_constraint"], solve_order=f"{fake_steps}:solve_order_step"), config_sha256="abc")
+    assert [step.kind for step in resolved.all_steps] == ["portfolios", "loader", "loader", "loader", "loader", "constraints_loader", "rule", "solve_order", "term", "constraint", "sink"]
     assert resolved.loaders["constraints"].kind == "constraints_loader"
+    assert resolved.solve_order is not None and resolved.solve_order.qualname == "fake_steps:solve_order_step"
     assert [step.qualname for step in resolved.chain_aware_steps] == ["fake_steps:chained_constraint"]
+    assert resolve_config(fake_config(fake_steps), config_sha256="abc").solve_order is None
 
 
 def test_resolve_config_reports_every_failing_step_at_once(fake_steps: str) -> None:
@@ -267,26 +273,15 @@ def test_resolve_config_reports_every_failing_step_at_once(fake_steps: str) -> N
     assert info.value.failures[1].startswith("rules[1]: ")
 
 
-@pytest.mark.parametrize(
-    ("mode", "on_error", "rules", "constraints", "fragment"),
-    [
-        ("parallel", "fail_fast", [], ["chained_constraint"], "'parallel' cannot run chain-aware steps"),
-        ("parallel", "fail_fast", ["chained_rule"], [], "'parallel' cannot run chain-aware steps"),
-        ("parallel_build_sequential_solve", "fail_fast", ["chained_rule"], [], "rules cannot take 'ctx'"),
-        ("sequential", "continue", [], ["chained_constraint"], "'continue' is ambiguous with chain-aware steps"),
-    ],
-)
-def test_execution_mode_is_checked_against_chain_aware_steps(fake_steps: str, mode: str, on_error: str, rules: list[str], constraints: list[str], fragment: str) -> None:
-    config = fake_config(fake_steps, mode=mode, on_error=on_error, rules=[f"{fake_steps}:{r}" for r in rules], constraints=[f"{fake_steps}:{c}" for c in constraints])
-    with pytest.raises(ConfigResolutionError, match=fragment):
-        resolve_config(config, config_sha256="abc")
+def test_continue_is_allowed_with_chain_aware_steps(fake_steps: str) -> None:
+    resolved = resolve_config(fake_config(fake_steps, on_error="continue", constraints=[f"{fake_steps}:chained_constraint"]), config_sha256="abc")
+    assert len(resolved.chain_aware_steps) == 1
+    assert resolved.config.execution.dependencies == "overlap"
 
 
-def test_chain_aware_steps_are_allowed_where_the_mode_supports_them(fake_steps: str) -> None:
-    sequential = resolve_config(fake_config(fake_steps, rules=[f"{fake_steps}:chained_rule"], constraints=[f"{fake_steps}:chained_constraint"]), config_sha256="abc")
-    assert len(sequential.chain_aware_steps) == 2
-    pbss = resolve_config(fake_config(fake_steps, mode="parallel_build_sequential_solve", constraints=[f"{fake_steps}:chained_constraint"]), config_sha256="abc")
-    assert len(pbss.chain_aware_steps) == 1
+def test_a_failing_solve_order_step_is_reported_under_its_own_key(fake_steps: str) -> None:
+    with pytest.raises(ConfigResolutionError, match=r"solve_order: .*return annotation must be Decimal"):
+        resolve_config(fake_config(fake_steps, solve_order=f"{fake_steps}:solve_order_wrong_return"), config_sha256="abc")
 
 
 def test_resolved_step_is_a_plain_frozen_record(fake_steps: str) -> None:

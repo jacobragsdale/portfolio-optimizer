@@ -57,6 +57,7 @@ class LoadedDatasets:
     """Everything the loaders returned, before assembly."""
 
     portfolio_ids: tuple[PortfolioId, ...]
+    solve_orders: Mapping[PortfolioId, int]
     frames: Mapping[str, pd.DataFrame]
     constraints: Mapping[str, Mapping[str, object]]
     audits: tuple[DatasetAudit, ...]
@@ -67,11 +68,14 @@ class LoadedDatasets:
 class AssembledDatasets:
     """Engine-known frames after the assembly steps and schema validation, ready to slice per portfolio.
 
-    ``extras`` are the remaining datasets — every one that is not engine-known — carried into each
-    portfolio's bundle. ``audits`` record what each assembly step did, for the manifest.
+    ``portfolio_ids`` are in ascending ``solve_order`` then ``portfolio_id``; ``solve_orders`` keeps
+    the column's values, the solve-order key when no step computes one. ``extras`` are the remaining
+    datasets — every one that is not engine-known — carried into each portfolio's bundle. ``audits``
+    record what each assembly step did, for the manifest.
     """
 
     portfolio_ids: tuple[PortfolioId, ...]
+    solve_orders: Mapping[PortfolioId, int]
     holdings: pd.DataFrame
     universe: pd.DataFrame
     details: pd.DataFrame
@@ -140,8 +144,10 @@ async def load_datasets_async(resolved: ResolvedConfig, *, data_root: Path, run_
     except FrameSchemaError as error:
         msg = f"portfolios: {error}"
         raise LoadError(msg) from error
-    ordered = portfolios.sort_values("solve_order", kind="stable")
+    keyed = portfolios if "solve_order" in portfolios.columns else portfolios.assign(solve_order=pd.Series(0, index=portfolios.index, dtype="Int64"))
+    ordered = keyed.assign(portfolio_id=keyed["portfolio_id"].astype(str)).sort_values(["solve_order", "portfolio_id"], kind="stable")
     portfolio_ids = tuple(PortfolioId(str(value)) for value in ordered["portfolio_id"])
+    solve_orders = {PortfolioId(str(portfolio_id)): int(value) for portfolio_id, value in zip(ordered["portfolio_id"], ordered["solve_order"], strict=True)}
     audits = [_audit("portfolios", resolved.portfolios, portfolios, PORTFOLIOS.key, time.perf_counter() - started)]
     log.info("portfolio list loaded: %d portfolio(s); loading %d dataset(s) concurrently", len(portfolio_ids), len(resolved.loaders), extra={"run_id": run_id, "stage": "load"})
 
@@ -160,7 +166,7 @@ async def load_datasets_async(resolved: ResolvedConfig, *, data_root: Path, run_
     frames = {outcome.name: outcome.frame for outcome in loaded if outcome.frame is not None}
     constraints: Mapping[str, Mapping[str, object]] = next((outcome.constraints for outcome in loaded if outcome.constraints is not None), {})
     audits.extend(outcome.audit for outcome in loaded)
-    return LoadedDatasets(portfolio_ids=portfolio_ids, frames=frames, constraints=constraints, audits=tuple(audits), run_id=run_id)
+    return LoadedDatasets(portfolio_ids=portfolio_ids, solve_orders=solve_orders, frames=frames, constraints=constraints, audits=tuple(audits), run_id=run_id)
 
 
 async def _load_dataset(name: str, step: ResolvedStep, request: LoadRequest) -> _Loaded | _Failed:
@@ -272,6 +278,7 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig) -> AssembledDatas
         raise LoadError(msg)
     return AssembledDatasets(
         portfolio_ids=loaded.portfolio_ids,
+        solve_orders=loaded.solve_orders,
         holdings=frames["holdings"],
         universe=frames["universe"],
         details=details,

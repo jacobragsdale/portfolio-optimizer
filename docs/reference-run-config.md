@@ -19,29 +19,29 @@ Ways to validate a config:
 | Method | What it checks |
 |---|---|
 | `"$schema": "./run-config.schema.json"` at the top of the file | Live validation and completion in editors that honor `$schema` (VS Code, JetBrains). The key is accepted and ignored by the engine. |
-| `uv run portfolio-optimizer validate-config CONFIG` | Everything: the models, plus importing every step, checking signatures, validating params (including custom steps), and the execution-mode rules. |
+| `uv run portfolio-optimizer validate-config CONFIG` | Everything: the models, plus importing every step, checking signatures, and validating params (including custom steps). Prints how dependencies between portfolios will be derived. |
 | Any draft 2020-12 validator (`check-jsonschema`, `jsonschema`, `ajv`) against the schema file | The schema alone — suitable for CI pipelines that do not install the engine. |
 
-The schema cannot express two rules the models enforce: `as_of` must carry a time zone, and chain-aware
-steps (those declaring `ctx`/`chain`) are only allowed under the sequential modes with `fail_fast`.
-`validate-config` reports both.
+The schema cannot express one rule the models enforce: `as_of` must carry a time zone.
+`validate-config` reports it.
 
 ## Top level
 
 | Key | Type | Required | Description |
 |---|---|---|---|
 | `run` | object | yes | Run identity: `name` (non-empty), `as_of` (timezone-aware ISO-8601 timestamp), `tags` (string map, default `{}`). |
-| `portfolios` | step or input | yes | Loader returning the `portfolios` frame (`portfolio_id`, `solve_order`); a bare step, or `{"loader": step[, "rate_limit": ...]}` to bound its source. Solve order is ascending `solve_order`. |
+| `portfolios` | step or input | yes | Loader returning the `portfolios` frame (`portfolio_id`, optional `solve_order`); a bare step, or `{"loader": step[, "rate_limit": ...]}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, values may repeat. |
 | `datasets` | object | yes | Named inputs, each `{"loader": step[, "rate_limit": name or bound]}`. `constraints` is always required; `holdings`, `universe`, `details`, and `targets` are required unless `assembly` is non-empty, in which case they may be produced by a step and are checked after assembly. Any other name is an extra dataset: visible to every assembly step, and carried into each portfolio's bundle as `data.extras` unless dropped. All dataset loaders run concurrently. |
 | `rate_limits` | object | no | Named pools that inputs on the same backend share; see below. Default `{}`. |
 | `assembly` | step list | no | Assembly steps, run in order over every loaded dataset before schema validation. Default `[]`. See below. |
-| `rules` | step list | no | Business-logic rules, run in order. Default `[]`. |
+| `rules` | step list | no | Business-logic rules, run in order on each portfolio's bundle; they never see other portfolios. Default `[]`. |
+| `solve_order` | step | no | A solve-order step evaluated on each ruled bundle; its `Decimal` key replaces the `solve_order` column. Lower solves first. |
 | `objective` | object | yes | `sense` (only `minimize`), `terms` (step list, at least one). |
 | `constraints` | step list | no | Constraint functions. Default `[]`. |
 | `solver` | object | no | `name` (default `CLARABEL`; must be installed in cvxpy), `options` (map of solver options passed verbatim to `Problem.solve`, default `{}`), `time_limit_s` (number > 0 or absent; mapped to `time_limit` for `CLARABEL`, `OSQP`, and `HIGHS` and to `time_limit_secs` for `SCS`; any other solver rejects it), `verbose` (default `false`). |
 | `post_solve` | object | no | `violation_tol` (default `1e-6`), `objective_rel_tol` (`1e-5`), `objective_abs_tol` (`1e-9`); all > 0. |
 | `sink` | step | yes | Where orders go. |
-| `execution` | object | yes | See below. Which cluster the run provisions and how many workers it has are settings, not config. |
+| `execution` | object | no | See below. Which cluster the run provisions and how many workers it has are settings, not config. |
 
 ## Step references
 
@@ -53,7 +53,7 @@ A step is either a bare string or an object:
 ```
 
 `name` is a bare identifier resolved in the template module for its kind (`loaders.py`, `assembly.py`,
-`rules.py`, `terms.py`, `sinks.py`), or a qualified `package.module:function`. `params` (default `{}`) is validated
+`rules.py`, `solve_order.py`, `terms.py`, `sinks.py`), or a qualified `package.module:function`. `params` (default `{}`) is validated
 against the function's `params` annotation; a function without a `params` argument rejects any params.
 
 | Kind | Signature |
@@ -61,13 +61,15 @@ against the function's `params` annotation; a function without a `params` argume
 | portfolios, dataset loader | `(request: LoadRequest[, params]) -> pd.DataFrame`, plain or `async def` |
 | constraints loader | `(request: LoadRequest[, params]) -> dict[str, dict[str, object]]`, plain or `async def` |
 | assembly step | `(frames: Frames[, params]) -> Frames` |
-| rule | `(data: PortfolioData[, params][, ctx: SolveContext]) -> PortfolioData` |
+| rule | `(data: PortfolioData[, params]) -> PortfolioData` |
+| solve-order step | `(data: PortfolioData[, params]) -> Decimal` — finite; lower solves first |
 | objective term | `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ObjectiveTerm` |
 | constraint | `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ConstraintSet` |
 | sink | `(orders: pd.DataFrame, io: IoContext[, params]) -> tuple[Artifact, ...]` |
 
 Optional arguments are recognized by name and must carry exactly the annotation shown. Only loaders may
-be `async def`; every other kind runs synchronously.
+be `async def`; every other kind runs synchronously. Declaring `chain` on a term or constraint is what
+makes a portfolio wait for higher-priority portfolios that can buy a security it can buy too.
 
 ## Rate limits
 
@@ -146,19 +148,15 @@ Unmatched rows of a Decimal (`object`) column are `None`.
 
 | Key | Type | Required | Description |
 |---|---|---|---|
-| `mode` | `sequential` \| `parallel_build_sequential_solve` \| `parallel` | yes | See table. |
-| `on_error` | `fail_fast` \| `continue` | no | Default `fail_fast`. |
+| `on_error` | `fail_fast` \| `continue` | no | Default `fail_fast`: every lower-priority portfolio is recorded `skipped` after the first failure. `continue`: only the portfolios that depended on the failure are skipped, naming it. |
+| `dependencies` | `overlap` \| `all` | no | Default `overlap`: a portfolio waits for every higher-priority portfolio whose buyable securities overlap its own. `all`: every higher-priority portfolio is a predecessor — the same answer, one line, for diagnosis. |
 
-| Mode | Slice, rules, and build | Solve | Chain-aware steps allowed |
-|---|---|---|---|
-| `sequential` | main process, solve order, live context | main process | rules (`ctx`), terms and constraints (`chain`) |
-| `parallel_build_sequential_solve` | workers, no context | main process, solve order, as each build arrives | terms and constraints (`chain`) only |
-| `parallel` | workers, whole pipeline per portfolio | in the worker | none |
-
-Config-load errors: a chain-aware step under `parallel`; a `ctx` rule under
-`parallel_build_sequential_solve`; any chain-aware step with `on_error: continue`. The workers are the Dask cluster the run provisions for itself — local worker
-processes on a laptop, pods on Kubernetes, or a scheduler someone else runs — sized by the execution
-settings below; they are recorded in the manifest's `settings` block and never affect the config hash.
+There is no execution mode. Every portfolio builds in a worker at once; solves are submitted with their
+predecessors' contributions as dependencies and run where the build lives; outcomes are classified in
+solve order. With no chain-aware term or constraint, no portfolio waits for another. The workers are the
+Dask cluster the run provisions for itself — local worker processes on a laptop, pods on Kubernetes, or
+a scheduler someone else runs — sized by the settings below; they are recorded in the manifest's
+`settings` block and never affect the config hash.
 
 ## Shipped steps
 
@@ -167,10 +165,11 @@ Loaders: `csv` (`path`, `decimal_columns`, `utc_datetime_columns`, `dtypes`), `c
 per portfolio under the input's rate limit), `parquet` (`path`, `decimal_columns`), `json_constraints`
 (`path`). The column-typing params apply to extra datasets only; engine-known datasets are typed by
 their schema. Assembly steps: `join`, `union`, `select`, `drop` (parameters above). Rules:
-`cap_single_name` (`max_weight`), `add_zero_alpha`, `restrict_low_liquidity` (`min_adv_shares`),
-`avoid_cross_portfolio_wash_sales` (`ctx`). Terms: `tracking_error`, `alpha` (`column`), `tax_cost`, `transaction_cost` (`cost_bps`),
-each with `weight` (default `"1"`). Constraints: `trade_balance`, `long_only`, `max_weight`,
-`cash_bounds`, `sector_bounds` (`tolerance`), `turnover_cap`, `cumulative_adv_participation` (`chain`).
+`cap_single_name` (`max_weight`), `add_zero_alpha`, `restrict_low_liquidity` (`min_adv_shares`).
+Solve-order steps: `furthest_from_target_first`. Terms: `tracking_error`, `alpha` (`column`), `tax_cost`,
+`transaction_cost` (`cost_bps`), each with `weight` (default `"1"`). Constraints: `trade_balance`,
+`long_only`, `max_weight`, `cash_bounds`, `sector_bounds` (`tolerance`), `turnover_cap`,
+`cumulative_adv_participation` (`chain`: `buy + sell ≤ adv_capacity` and `buy ≤ adv_capacity − predecessors' buys`).
 Sinks: `orders_to_parquet`, `orders_to_csv` (`subdir`, default `orders`).
 
 ## Style constraints (the `constraints` dataset)
@@ -199,7 +198,7 @@ All required unless stated; no defaults; an unknown `PORTFOLIO_OPTIMIZER_*` vari
 | `PORTFOLIO_OPTIMIZER_LOG_LEVEL` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` | |
 | `PORTFOLIO_OPTIMIZER_CLUSTER` | `local` \| `kubernetes` \| `auto` \| `tcp://host:port` | The Dask cluster the run provisions for itself (`local`: worker processes on this machine; `kubernetes`: pods through the Dask operator) or a scheduler to connect to. `auto` becomes `kubernetes` when `KUBERNETES_SERVICE_HOST` is set and `local` otherwise; the manifest records the resolved value. |
 | `PORTFOLIO_OPTIMIZER_MIN_WORKERS` | integer ≥ 1, ≤ max | Workers provisioned before the load stage. |
-| `PORTFOLIO_OPTIMIZER_MAX_WORKERS` | integer ≥ 1 | Workers after assembly. The run keeps twice this many tasks outstanding. |
+| `PORTFOLIO_OPTIMIZER_MAX_WORKERS` | integer ≥ 1 | Workers after assembly. Every build and every solve is submitted at once; the scheduler runs what is ready. |
 | `PORTFOLIO_OPTIMIZER_CLUSTER_TIMEOUT_S` | number > 0 | How long to wait, after assembly, for the first worker. |
 | `PORTFOLIO_OPTIMIZER_WORKER_IMAGE` | image reference | Required when the cluster resolves to `kubernetes`: the image worker pods run, normally this run's own. |
 | `PORTFOLIO_OPTIMIZER_IMAGE_DIGEST` | string | Optional; set by the platform. Part of every process's environment fingerprint and forwarded to worker pods. |

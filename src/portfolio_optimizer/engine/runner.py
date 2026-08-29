@@ -1,17 +1,20 @@
-"""Schedule portfolios through build and solve according to the execution mode, then publish and record.
+"""Schedule portfolios through build and solve on the run's cluster, then publish and record.
 
-The three modes differ only in *where* build and solve happen; every portfolio goes through the same
-``slice_and_build`` → ``finish_or_fail`` functions (``engine/tasks.py``), results are consumed in
-configured solve order regardless of completion order, and the manifest is written whatever happens.
-The backend (``engine/backends.py``) is started right after config resolution so a cluster warms up
-under the load stage, scaled and waited on only after assembly, and closed in a ``finally``.
+Every portfolio builds at once, chain-free. The builds' summaries give the main process each
+portfolio's solve-order key and buyable securities; from those it derives the schedule
+(``engine/schedule.py``) — who solves after whom — and submits every solve with its predecessors'
+contributions as dependencies, so the cluster enforces the order and each solve folds only the buys
+that could affect it. Outcomes are classified in solve order whatever finished first, so the worker
+count and completion order never change a record, and the manifest is written whatever happens. The
+backend (``engine/backends.py``) is started right after config resolution so a cluster warms up under
+the load stage, scaled and waited on only after assembly, and closed in a ``finally``.
 """
 
 import logging
-from collections import deque
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -19,11 +22,11 @@ import pandas as pd
 from portfolio_optimizer.config.resolve import ResolvedConfig
 from portfolio_optimizer.cvx.adapter import solver_version
 from portfolio_optimizer.domain.data import IoContext
-from portfolio_optimizer.domain.results import Artifact, AssemblyAuditRecord, PortfolioFailure, PortfolioResult, SolveContext
+from portfolio_optimizer.domain.results import Artifact, AssemblyAuditRecord, Contribution, PortfolioFailure, PortfolioResult
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.engine.backends import Backend, BackendFactory, ClusterError, Pending, SharedRunData, Task, TaskOutput, WorkersReady
+from portfolio_optimizer.engine.backends import Backend, BackendFactory, ClusterError, Pending, SharedRunData, TaskOutput, WorkersReady
 from portfolio_optimizer.engine.dask_backend import DaskBackend
-from portfolio_optimizer.engine.environment import GitInfo, WorkerEnvironment, environment_for, host_name, package_versions
+from portfolio_optimizer.engine.environment import GitInfo, WorkerEnvironment, environment_for, package_versions
 from portfolio_optimizer.engine.hashing import file_sha256
 from portfolio_optimizer.engine.load import DatasetAudit, assemble, load_datasets
 from portfolio_optimizer.engine.manifest import (
@@ -37,12 +40,14 @@ from portfolio_optimizer.engine.manifest import (
     dataset_records,
     failed_record,
     finalize,
+    schedule_record,
     solved_record,
     step_records,
     versions,
     write_manifest,
 )
-from portfolio_optimizer.engine.tasks import BuildResult, Outcome, build_task, failure, finish_or_fail, full_task, slice_and_build, step_refs
+from portfolio_optimizer.engine.schedule import Coupling, Schedule, dependency_graph, order_portfolios
+from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, contribution, skipped, solve_task, step_refs, summarize
 from portfolio_optimizer.settings import ExecutionSettings
 
 log = logging.getLogger(__name__)
@@ -51,6 +56,8 @@ EXIT_OK = 0
 EXIT_PORTFOLIO_FAILED = 1
 EXIT_INPUT_REJECTED = 2
 EXIT_INFRASTRUCTURE = 3
+
+SKIPPED_BY_POSITION = "not processed because a higher-priority portfolio failed and on_error is fail_fast"
 
 
 class InputRejectedError(ValueError):
@@ -79,6 +86,16 @@ class RunReport:
         return tuple(outcome for outcome in self.outcomes if isinstance(outcome, PortfolioFailure))
 
 
+@dataclass(frozen=True, slots=True)
+class Executed:
+    """What the scheduling stage produced: every outcome, the schedule it followed, each portfolio's key, and the files it persisted."""
+
+    outcomes: Mapping[PortfolioId, Outcome]
+    schedule: Schedule
+    keys: Mapping[PortfolioId, Decimal]
+    artifacts: tuple[Artifact, ...]
+
+
 @dataclass(slots=True)
 class _Session:
     """The cluster's lifetime, and what the manifest records about it: timestamps, size, and every environment that did work."""
@@ -93,10 +110,8 @@ class _Session:
     ready: WorkersReady | None = None
     sightings: dict[WorkerEnvironment, dict[str, int]] = field(default_factory=dict)
 
-    def start(self, *, needs_backend: bool) -> None:
-        """Ask for the backend now; a cluster then warms up while data loads."""
-        if not needs_backend:
-            return
+    def start(self) -> None:
+        """Ask for the backend now; the cluster then warms up while data loads."""
         self.backend = self.backend_factory(self.execution, run_id=self.io.run_id)
         self.provision_started_at = self.io.clock.now()
         self.backend.start()
@@ -119,10 +134,10 @@ class _Session:
             self.backend.close()
             self.closed_at = self.io.clock.now()
 
-    def saw(self, environment: WorkerEnvironment, host: str) -> None:
-        """Record that ``host``, running ``environment``, produced one outcome."""
+    def saw(self, environment: WorkerEnvironment, host: str, *, solved: bool) -> None:
+        """Record that ``host``, running ``environment``, did work; only solves count toward its portfolio total."""
         hosts = self.sightings.setdefault(environment, {})
-        hosts[host] = hosts.get(host, 0) + 1
+        hosts[host] = hosts.get(host, 0) + (1 if solved else 0)
 
     def cluster_record(self) -> ClusterRecord | None:
         """The manifest's view of the backend, or ``None`` when the run had none."""
@@ -140,7 +155,7 @@ class _Session:
         )
 
     def worker_records(self) -> tuple[WorkerRecord, ...]:
-        """Every distinct environment that did work, with its hosts and portfolio count."""
+        """Every distinct environment that did work, with its hosts and the portfolios it solved."""
         return tuple(WorkerRecord(environment=environment, hosts=tuple(sorted(hosts)), portfolios=sum(hosts.values())) for environment, hosts in self.sightings.items())
 
 
@@ -152,166 +167,226 @@ def run(
 ) -> RunReport:
     """Execute the run end to end and write its manifest. Raises only when nothing could start."""
     config = resolved.config
-    log.info("run starting", extra={"run_id": io.run_id, "mode": config.execution.mode, "stage": "load"})
+    log.info("run starting", extra={"run_id": io.run_id, "stage": "load"})
     session = _Session(execution, io, backend_factory)
-    ids: tuple[PortfolioId, ...] = ()
+    order: tuple[PortfolioId, ...] = ()
     dataset_audits: tuple[DatasetAudit, ...] = ()
     assembly_audits: tuple[AssemblyAuditRecord, ...] = ()
-    outcomes: dict[PortfolioId, Outcome] = {}
+    executed: Executed | None = None
+    outcomes: Mapping[PortfolioId, Outcome] = {}
     cluster_error: PortfolioFailure | None = None
     try:
-        session.start(needs_backend=config.execution.mode != "sequential")
+        session.start()
         try:
             loaded = load_datasets(resolved, data_root=io.data_root, run_id=io.run_id)
             assembled = assemble(loaded, resolved)
         except (ValueError, KeyError) as error:
             msg = f"inputs rejected: {error}"
             raise InputRejectedError(msg) from error
-        dataset_audits, assembly_audits, ids = loaded.audits, assembled.audits, assembled.portfolio_ids
-        outcomes = _execute(SharedRunData(assembled=assembled, config=config, config_sha256=resolved.config_sha256, run_id=io.run_id), resolved, session)
+        dataset_audits, assembly_audits, order = loaded.audits, assembled.audits, assembled.portfolio_ids
+        executed = _execute(SharedRunData(assembled=assembled, config=config, config_sha256=resolved.config_sha256, run_id=io.run_id), resolved, session, run_dir=io.output_dir / io.run_id)
+        outcomes, order = executed.outcomes, executed.schedule.order
     except ClusterError as error:
         log.error("cluster unavailable", extra={"run_id": io.run_id, "stage": "cluster", "error": type(error).__name__})
-        cluster_error = failure("*", "cluster", error)
-        outcomes = {portfolio_id: PortfolioFailure(portfolio_id, "skipped", "ClusterUnavailable", "not processed because the cluster did not come up") for portfolio_id in ids}
+        cluster_error = PortfolioFailure("*", "cluster", type(error).__name__, str(error))
+        outcomes = {portfolio_id: PortfolioFailure(portfolio_id, "skipped", "ClusterUnavailable", "not processed because the cluster did not come up") for portfolio_id in order}
     finally:
         session.close()
-    ordered = tuple(outcomes[portfolio_id] for portfolio_id in ids)
-    artifacts, publish_error = _persist_and_publish(ordered, resolved, io)
+    ordered = tuple(outcomes[portfolio_id] for portfolio_id in order)
+    persisted = executed.artifacts if executed is not None else ()
+    published, publish_error = _publish(ordered, resolved, io)
+    artifacts = (*persisted, *published)
     infrastructure_error = publish_error if publish_error is not None else cluster_error
     exit_code = _exit_code(ordered, infrastructure_error)
-    manifest = _manifest(resolved, io, git, config_path, settings, dataset_audits, assembly_audits, ordered, artifacts, exit_code, infrastructure_error, session)
+    manifest = _manifest(resolved, io, git, config_path, settings, dataset_audits, assembly_audits, ordered, executed, artifacts, exit_code, infrastructure_error, session)
     manifest_path = write_manifest(manifest, io.output_dir / io.run_id)
     log.info("run finished", extra={"run_id": io.run_id, "stage": "manifest", "exit_code": exit_code})
     return RunReport(run_id=io.run_id, outcomes=ordered, manifest=manifest, manifest_path=manifest_path, artifacts=artifacts, exit_code=exit_code)
 
 
-def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session) -> dict[PortfolioId, Outcome]:
+@dataclass(frozen=True, slots=True)
+class _Dispatch:
+    """What every submission needs: the backend, the shared-data handle, and how to gate what comes back."""
+
+    backend: Backend
+    handle: object
+    run_id: str
+    total: int
+    session: _Session
+    expected: WorkerEnvironment
+
+    def key(self, portfolio_id: PortfolioId, name: str) -> str:
+        return f"{self.run_id}/{portfolio_id}/{name}"
+
+
+def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session, *, run_dir: Path) -> Executed:
+    """Build everything, derive the schedule, solve along it, and classify every outcome in solve order."""
     config = resolved.config
-    ids = shared.assembled.portfolio_ids
     fail_fast = config.execution.on_error == "fail_fast"
-    expected = environment_for(config, cwd=Path.cwd(), image_digest=session.execution.image_digest)
-    if config.execution.mode == "sequential":
-        return _run_sequential(ids, shared, resolved, session, expected, fail_fast=fail_fast)
     backend = session.wait()
-    handle = backend.share(shared)
-    if config.execution.mode == "parallel":
-        return dict(_collect(ids, backend, handle, full_task, session, expected, fail_fast=fail_fast))
-    built = _collect(ids, backend, handle, build_task, session, expected, fail_fast=fail_fast)
-    return _solve_sequentially(ids, built, resolved, shared.run_id, fail_fast=fail_fast)
+    dispatch = _Dispatch(
+        backend, backend.share(shared), shared.run_id, len(shared.assembled.portfolio_ids), session, environment_for(config, cwd=Path.cwd(), image_digest=session.execution.image_digest)
+    )
+    builds, failed, keys, buyable = _build_all(dispatch, shared)
+    order = order_portfolios(keys)
+    coupling: Coupling = "none" if not resolved.chain_aware_steps else config.execution.dependencies
+    schedule = dependency_graph(order, buyable, frozenset(failed), coupling)
+    shape = schedule.summary()
+    log.info(
+        "schedule derived: %d portfolio(s), %d edge(s), %d component(s), critical path %d",
+        shape.portfolios,
+        shape.edges,
+        shape.components,
+        shape.critical_path,
+        extra={"run_id": shared.run_id, "stage": "schedule", "coupling": coupling, "largest_component": shape.largest_component},
+    )
+    outcomes: dict[PortfolioId, Outcome] = dict(failed)
+    to_solve = list(order)
+    if fail_fast and failed:
+        first = min(order.index(portfolio_id) for portfolio_id in failed)
+        to_solve = list(order[: first + 1])
+        for portfolio_id in order[first + 1 :]:
+            outcomes[portfolio_id] = skipped(portfolio_id, SKIPPED_BY_POSITION)
+    solves = _submit_solves(dispatch, schedule, to_solve, builds, outcomes)
+    artifacts = _gather_solves(dispatch, schedule, solves, outcomes, fail_fast=fail_fast, run_dir=run_dir)
+    return Executed(outcomes=outcomes, schedule=schedule, keys=keys, artifacts=artifacts)
 
 
-def _run_sequential(ids: Sequence[PortfolioId], shared: SharedRunData, resolved: ResolvedConfig, session: _Session, expected: WorkerEnvironment, *, fail_fast: bool) -> dict[PortfolioId, Outcome]:
-    outcomes: dict[PortfolioId, Outcome] = {}
-    ctx = SolveContext()
-    failed = False
-    host = host_name()
+def _build_all(
+    dispatch: _Dispatch, shared: SharedRunData
+) -> tuple[dict[PortfolioId, Pending[TaskOutput[BuildResult]]], dict[PortfolioId, PortfolioFailure], dict[PortfolioId, Decimal], dict[PortfolioId, tuple[str, ...]]]:
+    """Submit every build at once and gather the summaries: each portfolio's key and buyable securities, or its failure."""
+    ids = shared.assembled.portfolio_ids
+    builds: dict[PortfolioId, Pending[TaskOutput[BuildResult]]] = {}
+    summaries: dict[PortfolioId, Pending[TaskOutput[BuildSummary]]] = {}
+    for rank, portfolio_id in enumerate(ids):
+        builds[portfolio_id] = dispatch.backend.submit(build_task, dispatch.handle, portfolio_id, key=dispatch.key(portfolio_id, "build"), priority=dispatch.total - rank)
+        summaries[portfolio_id] = dispatch.backend.submit(summarize, builds[portfolio_id], key=dispatch.key(portfolio_id, "summary"), priority=dispatch.total - rank + 1)
+    failed: dict[PortfolioId, PortfolioFailure] = {}
+    keys: dict[PortfolioId, Decimal] = {}
+    buyable: dict[PortfolioId, tuple[str, ...]] = {}
     for portfolio_id in ids:
-        if failed and fail_fast:
-            outcomes[portfolio_id] = _skipped(portfolio_id, "not processed because an earlier portfolio failed and on_error is fail_fast")
-            continue
-        built = slice_and_build(shared, resolved, portfolio_id, ctx)
-        outcome = built if isinstance(built, PortfolioFailure) else finish_or_fail(built, resolved, ctx, shared.run_id)
-        session.saw(expected, host)
-        outcomes[portfolio_id] = outcome
-        if isinstance(outcome, PortfolioResult):
-            ctx = ctx.with_result(outcome)
+        keys[portfolio_id] = Decimal(shared.assembled.solve_orders[portfolio_id])
+        summary = _accept(_result_or_error(summaries[portfolio_id]), portfolio_id, dispatch.session, dispatch.expected, solved=False)
+        if isinstance(summary, PortfolioFailure):
+            failed[portfolio_id] = summary
         else:
-            failed = True
-    return outcomes
+            keys[portfolio_id] = summary.solve_order
+            buyable[portfolio_id] = summary.buyable
+    return builds, failed, keys, buyable
 
 
-def _solve_sequentially(
-    ids: Sequence[PortfolioId], built: Generator[tuple[PortfolioId, BuildResult | PortfolioFailure]], resolved: ResolvedConfig, run_id: str, *, fail_fast: bool
-) -> dict[PortfolioId, Outcome]:
-    """Solve each build as it arrives, in solve order, with a live chain; builds keep arriving from the workers meanwhile."""
-    outcomes: dict[PortfolioId, Outcome] = {}
-    ctx = SolveContext()
-    for portfolio_id, build_outcome in built:
-        if isinstance(build_outcome, PortfolioFailure):
-            outcomes[portfolio_id] = build_outcome
+def _submit_solves(
+    dispatch: _Dispatch, schedule: Schedule, to_solve: Sequence[PortfolioId], builds: dict[PortfolioId, Pending[TaskOutput[BuildResult]]], outcomes: dict[PortfolioId, Outcome]
+) -> dict[PortfolioId, Pending[TaskOutput[PortfolioResult]]]:
+    """Submit each solve with its predecessors' contributions as dependencies; a portfolio behind a failed build is skipped here, never submitted."""
+    heights = schedule.heights()
+    solves: dict[PortfolioId, Pending[TaskOutput[PortfolioResult]]] = {}
+    contributions: dict[PortfolioId, Pending[Contribution | PortfolioFailure]] = {}
+    for portfolio_id in to_solve:
+        if portfolio_id in outcomes:
             continue
-        outcome = finish_or_fail(build_outcome, resolved, ctx, run_id)
-        outcomes[portfolio_id] = outcome
-        if isinstance(outcome, PortfolioResult):
-            ctx = ctx.with_result(outcome)
-        elif fail_fast:
-            built.close()
-            break
-    for portfolio_id in ids:
-        outcomes.setdefault(portfolio_id, _skipped(portfolio_id, "not solved because an earlier portfolio failed and on_error is fail_fast"))
-    return outcomes
+        blocked = next((earlier for earlier in schedule.predecessors[portfolio_id] if earlier in outcomes), None)
+        if blocked is not None:
+            outcomes[portfolio_id] = _skipped_after(portfolio_id, blocked, outcomes[blocked])
+            continue
+        priority = dispatch.total + heights[portfolio_id]
+        dependencies = [contributions[earlier] for earlier in schedule.predecessors[portfolio_id]]
+        solves[portfolio_id] = dispatch.backend.submit(solve_task, dispatch.handle, builds.pop(portfolio_id), *dependencies, key=dispatch.key(portfolio_id, "solve"), priority=priority)
+        contributions[portfolio_id] = dispatch.backend.submit(contribution, solves[portfolio_id], key=dispatch.key(portfolio_id, "contribution"), priority=priority + 1)
+    builds.clear()  # a build nothing waits for is released by the scheduler before it runs
+    return solves
 
 
-def _collect[T](
-    ids: Sequence[PortfolioId], backend: Backend, handle: object, task: Task[T], session: _Session, expected: WorkerEnvironment, *, fail_fast: bool
-) -> Generator[tuple[PortfolioId, T | PortfolioFailure]]:
-    """Keep a window of tasks outstanding and yield outcomes in configured order, so completion order never matters.
+def _gather_solves(
+    dispatch: _Dispatch, schedule: Schedule, solves: Mapping[PortfolioId, Pending[TaskOutput[PortfolioResult]]], outcomes: dict[PortfolioId, Outcome], *, fail_fast: bool, run_dir: Path
+) -> tuple[Artifact, ...]:
+    """Collect solves as they complete, classify them in solve order, and persist each result as it is classified.
 
-    Under ``fail_fast`` the first failure stops further submission, cancels what is queued, and marks
-    the rest skipped; closing the iterator early cancels whatever is still outstanding.
+    Under ``fail_fast`` the first failure *in solve order* cancels every solve behind it; those are
+    recorded as skipped by position, whatever they had finished, so the manifest never depends on timing.
     """
-    queue = deque(ids)
-    pending: dict[PortfolioId, Pending[TaskOutput[T]]] = {}
+    artifacts: list[Artifact] = []
+    raw: dict[PortfolioId, TaskOutput[PortfolioResult] | Exception] = {}
+    waiting = [portfolio_id for portfolio_id in schedule.order if portfolio_id in solves]
+    cursor = 0
+    stopped = False
+    for portfolio_id in dispatch.backend.as_completed(solves):
+        raw[portfolio_id] = _result_or_error(solves[portfolio_id])
+        while not stopped and cursor < len(waiting) and waiting[cursor] in raw:
+            current = waiting[cursor]
+            outcome = _classify(current, raw[current], schedule, outcomes, dispatch.session, dispatch.expected)
+            outcomes[current] = outcome
+            cursor += 1
+            if isinstance(outcome, PortfolioResult):
+                artifacts.extend(_persist_result(outcome, run_dir))
+            elif fail_fast:
+                stopped = True
+        if stopped:
+            break
+    if stopped:
+        rest = waiting[cursor:]
+        dispatch.backend.cancel([solves[portfolio_id] for portfolio_id in rest])
+        for portfolio_id in rest:
+            outcomes[portfolio_id] = skipped(portfolio_id, SKIPPED_BY_POSITION)
+    return tuple(artifacts)
 
-    def top_up() -> None:
-        while queue and len(pending) < session.execution.window:
-            next_id = queue.popleft()
-            pending[next_id] = backend.submit(task, handle, next_id)
 
-    top_up()
-    failed = False
+def _result_or_error[T](pending: Pending[T]) -> T | Exception:
+    """A task's output, or the exception Dask raised for it — its own crash or a dependency's."""
     try:
-        for portfolio_id in ids:
-            if failed and fail_fast:
-                queued = pending.pop(portfolio_id, None)
-                if queued is not None:
-                    queued.cancel()
-                yield portfolio_id, _skipped(portfolio_id, "not processed because an earlier portfolio failed and on_error is fail_fast")
-                continue
-            future = pending.pop(portfolio_id)
-            try:
-                output = future.result()
-            except Exception as error:  # noqa: BLE001  # a worker that died (e.g. unpicklable result) is a per-portfolio failure
-                outcome: T | PortfolioFailure = failure(portfolio_id, "worker", error)
-            else:
-                outcome = _accept(output, session, expected)
-            if isinstance(outcome, PortfolioFailure):
-                failed = True
-            if not (failed and fail_fast):
-                top_up()
-            yield portfolio_id, outcome
-    finally:
-        for future in pending.values():
-            future.cancel()
+        return pending.result()
+    except Exception as error:  # noqa: BLE001  # a worker that died (e.g. unpicklable result) is a per-portfolio failure
+        return error
 
 
-def _accept[T](output: TaskOutput[T], session: _Session, expected: WorkerEnvironment) -> T | PortfolioFailure:
+def _classify(
+    portfolio_id: PortfolioId, raw: TaskOutput[PortfolioResult] | Exception, schedule: Schedule, outcomes: Mapping[PortfolioId, Outcome], session: _Session, expected: WorkerEnvironment
+) -> Outcome:
+    """A raised solve is a failed predecessor's doing when one exists, else a worker failure; a returned output is gated on its environment."""
+    if isinstance(raw, Exception):
+        blamed = next((earlier for earlier in schedule.predecessors[portfolio_id] if isinstance(outcomes.get(earlier), PortfolioFailure)), None)
+        if blamed is not None:
+            return _skipped_after(portfolio_id, blamed, outcomes[blamed])
+        return PortfolioFailure(portfolio_id, "worker", type(raw).__name__, _stable_message(raw))
+    return _accept(raw, portfolio_id, session, expected, solved=True)
+
+
+def _accept[T](raw: TaskOutput[T] | Exception, portfolio_id: PortfolioId, session: _Session, expected: WorkerEnvironment, *, solved: bool) -> T | PortfolioFailure:
     """Record who did the work and refuse a result from an environment that differs from this run's."""
-    session.saw(output.environment, output.host)
-    differences = expected.differences(output.environment)
+    if isinstance(raw, Exception):
+        return PortfolioFailure(portfolio_id, "worker", type(raw).__name__, _stable_message(raw))
+    session.saw(raw.environment, raw.host, solved=solved)
+    differences = expected.differences(raw.environment)
     if differences:
-        portfolio_id = output.outcome.portfolio_id if isinstance(output.outcome, PortfolioFailure | PortfolioResult | BuildResult) else "?"
-        return PortfolioFailure(portfolio_id, "worker", "EnvironmentMismatch", f"worker {output.host} runs a different environment: {'; '.join(differences)}")
-    return output.outcome
+        return PortfolioFailure(portfolio_id, "worker", "EnvironmentMismatch", f"worker {raw.host} runs a different environment: {'; '.join(differences)}")
+    return raw.outcome
 
 
-def _skipped(portfolio_id: PortfolioId, message: str) -> PortfolioFailure:
-    return PortfolioFailure(portfolio_id, "skipped", "SkippedAfterFailure", message)
+def _stable_message(error: Exception) -> str:
+    """A worker death names the task it blames, never the worker address, so the manifest does not depend on placement."""
+    task = getattr(error, "task", None)
+    if isinstance(task, str):
+        return f"task {task!r} killed its worker"
+    return str(error)
+
+
+def _skipped_after(portfolio_id: PortfolioId, blamed: PortfolioId, cause: Outcome) -> PortfolioFailure:
+    stage = cause.stage if isinstance(cause, PortfolioFailure) else "solve"
+    return skipped(portfolio_id, f"not solved because predecessor {blamed!r} failed at stage {stage!r}")
 
 
 # --- persistence, publication, manifest ---
 
 
-def _persist_and_publish(outcomes: Sequence[Outcome], resolved: ResolvedConfig, io: IoContext) -> tuple[tuple[Artifact, ...], PortfolioFailure | None]:
-    artifacts: list[Artifact] = []
+def _publish(outcomes: Sequence[Outcome], resolved: ResolvedConfig, io: IoContext) -> tuple[tuple[Artifact, ...], PortfolioFailure | None]:
+    """Call the sink once with every solved portfolio's orders; a sink failure is infrastructure, and the manifest is still written."""
     solved = [outcome for outcome in outcomes if isinstance(outcome, PortfolioResult)]
-    run_dir = io.output_dir / io.run_id
+    if not solved:
+        log.error("no portfolio solved; nothing published", extra={"run_id": io.run_id, "stage": "sink"})
+        return (), None
+    artifacts: list[Artifact] = []
     try:
-        for result in solved:
-            artifacts.extend(_persist_result(result, run_dir))
-        if not solved:
-            log.error("no portfolio solved; nothing published", extra={"run_id": io.run_id, "stage": "sink"})
-            return tuple(artifacts), None
         orders = pd.concat([result.orders for result in solved], ignore_index=True).sort_values(["portfolio_id", "security_id"], kind="stable").reset_index(drop=True)
         published = resolved.sink.invoke(orders=orders, io=io)
         if not isinstance(published, tuple):
@@ -324,7 +399,7 @@ def _persist_and_publish(outcomes: Sequence[Outcome], resolved: ResolvedConfig, 
             artifacts.append(item)
     except Exception as error:  # noqa: BLE001  # the manifest must still be written; the exit code carries the failure
         log.error("publishing failed", extra={"run_id": io.run_id, "stage": "sink", "error": type(error).__name__})
-        return tuple(artifacts), failure("*", "sink", error)
+        return tuple(artifacts), PortfolioFailure("*", "sink", type(error).__name__, str(error))
     return tuple(artifacts), None
 
 
@@ -356,6 +431,7 @@ def _manifest(
     audits: Sequence[DatasetAudit],
     assembly_audits: Sequence[AssemblyAuditRecord],
     outcomes: Sequence[Outcome],
+    executed: Executed | None,
     artifacts: Sequence[Artifact],
     exit_code: int,
     infrastructure_error: PortfolioFailure | None,
@@ -363,7 +439,14 @@ def _manifest(
 ) -> RunManifest:
     config = resolved.config
     post = config.post_solve
-    records = [solved_record(o, o.report, o.drift, post.violation_tol, post.violation_tol) if isinstance(o, PortfolioResult) else failed_record(o) for o in outcomes]
+    keys: Mapping[PortfolioId, Decimal] = executed.keys if executed is not None else {}
+    predecessors: Mapping[PortfolioId, tuple[PortfolioId, ...]] = executed.schedule.predecessors if executed is not None else {}
+    records = [
+        solved_record(o, o.report, o.drift, post.violation_tol, post.violation_tol, solve_order=_key_text(keys, o.portfolio_id))
+        if isinstance(o, PortfolioResult)
+        else failed_record(o, solve_order=_key_text(keys, o.portfolio_id), predecessors=len(predecessors[PortfolioId(o.portfolio_id)]) if PortfolioId(o.portfolio_id) in predecessors else None)
+        for o in outcomes
+    ]
     if infrastructure_error is not None:
         records.append(failed_record(infrastructure_error))
     solved = [o for o in outcomes if isinstance(o, PortfolioResult)]
@@ -376,7 +459,7 @@ def _manifest(
         as_of=config.run.as_of,
         git_sha=git.sha,
         git_dirty=git.dirty,
-        execution_mode=config.execution.mode,
+        schedule=schedule_record(executed.schedule.summary()) if executed is not None else None,
         cluster=session.cluster_record(),
         versions=versions(config.solver.name, solver_ver, packages, session.worker_records()),
         config=ConfigInfo(path=config_path, sha256=resolved.config_sha256, resolved=config.model_dump(mode="json")),
@@ -390,3 +473,8 @@ def _manifest(
         exit_code=exit_code,
     )
     return finalize(manifest)
+
+
+def _key_text(keys: Mapping[PortfolioId, Decimal], portfolio_id: str) -> str | None:
+    key = keys.get(PortfolioId(portfolio_id))
+    return None if key is None else str(key)

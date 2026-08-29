@@ -8,9 +8,10 @@ machinery seen from the config file's side — block by block, what each one tel
 layout under `src/portfolio_optimizer/` will feel inevitable.
 
 The short version: **read the config → prove every named function exists and has the right shape →
-load data through loaders → assemble and validate → slice per portfolio → apply rules → build a
-pure-numpy problem → solve with cvxpy → re-check the answer without cvxpy → round to whole shares →
-publish the orders once → write a manifest.** Money is `Decimal` everywhere except inside the solver,
+load data through loaders → assemble and validate → build every portfolio at once (slice, rules,
+solve-order key, a pure-numpy problem) → derive who waits for whom from what each may buy → solve along
+that graph with cvxpy → re-check each answer without cvxpy → round to whole shares → publish the orders
+once → write a manifest.** Money is `Decimal` everywhere except inside the solver,
 and there are exactly two conversion points. Every stage validates its own output, so a bad input
 fails at the earliest stage that can detect it, with a message naming what is wrong.
 
@@ -37,16 +38,16 @@ or `"mypkg.mod:my_rule"`. Before any data loads, the resolver:
 - imports the function;
 - checks its signature against the **contract for its kind**, by argument name and annotation — a rule
   must take `data: PortfolioData` and return `PortfolioData`, a term must take `x: DecisionVars,
-  spec: ProblemSpec` and return `ObjectiveTerm`, and so on;
+  spec: ProblemSpec` and return `ObjectiveTerm`, a solve-order step must take `data: PortfolioData` and
+  return `Decimal`, and so on;
 - validates the JSON `params` object against the function's own `Params` model;
-- notes whether the function declares the optional context argument for its kind (`ctx` for rules,
-  `chain` for terms and constraints), which makes it *chain-aware*;
+- notes whether a term or constraint declares the optional `chain: ChainState` argument, which makes it
+  *chain-aware*: it reads what higher-priority portfolios bought, and its presence is what makes one
+  portfolio wait for another. A rule cannot declare it — rules never see other portfolios;
 - records three hashes — the function's source text, its whole module file, and its params.
 
-It then checks the **execution mode against what the steps need**: `parallel` cannot run chain-aware
-steps; `parallel_build_sequential_solve` cannot run rules that take `ctx`, because builds happen in
-workers; and `on_error: continue` is refused alongside chain-aware steps, because a skipped portfolio
-would silently change what later solves see. Every failure is collected and reported together.
+Every failure is collected and reported together. There is no execution mode to check the steps
+against: the schedule is derived later, from the steps and the data (§9).
 
 `portfolio-optimizer validate-config` stops here and prints one line per resolved step. `run` then,
 **before any data loads, asks for its cluster** — local worker processes or Kubernetes pods. The call
@@ -56,8 +57,10 @@ does not block; the point is that the cluster comes up underneath the slow stage
 
 Loading is the slow part of a real run — API calls and database queries, not files — so `engine/load.py`
 is asynchronous. It calls the **portfolios loader first**, validates the result against the `PORTFOLIOS`
-schema, and sorts it by `solve_order`. That sorted tuple of ids is the order for the rest of the run,
-and it is part of every other request, which is why this one loader cannot overlap with the rest. Then
+schema, and sorts it by `solve_order` then `portfolio_id`. `solve_order` is a *priority* — lower solves
+first, ties break on the id, and the column may be omitted or repeated — and this loaded order is only
+the order builds are submitted in and the fallback key when no `solve_order` step is configured. The
+tuple of ids is part of every other request, which is why this one loader cannot overlap with the rest. Then
 **every dataset loader starts at once**, each called exactly once with a `LoadRequest` (dataset name,
 portfolio ids, `as_of`, `data_root`, `run_id`, and a rate limiter): an `async def` loader runs as a task
 on the event loop, a plain `def` loader in a worker thread so a blocking driver never stalls the loop.
@@ -103,8 +106,8 @@ Anything failing here raises `InputRejectedError` and the run exits with code 2.
 `PortfolioDetails` model, its holdings, the full universe, its benchmark's targets, its style
 constraints typed into `StyleConstraints` (round-tripped through JSON so money strings become
 `Decimal`), and its share of the extras — a dataset with a `portfolio_id` column reduced to this
-portfolio's rows, one without passed whole. In the parallel modes this happens *in the worker*, which
-received the assembled datasets once: a task carries a portfolio id and nothing else.
+portfolio's rows, one without passed whole. This happens *in the worker*, which received the assembled
+datasets once: a task carries a portfolio id and nothing else.
 
 The three frames the slice produces are marked `prevalidated`: assembly already checked them against
 their schemas, the universe is passed whole, and a row subset of validated holdings or targets keeps
@@ -134,9 +137,15 @@ constructs a new `PortfolioData` and therefore **re-runs every check from stage 
 the optimizer a broken bundle. Each rule gets an audit record of row counts before and after.
 
 The shipped rules (`rules.py`) show the patterns: `restrict_low_liquidity` freezes names below an ADV
-threshold, `add_zero_alpha` adds a column, `cap_single_name` tightens the style, and
-`avoid_cross_portfolio_wash_sales` takes `ctx: SolveContext` and caps names that earlier portfolios
-sold — a chain-aware rule, available in `sequential` mode only.
+threshold, `add_zero_alpha` adds a column, `cap_single_name` tightens the style. A rule never sees other
+portfolios. What it *can* do is shrink the buy universe — freeze a name, cap it at its current weight —
+and that is what lets portfolios solve concurrently (§9): two portfolios wait on each other only when
+they can both buy the same security.
+
+Between the rules and the build, the optional **solve-order step** (`solve_order.py`) reads the ruled
+bundle and returns the portfolio's solve-order key, a finite `Decimal`; lower solves first. It replaces
+the portfolios frame's column and answers "who gets first pick of a shared budget" from the data — the
+shipped `furthest_from_target_first` puts the portfolio with the largest active share first.
 
 ## 5. Build: `Decimal` becomes float64, once
 
@@ -211,29 +220,47 @@ count for audit.
 solved weights. The tolerance is derived, not configured: one lot of the priciest name plus one
 dust-filtered trade, both as fractions of NAV. Exceeding it raises `DriftError`.
 
-## 9. The chain, the three execution modes, and where the work runs
+## 9. The dependency graph, and where the work runs
 
-Portfolios in one run can depend on each other. The example's `cumulative_adv_participation` constraint
-says "buy plus sell in each name may not exceed the ADV budget that earlier portfolios have not already
-consumed."
+Portfolios in one run can compete for the same buys. The example's `cumulative_adv_participation`
+constraint says "buy in each name no more than the ADV budget that higher-priority portfolios' buys
+have not already consumed" (and, chain-free, "buy plus sell no more than your own participation"). That
+is the only kind of coupling the engine has: **portfolios couple through buys only.** What an earlier
+portfolio *sold* never changes what a later one may do — a product decision, and everything in this
+section leans on it.
 
-The mechanism is small. `SolveContext` is an immutable tuple of completed results in solve order,
-alongside a running total of absolute shares ordered per security that `with_result` folds each new
-result into. Before each solve, `derive_chain_state` projects that total onto *this* portfolio's
-securities as a `ChainState`. Terms and constraints that declare `chain: ChainState` receive it; rules
-that declare `ctx: SolveContext` receive the full context. The chain state's hash is recorded per
-portfolio in the manifest.
+The mechanism is small. After every build, the main process knows each portfolio's solve-order key and
+its **buyable set** — the securities its spec allows a positive buy in (`ub > w0`; a name frozen or
+capped at its current weight is outside it). It sorts the portfolios by `(key, portfolio_id)` and
+derives a graph (`engine/schedule.py`): portfolio *j* depends on every earlier *i* whose buyable set
+intersects its own, and on nothing else. If no term or constraint declares `chain`, there are no edges
+at all. Under `execution.dependencies: "all"` every earlier portfolio is a predecessor — one line, the
+same answer, for diagnosis. A build that failed has an unknown buyable set and is treated as overlapping
+everything after it. The graph is never transitively reduced: a solve folds its *direct* predecessors'
+own buys, so every overlapping earlier portfolio stays a direct dependency.
 
-`engine/runner.py` dispatches on `execution.mode`; all three modes funnel through the same
-`slice_and_build` → `finish_or_fail` functions in `engine/tasks.py`.
+Each solve folds its predecessors' BUY orders into a `ChainState`: whole shares bought per security,
+projected onto this spec's securities and **zeroed wherever this portfolio cannot buy**. That mask is
+what makes the answer canonical: a predecessor's buys lie inside its own buyable set and the mask keeps
+only this portfolio's, so the array a solve sees is a function of the *overlapping* predecessors alone —
+identical whether the run folded every earlier portfolio or only those sharing a buyable name. Order
+rounding makes the buyable set structural (a BUY is clamped to the room under `ub`, so solver noise at a
+cap never produces a buy the graph could not have seen), and `finish_portfolio` asserts it. The chain
+state's hash — the ids and the shares, never who bought them — is recorded per portfolio.
 
-- **`sequential`** — one loop in the main process. Rules see `ctx`, constraints see `chain`. Slowest,
-  most expressive.
-- **`parallel_build_sequential_solve`** (the example) — workers slice, apply rules with no `ctx`, build
-  the spec, and return pure numpy. The main process solves **as each build arrives**, in order, with a
-  live chain, while the workers keep building. Rules cannot be chain-aware; constraints can.
-- **`parallel`** — the whole pipeline runs in the worker with an empty context. No chain-aware steps
-  are permitted, and the resolver already refused them in stage 1.
+`engine/runner.py` drives one schedule, on the cluster:
+
+- **build** every portfolio at once — slice, rules, the solve-order key, the spec — chain-free and in
+  parallel. Each build stays on the worker that made it; a `summarize` task sends back only the key, the
+  buyable ids, the spec hash, and the rule audit, stamped with the worker's environment.
+- **derive** the order and the graph in the main process, and log its shape: portfolios, edges,
+  components, the longest chain of solves.
+- **solve** each portfolio where its build lives, submitted with its predecessors' *contributions* —
+  their BUY rows, a few kilobytes each — as Dask dependencies, so the scheduler enforces the order and
+  starts a solve the moment its last predecessor finishes. Solves outrank builds, and the head of the
+  longest chain outranks the rest.
+- **classify** outcomes in solve order as they complete, persisting each result as it arrives, so the
+  worker count and completion order never change a record.
 
 ![Where each stage runs](images/execution-stages.svg)
 
@@ -243,10 +270,9 @@ the runner can also be tested against with a fake (`engine/backends.py`). The ru
 one lifetime: **start** it before the load stage, so worker processes import the solver stack and pods
 come up while the loaders wait on their sources; **scale** it and **wait** for the first worker after
 assembly; **share** the assembled datasets and the config with it once — scattered, and replicated
-between workers on demand — so a task carries a portfolio id and nothing else; **submit** a window of
-tasks — twice the worker count — and **consume results in configured solve order**, so the worker count
-and the order in which workers finish can never change the output; **close** it in a `finally`. Workers
-re-resolve the config themselves — function objects are never pickled, only their names.
+between workers on demand — so a task carries a portfolio id and nothing else; **submit** every build,
+then every solve with its dependencies; **close** it in a `finally`. Workers re-resolve the config
+themselves — function objects are never pickled, only their names.
 
 ![The run owns its cluster: provisioning overlaps the load stage](images/cluster-lifecycle.svg)
 
@@ -257,26 +283,35 @@ the runner compares it with its own. A worker running different code fails its p
 cluster's workers are spawned from the run's own environment, so the fingerprints agree by construction;
 on Kubernetes this is what makes sharing machines safe.
 
-Under `fail_fast`, once any consumed outcome is a failure nothing more is submitted, what is queued is
-cancelled, and the rest are recorded as `skipped`. A worker that dies — for instance on an unpicklable result — becomes a per-portfolio
-failure at stage `worker`; a cluster that never produces a worker within its timeout is an
-infrastructure failure, exit code 3, with a `cluster` record in the manifest and every portfolio
-skipped. [How to run on a cluster](how-to-run-on-a-cluster.md) has the settings.
+Under `fail_fast`, the first failure *in solve order* cancels every solve behind it — a running task
+finishes and is discarded — and every lower-priority portfolio is recorded `skipped`, whatever it had
+finished, so the manifest never depends on timing. Under `continue`, a failure skips only the portfolios
+that depended on it: their solve returns `skipped` naming the predecessor, on the cluster, with no
+bookkeeping in the main process. A worker that dies — for instance on an unpicklable result — becomes a
+per-portfolio failure at stage `worker`, and the exception Dask then raises for every dependent is
+classified the same way: `skipped` when a predecessor failed, `worker` otherwise. A cluster that never
+produces a worker within its timeout is an infrastructure failure, exit code 3, with a `cluster` record
+in the manifest and every portfolio skipped. [How to run on a cluster](how-to-run-on-a-cluster.md) has
+the settings.
 
 ## 10. Failure semantics and exit codes
 
 Every portfolio ends as a `PortfolioResult` or a `PortfolioFailure` naming its stage — `slice`, `build`,
-`solve`, `worker`, or `skipped` — with the exception type and message. Under `fail_fast`, later
-portfolios are `skipped`; under `continue`, each failure is isolated. The process exit code is **0**
+`solve`, `worker`, or `skipped` — with the exception type and message. A skipped portfolio's message
+names what it was waiting for: the predecessor that failed, or, under `fail_fast`, any higher-priority
+failure. A build that fails has an unknown buyable set and is treated as overlapping everything after
+it, so under `continue` it skips every lower-priority portfolio whenever a step reads the chain. The
+process exit code is **0**
 when every portfolio solved, **1** when any failed, **2** when the inputs were rejected before anything
 was solved, and **3** for infrastructure: a sink failure, a cluster that never came up, invalid
 settings, an unreadable config.
 
 ## 11. Persist, publish, record
 
-For each solved portfolio, the spec, solution, and chain state are written as `.npz` files under
-`<output_dir>/<run_id>/{problem_specs,solutions,chain}/`. These are what `portfolio-optimizer verify`
-reloads to re-check a solution without the solver stack.
+For each solved portfolio, the spec, solution, and chain state — its predecessors' buys, and which
+predecessors — are written as `.npz` files under `<output_dir>/<run_id>/{problem_specs,solutions,chain}/`
+as each result arrives. These are what `portfolio-optimizer verify` reloads to re-check a solution
+without the solver stack.
 
 The **sink** is called exactly once, with every solved portfolio's orders concatenated and sorted, and
 only when at least one portfolio solved. The shipped sinks write Parquet (Decimals as Arrow decimals) or
@@ -284,12 +319,13 @@ CSV, atomically, via a temp file and rename. A sink failure is exit code 3, but 
 written.
 
 The **manifest** (`engine/manifest.py`) records the run id, name, and timestamps; the git revision and
-whether the tree was dirty; the Python, cvxpy, numpy, pandas, and solver versions, and every worker
-environment that executed a task; the backend's lifetime — what was asked for, when the first worker
-answered, when it was released; the resolved config and its hash; the settings, with the cluster and
-worker counts; every term and constraint with its params; every dataset's provenance and content hash;
-and, per portfolio, the rule audits, spec hash, chain-input hash, solver statistics, verification
-outcome, drift, and the orders' count, hash, and gross notional. The manifest is then self-hashed, and
+whether the tree was dirty; the schedule the run derived — coupling, edges, components, the critical
+path; the Python, cvxpy, numpy, pandas, and solver versions, and every worker environment that executed
+a task; the backend's lifetime — what was asked for, when the first worker answered, when it was
+released; the resolved config and its hash; the settings, with the cluster and worker counts; every term
+and constraint with its params; every dataset's provenance and content hash; and, per portfolio, the
+solve-order key, the number of predecessors, the rule audits, spec hash, chain-input hash, solver
+statistics, verification outcome, drift, and the orders' count, hash, and gross notional. The manifest is then self-hashed, and
 `load_manifest` refuses one whose hash does not match its content.
 
 `portfolio-optimizer diff-manifests` compares two manifests and names the **first stage at which they
@@ -300,23 +336,24 @@ orders. "Did the data change, or did the solver?" is a one-command question. The
 ## The example, stage by stage
 
 `configs/example_run.json` declares two portfolios over three securities, a `prices` dataset joined into
-the universe by an assembly step and dropped by the next, two rules, three terms (tracking error, tax cost, transaction cost), seven constraints,
-the Clarabel solver, and `parallel_build_sequential_solve`; how many workers build is the
-`PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting.
+the universe by an assembly step and dropped by the next, two rules, three terms (tracking error, tax
+cost, transaction cost), seven constraints, the Clarabel solver, and `fail_fast`; how many workers the
+run has is the `PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting.
 
-P1 holds 500,000 shares each of A and B against an equal-weight target. C trades 100,000 shares a day at
-10, and the style allows 25% participation, so P1 may buy at most 25,000 shares of C. The optimizer
-sells 1,250 A and 2,500 B and buys 25,000 C — the hand-computable optimum, to the share. P2 holds only C
-and would like to diversify, but by the time it solves the chain state says C's budget is spent, so P2
-produces no orders. Run the config twice and `diff-manifests` reports `no differences`. The
-[tutorial](tutorial-first-run.md) walks through exactly this.
+P1 and P2 each hold $500,000 of A and $500,000 of B (5,000 A at 100, 10,000 B at 50) against an
+equal-weight target. C trades 100,000 shares a day at 10, and the style allows 25% participation, so a
+portfolio may buy at most 25,000 shares of C. P1 solves first: it sells 1,250 A and 2,500 B and buys
+25,000 C — the hand-computable optimum, to the share. P2 can buy the same securities, so it waits for
+P1; when it solves, the chain state says C's budget is spent, and with cash bounds at zero and A and B
+already symmetric against the target, P2 produces no orders. Run the config twice and `diff-manifests`
+reports `no differences`; run it with `"dependencies": "all"` and every portfolio record is the same
+again (the diff names only the config). The [tutorial](tutorial-first-run.md) walks through exactly this.
 
 ## Where validation happens, in one list
 
 1. **Settings** — unknown or missing environment variables; a Kubernetes cluster without a worker image.
 2. **Config** — strict models; money as strings; timestamps with a zone.
-3. **Resolver** — the function exists, its signature matches the contract, its params validate, and the
-   execution mode is compatible with the steps.
+3. **Resolver** — the function exists, its signature matches the contract, its params validate.
 4. **Loaders** — dtypes declared up front; exact `Decimal` coercion.
 5. **Assembly** — each step's own claims (join keys, cardinality, coverage, dtype agreement on a
    union); then the required frames exist and every frame schema holds; then details and constraints
@@ -326,5 +363,6 @@ produces no orders. Run the config twice and `diff-manifests` reports `no differ
 7. **`ProblemSpec`** — shapes, finiteness, bound ordering, read-only arrays.
 8. **Solver** — installed, DCP-compliant, status classified, infeasibility diagnosed.
 9. **Verifier** — every shipped constraint and the objective, independently of cvxpy.
-10. **Orders** — the `ORDERS` schema including `notional = quantity × price`, then the drift bound.
+10. **Orders** — the `ORDERS` schema including `notional = quantity × price`, every BUY inside the
+    buyable set, then the drift bound.
 11. **Manifest** — self-hash checked on load.

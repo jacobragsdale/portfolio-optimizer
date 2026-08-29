@@ -234,6 +234,10 @@ def make() -> Factories:
     return Factories(details=make_details, style=make_style, portfolio_data=make_portfolio_data, spec=make_spec, schemas=_SCHEMAS)
 
 
+NO_CHAIN_CONSTRAINTS = ["trade_balance", "long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds"]
+"""The example's constraints without the chain-aware ADV cap: nothing reads the chain, so no portfolio waits for another."""
+
+
 # --- steps that satisfy the resolver's contracts, for tests that need a resolvable config ---
 
 
@@ -283,6 +287,15 @@ def refuse_assembly(frames: DatasetFrames) -> DatasetFrames:
     del frames
     msg = "vendor scores are stale"
     raise ValueError(msg)
+
+
+def buy_only_listed(data: PortfolioData) -> PortfolioData:
+    """Cap every security not on the portfolio's ``buy_list`` extras dataset at its current weight: the shape of a real buy-universe filter."""
+    listed = {str(security) for security in data.extras["buy_list"]["security_id"]}
+    prices = {str(security): price for security, price in zip(data.universe["security_id"], data.universe["price"], strict=True)}
+    held = {str(security): int(quantity) for security, quantity in zip(data.holdings["security_id"], data.holdings["quantity"], strict=True)}
+    caps = [None if security in listed else Decimal(held.get(security, 0)) * prices[security] / data.details.nav for security in (str(value) for value in data.universe["security_id"])]
+    return data.with_changes(universe=data.universe.assign(max_weight=pd.Series(caps, index=data.universe.index, dtype="object")))
 
 
 def _example_body(real_steps: bool) -> dict[str, object]:

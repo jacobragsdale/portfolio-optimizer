@@ -14,6 +14,7 @@ from portfolio_optimizer.domain.types import StrictModel
 from portfolio_optimizer.engine.environment import WorkerEnvironment, distribution_version
 from portfolio_optimizer.engine.hashing import frame_sha256, json_sha256
 from portfolio_optimizer.engine.load import DatasetAudit
+from portfolio_optimizer.engine.schedule import ScheduleSummary
 
 MANIFEST_FILENAME = "manifest.json"
 STAGES: tuple[str, ...] = ("config", "datasets", "assembly", "rules", "spec", "solve", "orders")
@@ -64,6 +65,22 @@ class ClusterRecord(StrictModel):
     provision_started_at: AwareDatetime | None
     first_worker_ready_at: AwareDatetime | None
     closed_at: AwareDatetime | None
+
+
+class ScheduleRecord(StrictModel):
+    """The schedule the run derived: how coupled the book was, and how long its longest chain of solves is.
+
+    ``coupling`` is ``none`` when no step read the chain, ``overlap`` when portfolios waited only for
+    higher-priority portfolios with a shared buyable security, ``all`` when every higher-priority
+    portfolio was a predecessor. ``critical_path`` counts solves that had to run one after another.
+    """
+
+    coupling: Literal["none", "overlap", "all"]
+    portfolios: int
+    edges: int
+    components: int
+    largest_component: int
+    critical_path: int
 
 
 class ConfigInfo(StrictModel):
@@ -162,6 +179,8 @@ class PortfolioRecord(StrictModel):
 
     portfolio_id: str
     status: Literal["solved", "failed"]
+    solve_order: str | None = None
+    predecessors: int | None = None
     rules: tuple[RuleRecord, ...] = ()
     problem_spec_sha256: str | None = None
     chain_inputs_sha256: str | None = None
@@ -190,7 +209,7 @@ class RunManifest(StrictModel):
     as_of: AwareDatetime
     git_sha: str
     git_dirty: bool
-    execution_mode: str
+    schedule: ScheduleRecord | None = None
     cluster: ClusterRecord | None = None
     versions: VersionInfo
     config: ConfigInfo
@@ -265,13 +284,15 @@ def rule_records(audits: Sequence[RuleAuditRecord]) -> tuple[RuleRecord, ...]:
     return tuple(RuleRecord(qualname=a.qualname, source_sha256=a.source_sha256, params_sha256=a.params_sha256, rows_in=dict(a.rows_in), rows_out=dict(a.rows_out)) for a in audits)
 
 
-def solved_record(result: PortfolioResult, report: ConstraintReport, drift: DriftReport, tolerance_eq: float, tolerance_ineq: float) -> PortfolioRecord:
+def solved_record(result: PortfolioResult, report: ConstraintReport, drift: DriftReport, tolerance_eq: float, tolerance_ineq: float, *, solve_order: str | None = None) -> PortfolioRecord:
     """The manifest record for a portfolio that produced orders."""
     solution = result.solution
     gross = sum((notional for notional in result.orders["notional"]), start=0)
     return PortfolioRecord(
         portfolio_id=result.portfolio_id,
         status="solved",
+        solve_order=solve_order,
+        predecessors=len(result.chain_state.predecessors),
         rules=rule_records(result.rule_audit),
         problem_spec_sha256=result.spec.content_hash(),
         chain_inputs_sha256=result.chain_state.content_hash(),
@@ -299,9 +320,24 @@ def solved_record(result: PortfolioResult, report: ConstraintReport, drift: Drif
     )
 
 
-def failed_record(failure: PortfolioFailure, rules: Sequence[RuleAuditRecord] = ()) -> PortfolioRecord:
+def failed_record(failure: PortfolioFailure, rules: Sequence[RuleAuditRecord] = (), *, solve_order: str | None = None, predecessors: int | None = None) -> PortfolioRecord:
     """The manifest record for a portfolio that did not produce orders."""
-    return PortfolioRecord(portfolio_id=failure.portfolio_id, status="failed", rules=rule_records(rules), failure_stage=failure.stage, error=f"{failure.error_type}: {failure.message}")
+    return PortfolioRecord(
+        portfolio_id=failure.portfolio_id,
+        status="failed",
+        solve_order=solve_order,
+        predecessors=predecessors,
+        rules=rule_records(rules),
+        failure_stage=failure.stage,
+        error=f"{failure.error_type}: {failure.message}",
+    )
+
+
+def schedule_record(summary: ScheduleSummary) -> ScheduleRecord:
+    """The manifest's view of the derived schedule."""
+    return ScheduleRecord(
+        coupling=summary.coupling, portfolios=summary.portfolios, edges=summary.edges, components=summary.components, largest_component=summary.largest_component, critical_path=summary.critical_path
+    )
 
 
 def artifact_records(artifacts: Sequence[Artifact]) -> tuple[ArtifactRecord, ...]:

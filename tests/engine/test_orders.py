@@ -1,4 +1,4 @@
-"""Tier 1: solution → whole-share orders, rounding toward zero, and the drift bound."""
+"""Tier 1: solution → whole-share orders, nearest-share rounding, the buy clamp, and the drift bound."""
 
 from decimal import Decimal
 
@@ -100,9 +100,29 @@ def test_orders_are_deterministic(make: Factories) -> None:
 
 def test_misaligned_inputs_are_rejected(make: Factories) -> None:
     output = built(make)
-    inputs = OrderInputs(security_ids=("A", "B"), price=(Decimal(1), Decimal(1)), shares_held=(0, 0), lot_size=(1, 1), nav=Decimal(1), min_trade_notional=Decimal(0))
+    inputs = OrderInputs(
+        security_ids=("A", "B"),
+        price=(Decimal(1), Decimal(1)),
+        shares_held=(0, 0),
+        lot_size=(1, 1),
+        w0=(Decimal(0), Decimal(0)),
+        ub=(Decimal(1), Decimal(1)),
+        nav=Decimal(1),
+        min_trade_notional=Decimal(0),
+    )
     with pytest.raises(ValueError, match="not aligned"):
         solution_to_orders(output.spec, solution_at(output.spec, HAND_OPTIMUM), inputs, run_id="r")
+
+
+def test_a_buy_never_exceeds_the_room_under_the_upper_bound(make: Factories, frames: Frames) -> None:
+    universe = frames.three_security_universe()
+    universe.loc[0, "restricted"] = True  # A is frozen at its current weight: not buyable
+    output = built(make, universe=universe)
+    w = output.spec.w0 + np.array([3e-7, 0.0, 0.0])  # solver noise the verifier tolerates, but three whole shares of A
+    solution = solution_at(output.spec, w)
+    orders = solution_to_orders(output.spec, solution, output.order_inputs, run_id="r")
+    assert orders.empty, "the clamp keeps the buyable set structural"
+    assert rounding_drift(output.spec, solution, orders, output.order_inputs, violation_tol=1e-6).passed
 
 
 def test_drift_is_zero_for_exact_orders_and_bounded_for_lots(make: Factories, frames: Frames) -> None:

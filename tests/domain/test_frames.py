@@ -97,10 +97,11 @@ def test_other_engine_frames_reject_unexpected_columns(frames: Frames, schema: F
         validate_frame(frames.for_schema(schema)().assign(score=pd.Series([0.5], dtype="Float64")), schema)
 
 
-def test_solve_order_must_be_unique(frames: Frames) -> None:
-    frame = frames.portfolios({"portfolio_id": "P1"}, {"portfolio_id": "P2"})
-    with pytest.raises(FrameSchemaError, match="solve_order"):
-        validate_frame(frame, PORTFOLIOS)
+def test_solve_order_is_a_priority_that_may_repeat_or_be_absent(frames: Frames) -> None:
+    tied = frames.portfolios({"portfolio_id": "P1"}, {"portfolio_id": "P2"})
+    assert validate_frame(tied, PORTFOLIOS) is tied
+    without = tied.drop(columns=["solve_order"])
+    assert validate_frame(without, PORTFOLIOS) is without
 
 
 def test_coerce_frame_builds_decimals_exactly_and_casts_declared_dtypes() -> None:

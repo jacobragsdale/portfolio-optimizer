@@ -8,7 +8,19 @@ import pandas as pd
 import pytest
 
 from portfolio_optimizer.engine.environment import WorkerEnvironment, package_versions, read_git_info
-from portfolio_optimizer.engine.manifest import ConfigInfo, OrdersRecord, PortfolioRecord, RunManifest, VersionInfo, WorkerRecord, diff_manifests, finalize, load_manifest, write_manifest
+from portfolio_optimizer.engine.manifest import (
+    ConfigInfo,
+    OrdersRecord,
+    PortfolioRecord,
+    RunManifest,
+    ScheduleRecord,
+    VersionInfo,
+    WorkerRecord,
+    diff_manifests,
+    finalize,
+    load_manifest,
+    write_manifest,
+)
 from tests.conftest import AS_OF
 
 
@@ -20,7 +32,7 @@ def manifest(**overrides: object) -> RunManifest:
         "as_of": AS_OF,
         "git_sha": "abc",
         "git_dirty": False,
-        "execution_mode": "sequential",
+        "schedule": ScheduleRecord(coupling="overlap", portfolios=1, edges=0, components=1, largest_component=1, critical_path=1),
         "versions": VersionInfo(python="3.13", cvxpy="1.9", numpy="2.5", pandas="3.0", solver="CLARABEL", solver_version="0.11"),
         "config": ConfigInfo(path="c.json", sha256="cfg", resolved={}),
         "settings": {},

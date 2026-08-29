@@ -41,9 +41,10 @@ PORTFOLIO_OPTIMIZER_WORKER_IMAGE=registry/optimizer@sha256:...   # kubernetes on
 - `MIN_WORKERS` is requested as soon as the config resolves and sits idle while data loads;
   `MAX_WORKERS` is requested right after assembly. If node warm-up is what takes long, set the floor
   high and accept the idle pod-minutes; if pods start fast on warm nodes, keep it at one and scale late.
-- `MAX_WORKERS` also sets the run's *window*: it keeps twice that many tasks outstanding, so every
-  worker has one task queued behind the one it is running and a run never holds its whole book in
-  flight.
+- `MAX_WORKERS` is a ceiling on concurrency, not a promise of it: every build is submitted at once and
+  every solve as soon as the schedule is known, and the scheduler runs whatever is ready. A book whose
+  portfolios all compete for the same buys is one chain of solves however many workers it has; the
+  manifest's `schedule` record says how long that chain was.
 - `CLUSTER_TIMEOUT_S` bounds how long the run waits, after assembly, for the first worker. A cluster
   that never answers is exit code 3 with a `cluster` failure record in the manifest and every
   portfolio marked skipped.
@@ -83,8 +84,9 @@ and every fingerprint carries it. What happens, in order:
 3. Assembly finishes. The run asks for `MAX_WORKERS`, waits for the first worker, scatters the assembled
    datasets and the config to it once, and starts submitting tasks; workers that join later receive the
    data from their peers.
-4. Results are consumed in solve order; in `parallel_build_sequential_solve` mode the solve chain runs in
-   the pod as each build arrives.
+4. Every build runs at once; the pod derives the dependency graph from what the builds report and
+   submits each solve with its predecessors' contributions as dependencies, so a solve runs on the
+   worker that holds its build the moment its predecessors finish. Outcomes are classified in solve order.
 5. The cluster is deleted in a `finally` — also when inputs are rejected — and then the orders are
    persisted, the sink is called, and the manifest is written.
 
@@ -94,7 +96,7 @@ a `PriorityClass`. Nothing in the engine arbitrates between runs.
 ## 4. Point at a scheduler someone else runs
 
 `CLUSTER=tcp://scheduler:8786` connects to an existing scheduler instead of creating one. The run still
-scatters its data once, keeps its window, and closes its client at the end, but it does not scale or
+scatters its data once and closes its client at the end, but it does not scale or
 tear anything down. Every task's fingerprint is compared with the run's, so a shared cluster running an
 older image fails its portfolios rather than answering with different code; the manifest's
 `versions.workers` shows what it was running.

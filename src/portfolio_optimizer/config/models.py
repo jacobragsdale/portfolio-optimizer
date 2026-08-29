@@ -20,8 +20,8 @@ from portfolio_optimizer.ratelimit import RateLimit
 STEP_NAME_PATTERN = r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$"
 _STEP_NAME = re.compile(STEP_NAME_PATTERN)
 
-type ExecutionMode = Literal["sequential", "parallel_build_sequential_solve", "parallel"]
 type OnError = Literal["fail_fast", "continue"]
+type Dependencies = Literal["overlap", "all"]
 
 STEP_NAME_DESCRIPTION = (
     "A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process."
@@ -136,19 +136,22 @@ class PostSolveConfig(StrictModel):
 
 
 class ExecutionConfig(StrictModel):
-    """How portfolios are scheduled across the build and solve phases, and what a failure means.
+    """What a failure means, and which portfolios wait for which.
 
-    Which cluster the run provisions for itself and how many workers it has are settings
-    (`PORTFOLIO_OPTIMIZER_CLUSTER`, `PORTFOLIO_OPTIMIZER_MAX_WORKERS`, ...), not config, so the same config
-    hashes the same on a laptop and on a cluster. Results are consumed in solve order whatever the
-    cluster, so neither changes the output.
+    The schedule itself is derived: every portfolio builds in parallel, then solves once the
+    higher-priority portfolios it depends on have solved. Which cluster the run provisions for itself
+    and how many workers it has are settings (`PORTFOLIO_OPTIMIZER_CLUSTER`,
+    `PORTFOLIO_OPTIMIZER_MAX_WORKERS`, ...), not config, so the same config hashes the same on a laptop
+    and on a cluster — and nothing here changes a portfolio's answer, only how long the run takes.
     """
 
-    mode: ExecutionMode = Field(
-        description="`sequential`: build and solve one after another with a live chain context. `parallel_build_sequential_solve`: build in workers, solve in order (constraints may use `chain`, rules may not use `ctx`). `parallel`: everything in workers; no chain-aware steps allowed."
-    )
     on_error: OnError = Field(
-        default="fail_fast", description="`fail_fast` stops after the first failed portfolio and records the rest as skipped; `continue` isolates failures. Chain-aware steps require `fail_fast`."
+        default="fail_fast",
+        description="`fail_fast` stops at the first failed portfolio: every lower-priority portfolio is recorded as skipped. `continue` isolates the failure: only the portfolios that depended on it are skipped.",
+    )
+    dependencies: Dependencies = Field(
+        default="overlap",
+        description="`overlap`: a portfolio waits only for higher-priority portfolios that can buy a security it can buy too. `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis.",
     )
 
 
@@ -162,7 +165,7 @@ class RunConfig(StrictModel):
     schema_ref: str | None = Field(default=None, alias="$schema", description="Optional pointer to the JSON Schema for editor validation; ignored by the engine.")
     run: RunMeta = Field(description="Run identity.")
     portfolios: DatasetConfig = Field(
-        description='The portfolio list (`portfolio_id`, `solve_order`): a bare loader step, or `{"loader": step, "rate_limit": ...}` to bound its source. Portfolios are processed in ascending `solve_order`.'
+        description='The portfolio list (`portfolio_id`, optional `solve_order`): a bare loader step, or `{"loader": step, "rate_limit": ...}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, and a portfolio waits only for higher-priority portfolios whose buyable securities overlap its own. A `solve_order` step replaces the column.'
     )
     datasets: dict[str, DatasetConfig] = Field(
         description="Named datasets. `constraints` is always required; `holdings`, `universe`, `details`, and `targets` must be declared here unless an assembly step produces them. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known."
@@ -175,13 +178,17 @@ class RunConfig(StrictModel):
         default=(),
         description="Assembly steps from `assembly.py`, applied in order to the loaded datasets before the engine-known frames are validated: `join`, `union`, `select`, `drop`, or any custom `(frames: Frames[, params]) -> Frames` function. This is where analytics columns are attached to `holdings` and `universe`.",
     )
-    rules: tuple[StepSpec, ...] = Field(default=(), description="Business-logic rule steps from `rules.py`, applied in order to each portfolio's bundle.")
+    rules: tuple[StepSpec, ...] = Field(default=(), description="Business-logic rule steps from `rules.py`, applied in order to each portfolio's bundle. Rules never see other portfolios.")
+    solve_order: StepSpec | None = Field(
+        default=None,
+        description="Optional solve-order step from `solve_order.py`: `(data: PortfolioData[, params]) -> Decimal`, evaluated on each portfolio's ruled bundle. Lower keys solve first; ties break on `portfolio_id`. Replaces the portfolios frame's `solve_order` column.",
+    )
     objective: ObjectiveConfig = Field(description="What the optimizer minimizes.")
     constraints: tuple[StepSpec, ...] = Field(default=(), description="Constraint steps from `terms.py`. Keep `trade_balance`; it defines the buy/sell split the other steps rely on.")
     solver: SolverConfig = Field(default_factory=SolverConfig, description="Solver selection and options.")
     post_solve: PostSolveConfig = Field(default_factory=PostSolveConfig, description="Verification tolerances.")
     sink: StepSpec = Field(description="Sink step from `sinks.py`, called once with every solved portfolio's orders.")
-    execution: ExecutionConfig = Field(description="Scheduling and failure semantics.")
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig, description="Failure semantics and how dependencies between portfolios are derived.")
 
     @field_validator("portfolios", mode="before")
     @classmethod

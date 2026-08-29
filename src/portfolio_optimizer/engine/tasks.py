@@ -1,31 +1,35 @@
-"""The per-portfolio pipeline every backend runs: slice, rules, build, and — in ``parallel`` mode — solve, verify, orders.
+"""The per-portfolio tasks every run submits to its cluster: build, summarize, solve, contribute.
 
-:func:`build_task` and :func:`full_task` are the worker entry points. Each receives the run's shared
-data (the backend resolves its handle on the worker), resolves the config by name once per process,
-runs the pipeline, and returns a
-:class:`TaskOutput` stamped with the fingerprint of the process that did the work. A task never raises:
-every failure becomes a :class:`PortfolioFailure` naming its stage, so the scheduler can apply
-``on_error``. The sequential mode calls the same pipeline functions in the main process with a live
-:class:`SolveContext`.
+:func:`build_task` runs first for every portfolio, chain-free and in parallel: slice, rules, the
+solve-order key, and the spec. Its result stays on the worker; :func:`summarize` sends the main
+process only what it needs to derive the schedule — the key, the buyable securities, the spec hash,
+the rule audit — stamped with the build's environment. :func:`solve_task` then runs where the build
+lives, once the portfolio's predecessors have contributed: it folds their buys into a
+:class:`ChainState`, solves, verifies, and rounds. :func:`contribution` reduces a result to the BUY
+rows a dependent needs. Each task receives the run's shared data (the backend resolves its handle on
+the worker) and resolves the config by name once per process. A task never raises for a portfolio's
+own failure: it returns a :class:`PortfolioFailure` naming the stage, so ``on_error`` can be applied.
 """
 
 import logging
 import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 from portfolio_optimizer.config.resolve import ResolvedConfig, ResolvedStep, resolve_config
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError
 from portfolio_optimizer.domain.results import (
+    ChainState,
     ConstraintReport,
+    Contribution,
     DriftReport,
     OrderInputs,
     PortfolioFailure,
     PortfolioResult,
     ProblemSpec,
     RuleAuditRecord,
-    SolveContext,
     StepRef,
     Tolerances,
     derive_chain_state,
@@ -44,6 +48,8 @@ log = logging.getLogger(__name__)
 
 type Outcome = PortfolioResult | PortfolioFailure
 
+SKIPPED_ERROR = "SkippedAfterFailure"
+
 
 class VerificationError(RuntimeError):
     """The independent check disagreed with the solver."""
@@ -61,29 +67,62 @@ class DriftError(RuntimeError):
         super().__init__(f"rounding drift {report.max_weight_error:.3e} exceeds tolerance {report.tolerance:.3e}")
 
 
+class SolveOrderError(ValueError):
+    """The solve-order step returned something other than a finite ``Decimal``."""
+
+
+class ChainInvariantError(RuntimeError):
+    """A portfolio bought a security outside its buyable set, which the dependency graph could not have seen."""
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class BuildResult:
-    """A built portfolio: pure data, safe to send back from a worker."""
+    """A built portfolio: pure data that stays on the worker that built it."""
 
     portfolio_id: PortfolioId
     spec: ProblemSpec
     order_inputs: OrderInputs
     rule_audit: tuple[RuleAuditRecord, ...]
+    solve_order: Decimal
 
 
-# --- the pipeline, shared by every mode ---
+@dataclass(frozen=True, slots=True)
+class BuildSummary:
+    """What the main process learns from a build: enough to place the portfolio in the schedule."""
+
+    portfolio_id: PortfolioId
+    solve_order: Decimal
+    buyable: tuple[str, ...]
+    spec_sha256: str
+    rule_audit: tuple[RuleAuditRecord, ...]
 
 
-def build_portfolio(data: PortfolioData, resolved: ResolvedConfig, ctx: SolveContext | None) -> BuildResult:
-    """Apply rules and build the spec."""
-    ruled, audit = apply_rules(data, resolved.rules, ctx)
+# --- the pipeline ---
+
+
+def build_portfolio(data: PortfolioData, resolved: ResolvedConfig, fallback_solve_order: Decimal) -> BuildResult:
+    """Apply rules, compute the solve-order key, and build the spec."""
+    ruled, audit = apply_rules(data, resolved.rules)
+    key = fallback_solve_order if resolved.solve_order is None else solve_order_key(resolved.solve_order, ruled)
     output = build_problem_spec(ruled)
-    return BuildResult(portfolio_id=data.portfolio_id, spec=output.spec, order_inputs=output.order_inputs, rule_audit=audit)
+    return BuildResult(portfolio_id=data.portfolio_id, spec=output.spec, order_inputs=output.order_inputs, rule_audit=audit, solve_order=key)
 
 
-def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, ctx: SolveContext, run_id: str) -> PortfolioResult:
+def solve_order_key(step: ResolvedStep, data: PortfolioData) -> Decimal:
+    """Run the solve-order step and insist on a finite ``Decimal``: the key is sorted and recorded, so it must be exact."""
+    value = step.invoke(data=data)
+    if isinstance(value, bool) or not isinstance(value, Decimal | int):
+        msg = f"solve-order step {step.qualname!r} returned {type(value).__name__}, expected Decimal"
+        raise SolveOrderError(msg)
+    key = Decimal(value)
+    if not key.is_finite():
+        msg = f"solve-order step {step.qualname!r} returned {key}, expected a finite value"
+        raise SolveOrderError(msg)
+    return key
+
+
+def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainState, run_id: str) -> PortfolioResult:
     """Solve, verify independently, round to orders, and bound the rounding drift."""
-    chain = derive_chain_state(ctx, built.spec.security_ids)
     solution = solve(built.spec, chain, resolved)
     post = resolved.config.post_solve
     report = verify(
@@ -97,10 +136,19 @@ def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, ctx: SolveCon
     if not report.passed:
         raise VerificationError(report)
     orders = solution_to_orders(built.spec, solution, built.order_inputs, run_id=run_id)
-    drift = rounding_drift(built.spec, solution, orders, built.order_inputs)
+    outside = sorted(set(Contribution.from_orders(built.portfolio_id, orders).security_ids) - buyable_ids(built.spec))
+    if outside:
+        msg = f"bought securities outside the buyable set: {outside}"
+        raise ChainInvariantError(msg)
+    drift = rounding_drift(built.spec, solution, orders, built.order_inputs, violation_tol=post.violation_tol)
     if not drift.passed:
         raise DriftError(drift)
     return PortfolioResult(portfolio_id=built.portfolio_id, spec=built.spec, solution=solution, report=report, orders=orders, rule_audit=built.rule_audit, chain_state=chain, drift=drift)
+
+
+def buyable_ids(spec: ProblemSpec) -> set[str]:
+    """The securities the spec allows a positive buy in."""
+    return {security for security, allowed in zip(spec.security_ids, spec.buyable, strict=True) if allowed}
 
 
 def step_refs(steps: Sequence[ResolvedStep]) -> tuple[StepRef, ...]:
@@ -113,26 +161,31 @@ def failure(portfolio_id: str, stage: str, error: BaseException) -> PortfolioFai
     return PortfolioFailure(portfolio_id=portfolio_id, stage=stage, error_type=type(error).__name__, message=str(error))
 
 
-def slice_and_build(shared: SharedRunData, resolved: ResolvedConfig, portfolio_id: PortfolioId, ctx: SolveContext | None) -> BuildResult | PortfolioFailure:
+def skipped(portfolio_id: str, message: str) -> PortfolioFailure:
+    """A portfolio that was never solved because of another portfolio's failure."""
+    return PortfolioFailure(portfolio_id=portfolio_id, stage="skipped", error_type=SKIPPED_ERROR, message=message)
+
+
+def slice_and_build(shared: SharedRunData, resolved: ResolvedConfig, portfolio_id: PortfolioId) -> BuildResult | PortfolioFailure:
     """Slice the portfolio's bundle from the shared data, apply rules, and build its spec; a failure names its stage."""
     try:
         data = slice_portfolio(shared.assembled, portfolio_id)
     except (PortfolioDataError, ValueError) as error:
         return failure(portfolio_id, "slice", error)
     try:
-        return build_portfolio(data, resolved, ctx)
+        return build_portfolio(data, resolved, Decimal(shared.assembled.solve_orders[portfolio_id]))
     except Exception as error:  # noqa: BLE001  # recorded per portfolio; on_error decides what happens next
         return failure(portfolio_id, "build", error)
 
 
-def finish_or_fail(built: BuildResult, resolved: ResolvedConfig, ctx: SolveContext, run_id: str) -> Outcome:
+def finish_or_fail(built: BuildResult, resolved: ResolvedConfig, chain: ChainState, run_id: str) -> Outcome:
     """Solve and finish, recording any failure at stage ``solve``."""
     try:
-        result = finish_portfolio(built, resolved, ctx, run_id)
+        result = finish_portfolio(built, resolved, chain, run_id)
     except Exception as error:  # noqa: BLE001  # recorded per portfolio; on_error decides what happens next
         log.error("portfolio failed", extra={"run_id": run_id, "portfolio_id": built.portfolio_id, "stage": "solve", "error": type(error).__name__})
         return failure(built.portfolio_id, "solve", error)
-    log.info("portfolio solved", extra={"run_id": run_id, "portfolio_id": built.portfolio_id, "stage": "solve", "orders": len(result.orders)})
+    log.info("portfolio solved", extra={"run_id": run_id, "portfolio_id": built.portfolio_id, "stage": "solve", "orders": len(result.orders), "predecessors": len(chain.predecessors)})
     return result
 
 
@@ -160,23 +213,48 @@ def worker_environment(shared: SharedRunData) -> WorkerEnvironment:
 
 
 def build_task(shared: SharedRunData, portfolio_id: PortfolioId) -> TaskOutput[BuildResult]:
-    """Worker entry for ``parallel_build_sequential_solve``: slice, rules, and build with no context."""
-    return _task(shared, portfolio_id, lambda data, resolved: slice_and_build(data, resolved, portfolio_id, ctx=None))
+    """Slice, rules, solve-order key, and build; chain-free, so every portfolio's build runs at once."""
+    return _task(shared, portfolio_id, lambda data, resolved: slice_and_build(data, resolved, portfolio_id))
 
 
-def full_task(shared: SharedRunData, portfolio_id: PortfolioId) -> TaskOutput[PortfolioResult]:
-    """Worker entry for ``parallel``: the whole pipeline with an empty context."""
+def summarize(build: TaskOutput[BuildResult]) -> TaskOutput[BuildSummary]:
+    """Reduce a build to what the main process needs, keeping the build's environment stamp so a stale worker is caught before it solves."""
+    outcome = build.outcome
+    if isinstance(outcome, PortfolioFailure):
+        passed_on: TaskOutput[BuildSummary] = TaskOutput(outcome=outcome, environment=build.environment, host=build.host)
+        return passed_on
+    summary = BuildSummary(
+        portfolio_id=outcome.portfolio_id, solve_order=outcome.solve_order, buyable=tuple(sorted(buyable_ids(outcome.spec))), spec_sha256=outcome.spec.content_hash(), rule_audit=outcome.rule_audit
+    )
+    return TaskOutput(outcome=summary, environment=build.environment, host=build.host)
+
+
+def solve_task(shared: SharedRunData, build: TaskOutput[BuildResult], *contributions: Contribution | PortfolioFailure) -> TaskOutput[PortfolioResult]:
+    """Fold the predecessors' buys and finish the portfolio; a failed build or predecessor is passed on, never solved around."""
+    built = build.outcome
 
     def pipeline(data: SharedRunData, resolved: ResolvedConfig) -> Outcome:
-        built = slice_and_build(data, resolved, portfolio_id, ctx=None)
         if isinstance(built, PortfolioFailure):
             return built
-        return finish_or_fail(built, resolved, SolveContext(), data.run_id)
+        failed = next((contribution for contribution in contributions if isinstance(contribution, PortfolioFailure)), None)
+        if failed is not None:
+            return skipped(built.portfolio_id, f"not solved because predecessor {failed.portfolio_id!r} failed at stage {failed.stage!r}")
+        folded = [contribution for contribution in contributions if isinstance(contribution, Contribution)]
+        chain = derive_chain_state(built.spec.security_ids, built.spec.buyable, folded)
+        return finish_or_fail(built, resolved, chain, data.run_id)
 
-    return _task(shared, portfolio_id, pipeline)
+    return _task(shared, built.portfolio_id, pipeline)
 
 
-def _task[T](data: SharedRunData, portfolio_id: PortfolioId, pipeline: Callable[[SharedRunData, ResolvedConfig], T | PortfolioFailure]) -> TaskOutput[T]:
+def contribution(solved: TaskOutput[PortfolioResult]) -> Contribution | PortfolioFailure:
+    """What a dependent solve receives: the portfolio's buys, or the failure that stops the dependent."""
+    outcome = solved.outcome
+    if isinstance(outcome, PortfolioFailure):
+        return outcome
+    return Contribution.from_orders(outcome.portfolio_id, outcome.orders)
+
+
+def _task[T](data: SharedRunData, portfolio_id: str, pipeline: Callable[[SharedRunData, ResolvedConfig], T | PortfolioFailure]) -> TaskOutput[T]:
     environment = worker_environment(data)
     try:
         resolved = resolved_for(data)

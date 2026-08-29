@@ -131,9 +131,10 @@ def diagnose_infeasibility(spec: ProblemSpec, chain: ChainState) -> Infeasibilit
     needed = float(np.abs(clamped - spec.w0).sum())
     if needed > spec.max_turnover + 1e-12:
         findings.append(f"moving w0 inside its bounds needs turnover {needed:.6f} > max_turnover {spec.max_turnover:.6f}")
-    consumed = chain.cumulative_shares * spec.price / spec.nav if chain.security_ids == spec.security_ids else np.zeros(spec.n)
+    consumed = chain.bought_shares * spec.price / spec.nav if chain.security_ids == spec.security_ids else np.zeros(spec.n)
     remaining = np.maximum(0.0, spec.adv_capacity - consumed)
-    blocked = [spec.security_ids[i] for i in range(spec.n) if abs(clamped[i] - spec.w0[i]) > remaining[i] + 1e-12]
+    required = clamped - spec.w0
+    blocked = [spec.security_ids[i] for i in range(spec.n) if abs(required[i]) > spec.adv_capacity[i] + 1e-12 or required[i] > remaining[i] + 1e-12]
     if blocked:
         findings.append(f"names that must trade but have no ADV budget left: {blocked}")
     return InfeasibilityReport(tuple(findings))

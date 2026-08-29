@@ -6,13 +6,17 @@ someone else runs — and the seam exists so the runner can be exercised against
 for the backend right after config resolution (:meth:`Backend.start`, non-blocking, so the cluster
 warms up under the load stage), scales it and waits for the first worker after assembly
 (:meth:`Backend.scale`, :meth:`Backend.ready`), hands it the run's shared data once
-(:meth:`Backend.share`), submits one task per portfolio carrying only the portfolio id
-(:meth:`Backend.submit`), and closes it in a ``finally`` (:meth:`Backend.close`). The task functions
-(``engine/tasks.py``) never raise: each returns a :class:`TaskOutput` whose outcome is the portfolio's
-result or failure and whose environment is the fingerprint of the process that produced it.
+(:meth:`Backend.share`), submits every portfolio's build and then, once the schedule is known, every
+solve with its predecessors' contributions as dependencies (:meth:`Backend.submit`), collects results
+as they complete (:meth:`Backend.as_completed`), cancels what a failure makes pointless
+(:meth:`Backend.cancel`), and closes it in a ``finally`` (:meth:`Backend.close`). The task functions
+(``engine/tasks.py``) never raise for a portfolio's own failure: each returns a :class:`TaskOutput`
+whose outcome is the portfolio's result or failure and whose environment is the fingerprint of the
+process that produced it. A task whose *dependency* raised — a worker died under it — never runs,
+and its handle raises instead.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -47,15 +51,10 @@ class TaskOutput[T]:
     host: str
 
 
-type Task[T] = Callable[[SharedRunData, PortfolioId], TaskOutput[T]]
-
-
 class Pending[T](Protocol):
     """The part of a future the runner uses."""
 
     def result(self, timeout: float | None = None) -> T: ...
-
-    def cancel(self) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,8 +90,20 @@ class Backend(Protocol):
         """Deliver the run's shared data to the workers once; the handle returned is what :meth:`submit` forwards."""
         ...
 
-    def submit[T](self, task: Task[T], shared: object, portfolio_id: PortfolioId) -> Pending[TaskOutput[T]]:
-        """Schedule ``task(shared, portfolio_id)``; the backend resolves the handle back into the data on the worker."""
+    def submit[T](self, fn: Callable[..., T], /, *args: object, key: str, priority: int) -> Pending[T]:
+        """Schedule ``fn(*args)`` under ``key``; higher ``priority`` runs first.
+
+        An argument may be the shared-data handle or a :class:`Pending` this backend returned: both
+        are resolved on the worker before ``fn`` runs, so a pending argument is a dependency.
+        """
+        ...
+
+    def as_completed(self, pendings: Mapping[PortfolioId, Pending[object]]) -> Iterator[PortfolioId]:
+        """Yield each key as its pending completes, in completion order; every key exactly once."""
+        ...
+
+    def cancel(self, pendings: Sequence[Pending[object]]) -> None:
+        """Drop tasks that have not started, and everything that depends on them; a running task is not interrupted."""
         ...
 
     def close(self) -> None:

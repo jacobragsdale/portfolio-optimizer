@@ -60,7 +60,8 @@ PERTURBATIONS: list[tuple[str, Perturbation]] = [
     ("cash_ub", lambda _spec, w: {"w": w * 0.999, "sell": w * 0.001}),
     ("cash_lb", lambda _spec, w: {"w": w * 1.001, "buy": w * 0.001}),
     ("turnover_cap", lambda _spec, w: {"w": w, "buy": np.full(3, 0.5), "sell": np.full(3, 0.5)}),
-    ("cumulative_adv_participation", lambda _spec, w: {"w": w, "buy": np.full(3, 11.0), "sell": np.full(3, 11.0)}),
+    ("adv_participation", lambda _spec, w: {"w": w, "buy": np.zeros(3), "sell": np.full(3, 11.0)}),
+    ("cumulative_adv_participation", lambda _spec, w: {"w": w, "buy": np.full(3, 11.0), "sell": np.zeros(3)}),
 ]
 
 

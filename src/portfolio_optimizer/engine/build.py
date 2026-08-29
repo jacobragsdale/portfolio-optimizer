@@ -112,7 +112,9 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
         columns=columns,
         flags=flags,
     )
-    inputs = OrderInputs(security_ids=ids, price=tuple(price), shares_held=tuple(shares_held), lot_size=tuple(lot_size), nav=nav, min_trade_notional=data.style.min_trade_notional)
+    inputs = OrderInputs(
+        security_ids=ids, price=tuple(price), shares_held=tuple(shares_held), lot_size=tuple(lot_size), w0=tuple(w0), ub=tuple(ub), nav=nav, min_trade_notional=data.style.min_trade_notional
+    )
     return BuildOutput(spec=spec, order_inputs=inputs)
 
 

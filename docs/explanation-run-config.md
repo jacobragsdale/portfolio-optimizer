@@ -76,21 +76,23 @@ timestamp compared against a lot's `acquired_on` would be a silent off-by-hours 
 "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}}
 ```
 
-This is the one loader that runs alone, before everything else. Its frame has two columns,
-`portfolio_id` and `solve_order`, and the engine sorts it by `solve_order` to produce the tuple of ids
-that governs the rest of the run: it is the order in which portfolios are solved, and it is included
-in every other dataset's request so a loader for a per-portfolio source knows exactly which ids to
-fetch. That dependency is why this loader cannot overlap with the others.
+This is the one loader that runs alone, before everything else. Its frame has a `portfolio_id` column
+and an optional `solve_order`, and the engine sorts it by `solve_order` then `portfolio_id` to produce
+the tuple of ids the rest of the run starts from: it is included in every other dataset's request so a
+loader for a per-portfolio source knows exactly which ids to fetch. That dependency is why this loader
+cannot overlap with the others.
 
 The block is written here as a bare step because a file needs no throttling. A source that does can
 use the longer form, `{"loader": step, "rate_limit": ...}`, which is the same shape every entry in
 `datasets` has; the bare form is a convenience the model expands.
 
-Solve order matters only when steps are chain-aware — when a later portfolio's problem depends on what
-earlier ones already ordered. In the example, P2 solves after P1 and finds that P1 has consumed the
-ADV budget for security C. Swap the `solve_order` values in the data and P2 gets the budget instead.
-The order lives in the data rather than the config because it is a property of the book, not of the
-engine's wiring.
+`solve_order` is a *priority*, not a sequence: lower solves first, ties break on `portfolio_id`, and it
+matters only when a term or constraint is chain-aware — when a later portfolio's problem depends on what
+higher-priority ones already *bought*. A portfolio waits only for higher-priority portfolios that can buy
+a security it can buy too; everything else solves concurrently. In the example, P2 solves after P1 and
+finds that P1 has consumed the ADV budget for security C. Swap the `solve_order` values in the data and
+P2 gets the budget instead. A [`solve_order` step](#solve_order) computes the key from the data instead
+of reading this column.
 
 ## `datasets`
 
@@ -237,13 +239,25 @@ The example's two rules show the spectrum. `restrict_low_liquidity` reads its th
 and marks names below it restricted, which the build then freezes at their current weight.
 `add_zero_alpha` takes no parameters and adds an `alpha` column of zeros when the universe has none, so
 the `alpha` term could be enabled without changing the data. The shipped `cap_single_name` tightens the
-style's `max_weight` when the style's own is looser;
-`avoid_cross_portfolio_wash_sales` declares `ctx: SolveContext` and caps names that earlier portfolios
-sold, which makes it *chain-aware* and restricts which `execution.mode` you can use (see below).
+style's `max_weight` when the style's own is looser.
 
-Ordering is meaningful: a rule sees the output of the one before it. Where a rule runs — main process
-or worker — depends on `execution.mode`, and that is the only reason a rule that needs `ctx` is
-refused under the parallel modes.
+Ordering is meaningful: a rule sees the output of the one before it. A rule never sees other
+portfolios — it runs in a worker, on one bundle, before anything is solved — and that is what lets
+every portfolio build at once. A rule that shrinks the *buy* universe (freezing a name, capping it at
+its current weight) also shrinks the set of portfolios this one has to wait for; see `execution`.
+
+## `solve_order`
+
+```json
+"solve_order": "furthest_from_target_first"
+```
+
+The example does not set this — its portfolios file carries the priority — but a real book usually
+should. A solve-order step is `(data: PortfolioData[, params]) -> Decimal`, run on each portfolio's
+ruled bundle in the worker that built it; lower keys solve first and ties break on `portfolio_id`. It
+answers "who gets first pick of a shared budget" from the data — the shipped step puts the portfolio
+furthest from its target first — instead of from a hand-maintained column, and it is part of the
+config hash, so two runs with different priorities are visibly different runs.
 
 ## `objective`
 
@@ -300,8 +314,10 @@ Most constraints take no parameters, and the JSON Schema enforces that: `{"name"
 "params": {"x": 1}}` is rejected by your editor. `sector_bounds` is the exception with a `tolerance`
 that loosens every sector band symmetrically; with an empty `sector_bounds` map in the style, it
 contributes nothing. `cumulative_adv_participation` declares `chain: ChainState` — it needs to know how
-much ADV earlier portfolios have already used — which makes it chain-aware in the same sense as a `ctx`
-rule.
+much of each name's ADV budget higher-priority portfolios have already *bought* — which makes it
+chain-aware, and its presence is the only reason any portfolio waits for another. It writes two rows:
+`buy + sell ≤ adv_capacity` for the portfolio's own participation, and `buy ≤ remaining` where
+predecessors' buys have consumed part of the budget. Sells are the portfolio's own business.
 
 Every shipped constraint has a numpy twin in the verifier, looked up by qualified name, so the
 post-solve check is a genuine second opinion for each one you list. A custom constraint without a twin
@@ -323,8 +339,7 @@ translate, because every solver spells it differently — `time_limit` for Clara
 guessing. `verbose` turns on the solver's own iteration log, which is the first thing to enable when a
 solve is slow or hits its limit.
 
-This block is read once per portfolio at solve time and is otherwise inert; in
-`parallel` mode it is read inside the worker.
+This block is read once per portfolio at solve time, inside the worker, and is otherwise inert.
 
 ## `post_solve`
 
@@ -358,42 +373,41 @@ so the run's evidence survives a failed handoff.
 ## `execution`
 
 ```json
-"execution": {"mode": "parallel_build_sequential_solve", "on_error": "fail_fast"}
+"execution": {"on_error": "fail_fast"}
 ```
 
-This block answers two questions: which stages of each portfolio's work may depend on earlier
-portfolios, and what happens when one fails. It deliberately does *not* say where the work runs or how
-many workers there are — those are settings (`PORTFOLIO_OPTIMIZER_CLUSTER`,
-`PORTFOLIO_OPTIMIZER_MAX_WORKERS`, and the other cluster variables), so a laptop run and a cluster run of
-one config hash identically and differ only in the manifest's `settings` block, where `diff-manifests`
-can name the difference.
+This block answers two questions: what one failed portfolio does to the rest, and which higher-priority
+portfolios a portfolio waits for. It deliberately does *not* say where the work runs or how many workers
+there are — those are settings (`PORTFOLIO_OPTIMIZER_CLUSTER`, `PORTFOLIO_OPTIMIZER_MAX_WORKERS`, and the
+other cluster variables), so a laptop run and a cluster run of one config hash identically and differ
+only in the manifest's `settings` block, where `diff-manifests` can name the difference. The block may
+be omitted entirely; both keys have defaults.
 
-`mode` picks one of three schedules, and the choice is really about the *chain* — whether later
-portfolios may depend on earlier ones' results:
+There is no schedule to choose. Every portfolio builds at once, in a worker, and the engine derives who
+waits for whom from two facts it then knows: each portfolio's solve-order key, and its **buyable set** —
+the securities its built problem allows a positive buy in. Portfolios couple across a run through buys
+only, so portfolio *j* waits for every higher-priority *i* that can buy a security *j* can buy too, and
+for nothing else; if no term or constraint declares `chain`, nothing waits for anything. The manifest
+records the graph it derived — how many edges, how many independent components, how long the longest
+chain of solves was — and the answer is the same whatever the graph: each solve sees only what its
+overlapping predecessors bought, and that is a function of the data, not of the schedule.
 
-- `sequential` runs everything in the main process, one portfolio at a time. Rules may take `ctx` and
-  terms and constraints may take `chain`. It is the slowest and the most expressive.
-- `parallel_build_sequential_solve`, the example's choice, sends each portfolio's slice-and-build to a
-  worker and then solves in `solve_order` in the main process with a live chain. Constraints like
-  `cumulative_adv_participation` still work because solving is sequential; rules cannot take `ctx`
-  because building is not.
-- `parallel` runs the whole pipeline per portfolio in a worker. No chain-aware step is allowed at all.
+`dependencies` has one non-default value, `"all"`, under which every higher-priority portfolio is a
+predecessor — one line. It gives the same orders and the same chain hashes and exists for diagnosis:
+rerun a suspicious batch as a line and `diff-manifests` the two (it names the config, because the
+field is part of it, and nothing else).
 
-The resolver enforces these rules in the first pass by looking at which functions declare `ctx` or
-`chain`, so a mismatch is a config error with the offending step named, not a runtime surprise. The
-mode you can use is therefore determined by the steps you list, not the other way round.
-
-The cluster and its worker count are about throughput and never about output: results are consumed in
-solve order regardless of which worker finishes first, so two runs with different worker counts
+The cluster and its worker count are about throughput and never about output: outcomes are classified
+in solve order regardless of which worker finishes first, so two runs with different worker counts
 produce identical portfolio records. Workers — local processes on a laptop, pods on Kubernetes — receive
 the assembled datasets and the config once and re-resolve step names themselves (function objects are
 never pickled, only names). [How to run on a cluster](how-to-run-on-a-cluster.md) covers the settings.
 
-`on_error` decides what one failed portfolio does to the rest. `fail_fast` marks every portfolio after
-the first failure as `skipped`; `continue` isolates the failure and lets the rest proceed. The engine
-refuses `continue` whenever any step is chain-aware, because a skipped portfolio would silently change
-the chain state that later portfolios see, and a "successful" run whose results depend on which
-portfolio happened to fail is worse than a failed one.
+`on_error` decides what one failed portfolio does to the rest. `fail_fast` records every lower-priority
+portfolio as `skipped` — whatever it had finished, so the manifest never depends on timing. `continue`
+isolates the failure: only the portfolios that depended on it are skipped, each naming the predecessor
+that failed, and a portfolio that shared no buyable security with it is unaffected. A build that fails
+has an unknown buyable set and is treated as overlapping every lower-priority portfolio.
 
 ## What the config does not decide
 
@@ -415,8 +429,12 @@ may deviate from solved weights after shares are rounded — is computed from th
 dust threshold in the data, so there is no knob for it. The only tolerances you set are the verifier's,
 in `post_solve`.
 
+**The schedule is derived, not configured.** Which portfolios wait for which follows from the steps
+(does anything read the chain?) and the data (which securities can each portfolio buy?). The config has
+no execution mode; the only schedule knob is the diagnostic `dependencies: "all"`.
+
 Put together: the config is the wiring of a pipeline — which inputs, combined how, filtered by which
-rules, optimized against which terms and constraints, solved with what, checked how tightly, delivered
-where, scheduled how. Everything in it is either a name the resolver can check before data loads or a
+rules, prioritized how, optimized against which terms and constraints, solved with what, checked how
+tightly, delivered where. Everything in it is either a name the resolver can check before data loads or a
 value with a declared type and range, and that is what lets `validate-config` promise that a config
 which passes will not fail for a configuration reason later.

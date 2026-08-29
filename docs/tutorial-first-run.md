@@ -42,8 +42,10 @@ You should see `config ok` followed by one line per step. Notice the line
   constraint          portfolio_optimizer.terms:cumulative_adv_participation [chain]
 ```
 
-The `[chain]` marker means this constraint reads what earlier portfolios in the run have already
-ordered — it is why the run's execution mode solves portfolios one after another.
+The `[chain]` marker means this constraint reads what higher-priority portfolios in the run have already
+*bought* — it is why P2, which can buy the same securities as P1, will wait for P1. The line above the
+steps says `dependencies overlap`: a portfolio waits only for portfolios it shares a buyable security
+with.
 
 ## 4. Run it
 
@@ -60,11 +62,13 @@ run run-4d9cb20e40db: manifest out/run-4d9cb20e40db/manifest.json
 exit code 0
 ```
 
-P1 holds 500,000 of A and 500,000 of B against an equal-weight target and may trade at most a quarter
-of each name's daily volume. C's daily volume is 100,000 shares at 10, so P1 can buy at most 25,000
-shares (a 0.25 weight); the optimizer puts the remaining weight equally into A and B. P2 holds only C
-and would like to diversify, but P1 has already used C's whole trading budget for the day — so P2
-correctly produces no orders. That is the chain at work.
+P1 and P2 each hold $500,000 of A and $500,000 of B against an equal-weight target and may trade at
+most a quarter of each name's daily volume. C's daily volume is 100,000 shares at 10, so a portfolio can
+buy at most 25,000 shares (a 0.25 weight). P1 has first pick: the optimizer buys those 25,000 shares of
+C and puts the remaining weight equally into A and B. P2 wants exactly the same trade, but P1 has already
+used C's whole buying budget for the day, and with no cash allowed and A and B already balanced against
+each other there is nothing else worth doing — so P2 correctly produces no orders. That is the chain at
+work, and the manifest's `schedule` block records that P2 waited for P1 (`"edges": 1`).
 
 ## 5. Look at the orders
 

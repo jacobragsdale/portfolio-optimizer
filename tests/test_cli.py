@@ -69,6 +69,7 @@ def test_validate_config_lists_every_resolved_step() -> None:
     code, out, _ = cli(["validate-config", str(EXAMPLE_CONFIG)])
     assert code == 0
     assert "config ok" in out
+    assert "dependencies overlap" in out
     assert "rule                portfolio_optimizer.rules:restrict_low_liquidity" in out
     assert "constraint          portfolio_optimizer.terms:cumulative_adv_participation [chain]" in out
 

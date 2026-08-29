@@ -77,9 +77,9 @@ def _turnover_cap(spec: ProblemSpec, sol: Solution, chain: ChainState, params: M
 
 def _adv_participation(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object]) -> list[tuple[str, F64]]:
     del params
-    consumed = chain.cumulative_shares * spec.price / spec.nav
+    consumed = chain.bought_shares * spec.price / spec.nav
     remaining = np.maximum(0.0, spec.adv_capacity - consumed)
-    return [("cumulative_adv_participation", sol.buy + sol.sell - remaining)]
+    return [("adv_participation", sol.buy + sol.sell - spec.adv_capacity), ("cumulative_adv_participation", sol.buy - remaining)]
 
 
 def _tracking_error(spec: ProblemSpec, sol: Solution, params: Mapping[str, object]) -> float:

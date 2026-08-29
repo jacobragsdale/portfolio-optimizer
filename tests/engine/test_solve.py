@@ -8,7 +8,7 @@ import pytest
 
 from portfolio_optimizer.config.resolve import ResolvedConfig
 from portfolio_optimizer.cvx.adapter import UnavailableSolverError
-from portfolio_optimizer.domain.results import ChainState, ProblemSpec, SolveContext, SolveStatus, derive_chain_state
+from portfolio_optimizer.domain.results import ChainState, ProblemSpec, SolveStatus, derive_chain_state
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.solve import InfeasibleError, SolveSetupError, solve
 from tests.conftest import Factories, Frames, resolved_example
@@ -54,14 +54,13 @@ def test_turnover_cap_binds_with_the_known_answer(make: Factories) -> None:
     assert float((solution.buy + solution.sell).sum()) == pytest.approx(0.2, abs=1e-6)
 
 
-def test_second_portfolio_in_the_chain_cannot_trade_a_name_whose_adv_is_spent(make: Factories, frames: Frames) -> None:
-    holdings = frames.holdings({"security_id": "C", "quantity": 100_000, "avg_cost": Decimal(10)})
-    spec = build_problem_spec(make.portfolio_data(holdings=holdings, style=make.style(max_adv_participation=Decimal("0.25")))).spec
-    prior = ChainState(security_ids=spec.security_ids, cumulative_shares=np.array([1250.0, 2500.0, 25_000.0]), portfolios_done=1)
-    solution = solve(spec, prior, resolved_with(["tracking_error"], CORE_CONSTRAINTS))
-    np.testing.assert_allclose(solution.w, [0.0, 0.0, 1.0], atol=1e-6)
+def test_a_portfolio_whose_predecessors_spent_a_names_budget_cannot_buy_it(make: Factories, frames: Frames) -> None:
+    spec = hand_case(make, frames)
+    spent = ChainState(security_ids=spec.security_ids, bought_shares=np.array([0.0, 0.0, 25_000.0]), predecessors=("P0",))
+    solution = solve(spec, spent, resolved_with(["tracking_error"], CORE_CONSTRAINTS))
+    assert solution.buy[2] == pytest.approx(0.0, abs=1e-6), "C's whole ADV budget went to the predecessor"
     fresh = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], CORE_CONSTRAINTS))
-    assert fresh.w[2] < 0.9
+    assert fresh.buy[2] == pytest.approx(0.25, abs=1e-6)
 
 
 def test_infeasible_problem_raises_with_an_arithmetic_diagnosis(make: Factories) -> None:
@@ -109,4 +108,4 @@ def test_a_term_that_returns_the_wrong_type_is_rejected(make: Factories) -> None
 
 def test_chain_state_derives_from_prior_orders_for_the_next_solve(make: Factories, frames: Frames) -> None:
     spec = hand_case(make, frames)
-    assert derive_chain_state(SolveContext(), spec.security_ids).cumulative_shares.tolist() == [0.0, 0.0, 0.0]
+    assert derive_chain_state(spec.security_ids, spec.buyable, ()).bought_shares.tolist() == [0.0, 0.0, 0.0]

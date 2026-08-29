@@ -4,19 +4,23 @@ Provisioning is issued from a helper thread so :meth:`DaskBackend.start` returns
 scheduler and its first workers come up under the load stage; :meth:`DaskBackend.ready` is where the
 run first blocks, and only until one worker can take a task. The run's shared data is scattered once
 and every task receives the resulting future, which Dask resolves on whichever worker runs it,
-replicating the data between workers on demand. Everything here is the adapter around an optional,
-partly typed dependency; nothing else in the engine imports ``distributed``.
+replicating the data between workers on demand; a pending handle passed as an argument is likewise a
+Dask future, so the scheduler runs the task where its largest input already is and only once every
+input exists. Everything here is the adapter around a partly typed dependency; nothing else in the
+engine imports ``distributed``.
 """
 
 import importlib
 import logging
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Protocol, runtime_checkable
 
-from distributed import Client, LocalCluster
+import dask
+from distributed import Client, LocalCluster, as_completed
 
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.engine.backends import ClusterError, Pending, SharedRunData, Task, TaskOutput, WorkersReady
+from portfolio_optimizer.engine.backends import ClusterError, Pending, SharedRunData, WorkersReady
 from portfolio_optimizer.engine.environment import IMAGE_DIGEST_VARIABLE
 from portfolio_optimizer.settings import ExecutionSettings
 
@@ -54,16 +58,17 @@ class _DaskPending[T]:
     """A typed handle on a ``distributed.Future``; satisfies :class:`Pending`."""
 
     def __init__(self, future: object) -> None:
-        self._future = future
+        self.future = future
 
     def result(self, timeout: float | None = None) -> T:
-        """The task's return value, or its exception re-raised."""
-        value: T = self._future.result(timeout=timeout)  # ty: ignore[unresolved-attribute]  # distributed.Future is untyped; the runner only ever passes what submit() returned
+        """The task's return value, or its exception re-raised — including a dependency's."""
+        value: T = self.future.result(timeout=timeout)  # ty: ignore[unresolved-attribute]  # distributed.Future is untyped; the runner only ever passes what submit() returned
         return value
 
-    def cancel(self) -> None:
-        """Ask the scheduler to drop the task if it has not started."""
-        self._future.cancel()  # ty: ignore[unresolved-attribute]  # see result()
+
+def _unwrap(argument: object) -> object:
+    """A pending handle becomes the future Dask resolves on the worker; anything else is passed as is."""
+    return argument.future if isinstance(argument, _DaskPending) else argument
 
 
 class DaskBackend:
@@ -126,11 +131,21 @@ class DaskBackend:
         """Scatter the run's shared data once; the future is what every task receives."""
         return self._require_client().scatter(data, hash=False)
 
-    def submit[T](self, task: Task[T], shared: object, portfolio_id: PortfolioId) -> Pending[TaskOutput[T]]:
-        """Schedule one portfolio under a readable key; ``pure=False`` so two runs never share a result."""
-        name = getattr(task, "__name__", "task")
-        pending: _DaskPending[TaskOutput[T]] = _DaskPending(self._require_client().submit(task, shared, portfolio_id, key=f"{self._run_id}/{portfolio_id}/{name}", pure=False))
+    def submit[T](self, fn: Callable[..., T], /, *args: object, key: str, priority: int) -> Pending[T]:
+        """Schedule ``fn`` under a readable key; ``pure=False`` so two runs never share a result, and pending arguments become dependencies."""
+        pending: _DaskPending[T] = _DaskPending(self._require_client().submit(fn, *(_unwrap(argument) for argument in args), key=key, priority=priority, pure=False))
         return pending
+
+    def as_completed(self, pendings: Mapping[PortfolioId, Pending[object]]) -> Iterator[PortfolioId]:
+        """Keys in the order the scheduler reports them done; a dependency's failure counts as done."""
+        by_future = {_unwrap(pending): portfolio_id for portfolio_id, pending in pendings.items()}  # distributed.Future hashes by key
+        for future in as_completed(list(by_future), loop=self._require_client().loop):  # the run's client is never the global default
+            yield by_future[future]
+
+    def cancel(self, pendings: Sequence[Pending[object]]) -> None:
+        """One scheduler round trip for every handle; Dask cancels their dependents with them."""
+        if pendings:
+            self._require_client().cancel([_unwrap(pending) for pending in pendings])
 
     def close(self) -> None:
         """Close the client, tear the cluster down, and stop the helper thread; safe to call twice."""
@@ -145,6 +160,8 @@ class DaskBackend:
         self._provisioner.shutdown(wait=False, cancel_futures=True)
 
     def _connect(self) -> Client:
+        # A task that kills its worker is not retried across the fleet: a build that OOMs would otherwise evict every other build on three more workers before failing.
+        dask.config.set({"distributed.scheduler.allowed-failures": 1})
         if self._kind == "address":
             client = Client(self._cluster_setting, timeout=self._timeout_s, set_as_default=False)
         else:

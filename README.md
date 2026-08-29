@@ -54,8 +54,8 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 
 | Path | Role |
 |---|---|
-| `src/portfolio_optimizer/{loaders,assembly,rules,terms,sinks}.py` | **Yours to edit.** Each ships worked, tested examples. Shared steps live in your own installed package instead and are named `package.module:function`. |
-| `src/portfolio_optimizer/engine/` | Loading and assembly, the rule pipeline, build, solve, cvxpy-free verification, orders, the per-portfolio tasks, the Dask cluster each run provisions for itself, scheduling, manifest. Rarely edited. |
+| `src/portfolio_optimizer/{loaders,assembly,rules,solve_order,terms,sinks}.py` | **Yours to edit.** Each ships worked, tested examples. Shared steps live in your own installed package instead and are named `package.module:function`. |
+| `src/portfolio_optimizer/engine/` | Loading and assembly, the rule pipeline, build, solve, cvxpy-free verification, orders, the per-portfolio tasks, the derived dependency graph, the Dask cluster each run provisions for itself, manifest. Rarely edited. |
 | `src/portfolio_optimizer/domain/` | Frame schemas, the per-portfolio data bundle and its optimizer frame, the pure-data problem spec and results. |
 | `src/portfolio_optimizer/config/` | The run-config models and the step resolver. |
 | `src/portfolio_optimizer/cvx/adapter.py` | The only module that imports cvxpy. |
@@ -70,6 +70,7 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 - [How to add a loader or a sink](docs/how-to-add-a-loader-or-sink.md)
 - [How to add security analytics columns to holdings and the universe](docs/how-to-add-security-analytics.md)
 - [How to add an objective term or a constraint](docs/how-to-add-a-term.md)
+- [How to set the solve order](docs/how-to-set-the-solve-order.md)
 - [How to run on a cluster](docs/how-to-run-on-a-cluster.md)
 - [Reference: the run config](docs/reference-run-config.md)
 - [Reference: the per-portfolio bundle and the optimizer frame](docs/reference-portfolio-data.md)

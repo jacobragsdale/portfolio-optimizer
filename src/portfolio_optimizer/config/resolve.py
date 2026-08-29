@@ -3,9 +3,9 @@
 The convention: a step is an ordinary function whose signature carries engine-provided
 arguments by fixed names (``request``, ``frames``, ``data``, ``x``, ``spec``, ``orders``, ``io``), an optional
 ``params`` argument annotated with a :class:`~portfolio_optimizer.domain.types.Params` subclass,
-and an optional context argument (``ctx`` for rules, ``chain`` for terms and constraints). The
-engine calls steps with keyword arguments, so the order does not matter. Loaders may be
-``async def``; every other kind runs synchronously.
+and — for terms and constraints only — an optional ``chain`` argument that reads what higher-priority
+portfolios bought. The engine calls steps with keyword arguments, so the order does not matter.
+Loaders may be ``async def``; every other kind runs synchronously.
 """
 
 import asyncio
@@ -15,6 +15,7 @@ import inspect
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Literal, get_type_hints
 
 import pandas as pd
@@ -23,10 +24,10 @@ from pydantic import ValidationError
 from portfolio_optimizer.config.models import RunConfig, StepSpec
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
-from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec, SolveContext
+from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec
 from portfolio_optimizer.domain.types import Params
 
-type StepKind = Literal["portfolios", "loader", "constraints_loader", "assembly", "rule", "term", "constraint", "sink"]
+type StepKind = Literal["portfolios", "loader", "constraints_loader", "assembly", "rule", "solve_order", "term", "constraint", "sink"]
 
 TEMPLATE_MODULES: Mapping[StepKind, str] = {
     "portfolios": "portfolio_optimizer.loaders",
@@ -34,6 +35,7 @@ TEMPLATE_MODULES: Mapping[StepKind, str] = {
     "constraints_loader": "portfolio_optimizer.loaders",
     "assembly": "portfolio_optimizer.assembly",
     "rule": "portfolio_optimizer.rules",
+    "solve_order": "portfolio_optimizer.solve_order",
     "term": "portfolio_optimizer.terms",
     "constraint": "portfolio_optimizer.terms",
     "sink": "portfolio_optimizer.sinks",
@@ -57,7 +59,8 @@ CONTRACTS: Mapping[StepKind, Contract] = {
     "loader": Contract({"request": LoadRequest}, None, (pd.DataFrame,), allows_async=True),
     "constraints_loader": Contract({"request": LoadRequest}, None, (ConstraintsMapping.__value__, dict[str, dict[str, object]]), allows_async=True),
     "assembly": Contract({"frames": Frames}, None, (Frames,)),
-    "rule": Contract({"data": PortfolioData}, ("ctx", SolveContext), (PortfolioData,)),
+    "rule": Contract({"data": PortfolioData}, None, (PortfolioData,)),
+    "solve_order": Contract({"data": PortfolioData}, None, (Decimal,)),
     "term": Contract({"x": DecisionVars, "spec": ProblemSpec}, ("chain", ChainState), (ObjectiveTerm,)),
     "constraint": Contract({"x": DecisionVars, "spec": ProblemSpec}, ("chain", ChainState), (ConstraintSet,)),
     "sink": Contract({"orders": pd.DataFrame, "io": IoContext}, None, (tuple[Artifact, ...],)),
@@ -128,23 +131,25 @@ class ResolvedConfig:
     loaders: Mapping[str, ResolvedStep]
     assembly: tuple[ResolvedStep, ...]
     rules: tuple[ResolvedStep, ...]
+    solve_order: ResolvedStep | None
     terms: tuple[ResolvedStep, ...]
     constraints: tuple[ResolvedStep, ...]
     sink: ResolvedStep
 
     @property
     def chain_aware_steps(self) -> tuple[ResolvedStep, ...]:
-        """Rules, terms, and constraints that depend on prior portfolios' results."""
-        return tuple(step for step in (*self.rules, *self.terms, *self.constraints) if step.needs_context)
+        """Terms and constraints that read what higher-priority portfolios bought; if there are none, no portfolio waits for another."""
+        return tuple(step for step in (*self.terms, *self.constraints) if step.needs_context)
 
     @property
     def all_steps(self) -> tuple[ResolvedStep, ...]:
         """Every resolved step, in pipeline order."""
-        return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *self.terms, *self.constraints, self.sink)
+        ordering = () if self.solve_order is None else (self.solve_order,)
+        return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *ordering, *self.terms, *self.constraints, self.sink)
 
 
 def resolve_config(config: RunConfig, config_sha256: str) -> ResolvedConfig:
-    """Resolve every step in ``config`` and check the execution mode against the steps' needs."""
+    """Resolve every step in ``config``; every failure is collected and reported together."""
     failures: list[str] = []
 
     def resolve(spec: StepSpec, kind: StepKind, where: str) -> ResolvedStep | None:
@@ -158,41 +163,25 @@ def resolve_config(config: RunConfig, config_sha256: str) -> ResolvedConfig:
     loaders = {name: resolve(dataset.loader, "constraints_loader" if name == "constraints" else "loader", f"datasets.{name}") for name, dataset in config.datasets.items()}
     assembly = [resolve(spec, "assembly", f"assembly[{i}]") for i, spec in enumerate(config.assembly)]
     rules = [resolve(spec, "rule", f"rules[{i}]") for i, spec in enumerate(config.rules)]
+    solve_order = resolve(config.solve_order, "solve_order", "solve_order") if config.solve_order is not None else None
     terms = [resolve(spec, "term", f"objective.terms[{i}]") for i, spec in enumerate(config.objective.terms)]
     constraints = [resolve(spec, "constraint", f"constraints[{i}]") for i, spec in enumerate(config.constraints)]
     sink = resolve(config.sink, "sink", "sink")
     resolved_loaders = {name: step for name, step in loaders.items() if step is not None}
     if failures or portfolios is None or sink is None or len(resolved_loaders) != len(loaders):
         raise ConfigResolutionError(failures)
-    resolved = ResolvedConfig(
+    return ResolvedConfig(
         config=config,
         config_sha256=config_sha256,
         portfolios=portfolios,
         loaders=resolved_loaders,
         assembly=tuple(step for step in assembly if step is not None),
         rules=tuple(step for step in rules if step is not None),
+        solve_order=solve_order,
         terms=tuple(step for step in terms if step is not None),
         constraints=tuple(step for step in constraints if step is not None),
         sink=sink,
     )
-    failures.extend(_mode_failures(resolved))
-    if failures:
-        raise ConfigResolutionError(failures)
-    return resolved
-
-
-def _mode_failures(resolved: ResolvedConfig) -> list[str]:
-    execution = resolved.config.execution
-    chain_aware = [step.qualname for step in resolved.chain_aware_steps]
-    ctx_rules = [step.qualname for step in resolved.rules if step.needs_context]
-    failures: list[str] = []
-    if execution.mode == "parallel" and chain_aware:
-        failures.append(f"execution.mode 'parallel' cannot run chain-aware steps {chain_aware}; use a sequential mode or remove them")
-    if execution.mode == "parallel_build_sequential_solve" and ctx_rules:
-        failures.append(f"execution.mode 'parallel_build_sequential_solve' builds in parallel, so rules cannot take 'ctx': {ctx_rules}")
-    if execution.on_error == "continue" and chain_aware:
-        failures.append(f"execution.on_error 'continue' is ambiguous with chain-aware steps {chain_aware}: a skipped portfolio would silently change later solves")
-    return failures
 
 
 def resolve_step(spec: StepSpec, kind: StepKind) -> ResolvedStep:

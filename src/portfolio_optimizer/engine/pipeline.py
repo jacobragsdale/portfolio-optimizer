@@ -4,20 +4,20 @@ from collections.abc import Sequence
 
 from portfolio_optimizer.config.resolve import ResolvedStep
 from portfolio_optimizer.domain.data import PortfolioData
-from portfolio_optimizer.domain.results import RuleAuditRecord, SolveContext
+from portfolio_optimizer.domain.results import RuleAuditRecord
 
 
 class RuleError(ValueError):
     """A rule returned something other than a ``PortfolioData``."""
 
 
-def apply_rules(data: PortfolioData, rules: Sequence[ResolvedStep], ctx: SolveContext | None) -> tuple[PortfolioData, tuple[RuleAuditRecord, ...]]:
-    """Run ``rules`` in order. Each step gets the previous step's output; chain-aware rules get ``ctx``."""
+def apply_rules(data: PortfolioData, rules: Sequence[ResolvedStep]) -> tuple[PortfolioData, tuple[RuleAuditRecord, ...]]:
+    """Run ``rules`` in order; each step gets the previous step's output. Rules never see other portfolios."""
     audits: list[RuleAuditRecord] = []
     current = data
     for step in rules:
         rows_in = _row_counts(current)
-        result = step.invoke(data=current, context=ctx if step.needs_context else None)
+        result = step.invoke(data=current)
         if not isinstance(result, PortfolioData):
             msg = f"rule {step.qualname!r} returned {type(result).__name__}, expected PortfolioData"
             raise RuleError(msg)

@@ -1,22 +1,11 @@
-"""Tier 1: the problem spec's invariants, hashing, persistence, and chain-state derivation."""
+"""Tier 1: the problem spec's invariants, hashing, persistence, the buyable set, and chain-state derivation from predecessors' buys."""
 
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from portfolio_optimizer.domain.results import (
-    ChainState,
-    ConstraintReport,
-    DriftReport,
-    MissingSpecColumnError,
-    PortfolioResult,
-    ProblemSpecError,
-    Solution,
-    SolveContext,
-    SolveStatus,
-    derive_chain_state,
-)
+from portfolio_optimizer.domain.results import ChainState, Contribution, MissingSpecColumnError, ProblemSpecError, Solution, SolveStatus, derive_chain_state
 from tests.conftest import Factories, Frames
 
 
@@ -116,64 +105,52 @@ def test_solution_round_trips_through_npz(tmp_path: Path) -> None:
     np.testing.assert_array_equal(loaded.w, solution.w)
 
 
+def test_buyable_is_where_a_positive_buy_is_allowed(make: Factories) -> None:
+    spec = make.spec(ub=np.array([1.0, 1.0 / 3.0, 0.5]))
+    assert spec.buyable.tolist() == [True, False, True], "a name capped at its current weight is not buyable"
+
+
 def test_chain_state_shape_must_match_ids() -> None:
-    with pytest.raises(ValueError, match="cumulative_shares has shape"):
-        ChainState(security_ids=("A", "B"), cumulative_shares=np.zeros(3), portfolios_done=0)
+    with pytest.raises(ValueError, match="bought_shares has shape"):
+        ChainState(security_ids=("A", "B"), bought_shares=np.zeros(3))
 
 
-def test_derive_chain_state_sums_prior_orders_by_security(prior_results: SolveContext) -> None:
-    state = derive_chain_state(prior_results, ("A", "C", "Z"))
-    np.testing.assert_array_equal(state.cumulative_shares, np.array([1250.0, 25000.0, 0.0]))
-    assert state.portfolios_done == 2
-    assert derive_chain_state(SolveContext(), ("A",)).portfolios_done == 0
+def test_contribution_keeps_only_the_buys(contributions: tuple[Contribution, Contribution]) -> None:
+    first, second = contributions
+    assert (first.portfolio_id, first.security_ids, first.bought_shares.tolist()) == ("P1", ("C",), [20000.0])
+    assert (second.security_ids, second.bought_shares.tolist()) == (("C",), [5000.0])
 
 
-def test_solve_context_with_result_does_not_mutate_the_original(prior_results: SolveContext) -> None:
-    extended = prior_results.with_result(prior_results.results[0])
-    assert prior_results.portfolios_done == 2
-    assert extended.portfolios_done == 3
-    assert extended.cumulative_shares == {"A": 2500.0, "C": 45000.0}
-    assert prior_results.cumulative_shares == {"A": 1250.0, "C": 25000.0}
+def test_derive_chain_state_folds_predecessors_buys_onto_the_spec(contributions: tuple[Contribution, Contribution]) -> None:
+    state = derive_chain_state(("A", "C", "Z"), np.array([True, True, True]), contributions)
+    np.testing.assert_array_equal(state.bought_shares, np.array([0.0, 25000.0, 0.0]))
+    assert state.predecessors == ("P1", "P2")
+    assert derive_chain_state(("A",), np.array([True]), ()).predecessors == ()
 
 
-def test_a_context_built_from_results_agrees_with_one_accumulated_result_by_result(prior_results: SolveContext) -> None:
-    rebuilt = SolveContext(results=prior_results.results)
-    assert rebuilt.cumulative_shares == prior_results.cumulative_shares
-    np.testing.assert_array_equal(derive_chain_state(rebuilt, ("A", "C", "Z")).cumulative_shares, derive_chain_state(prior_results, ("A", "C", "Z")).cumulative_shares)
+def test_derive_chain_state_zeroes_what_this_portfolio_cannot_buy(contributions: tuple[Contribution, Contribution]) -> None:
+    state = derive_chain_state(("A", "C", "Z"), np.array([True, False, True]), contributions)
+    np.testing.assert_array_equal(state.bought_shares, np.zeros(3))
+
+
+def test_chain_hash_covers_the_shares_and_not_who_bought_them(contributions: tuple[Contribution, Contribution]) -> None:
+    first, _ = contributions
+    both = derive_chain_state(("C",), np.array([True]), contributions)
+    anonymous = ChainState(security_ids=("C",), bought_shares=np.array([25000.0]))
+    assert both.content_hash() == anonymous.content_hash()
+    assert derive_chain_state(("C",), np.array([True]), (first,)).content_hash() != both.content_hash()
+
+
+def test_chain_state_round_trips_through_npz(tmp_path: Path, contributions: tuple[Contribution, Contribution]) -> None:
+    state = derive_chain_state(("A", "C"), np.array([True, True]), contributions)
+    state.to_npz(tmp_path / "chain.npz")
+    loaded = ChainState.from_npz(tmp_path / "chain.npz")
+    assert loaded.content_hash() == state.content_hash()
+    assert loaded.predecessors == ("P1", "P2")
 
 
 @pytest.fixture
-def prior_results(make: Factories, frames: Frames) -> SolveContext:
-    spec = make.spec()
-    solution = Solution(
-        w=spec.w0,
-        buy=np.zeros(3),
-        sell=np.zeros(3),
-        objective=0.0,
-        status=SolveStatus.OPTIMAL,
-        solver="CLARABEL",
-        solver_version="0",
-        cvxpy_version="0",
-        solve_time_s=0.0,
-        iterations=0,
-        spec_hash=spec.content_hash(),
-    )
-    report = ConstraintReport(checks=(), objective_terms=(), recomputed_objective=0.0, solver_objective=0.0, objective_gap=0.0, objective_passed=True, unverified=())
-
-    def result(portfolio_id: str, orders_rows: list[dict[str, object]]) -> PortfolioResult:
-        return PortfolioResult(
-            portfolio_id=portfolio_id,
-            spec=spec,
-            solution=solution,
-            report=report,
-            orders=frames.orders(*orders_rows),
-            rule_audit=(),
-            chain_state=ChainState.empty(spec.security_ids),
-            drift=DriftReport(0.0, 0.0, 0),
-        )
-
-    first = result(
-        "P1", [{"security_id": "A", "side": "SELL", "quantity": 1250, "notional": 125000}, {"security_id": "C", "side": "BUY", "quantity": 20000, "reference_price": 10, "notional": 200000}]
-    )
-    second = result("P2", [{"security_id": "C", "side": "BUY", "quantity": 5000, "reference_price": 10, "notional": 50000}])
-    return SolveContext().with_result(first).with_result(second)
+def contributions(frames: Frames) -> tuple[Contribution, Contribution]:
+    first = frames.orders({"security_id": "A", "side": "SELL", "quantity": 1250, "notional": 125000}, {"security_id": "C", "side": "BUY", "quantity": 20000, "reference_price": 10, "notional": 200000})
+    second = frames.orders({"security_id": "C", "side": "BUY", "quantity": 5000, "reference_price": 10, "notional": 50000})
+    return Contribution.from_orders("P1", first), Contribution.from_orders("P2", second)

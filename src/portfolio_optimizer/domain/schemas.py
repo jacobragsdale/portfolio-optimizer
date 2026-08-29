@@ -34,12 +34,8 @@ def _orders_notional_matches(frame: pd.DataFrame) -> str | None:
     return None
 
 
-PORTFOLIOS = FrameSchema(
-    name="portfolios",
-    columns=(ColumnSpec("portfolio_id", "string"), ColumnSpec("solve_order", "Int64", ge=ZERO)),
-    key=("portfolio_id",),
-    checks=(FrameCheck("solve_order_unique", lambda frame: "solve_order values are not unique" if bool(frame["solve_order"].duplicated().any()) else None),),
-)
+PORTFOLIOS = FrameSchema(name="portfolios", columns=(ColumnSpec("portfolio_id", "string"), ColumnSpec("solve_order", "Int64", required=False, ge=ZERO)), key=("portfolio_id",))
+"""The portfolio list. ``solve_order`` is a priority — lower solves first, ties break on ``portfolio_id`` — and may be omitted or repeated."""
 
 DETAILS = FrameSchema(
     name="details",

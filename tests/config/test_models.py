@@ -32,7 +32,8 @@ def section(config: dict[str, object], key: str) -> dict[str, object]:
 def test_shipped_example_validates(example_text: str) -> None:
     config = load_run_config(example_text)
     assert config.run.name == "example_rebalance"
-    assert config.execution.mode == "parallel_build_sequential_solve"
+    assert config.execution.dependencies == "overlap"
+    assert config.solve_order is None
     assert config.rules[0].params == {"min_adv_shares": 1000}
 
 
@@ -122,11 +123,11 @@ def test_defaults_fill_optional_sections() -> None:
         "datasets": {name: {"loader": "csv"} for name in ("holdings", "universe", "details", "constraints", "targets")},
         "objective": {"terms": ["tracking_error"]},
         "sink": "orders_to_parquet",
-        "execution": {"mode": "sequential"},
     }
     config = RunConfig.model_validate_json(json.dumps(minimal))
     assert config.solver.name == "CLARABEL"
     assert config.execution.on_error == "fail_fast"
+    assert config.execution.dependencies == "overlap"
     assert config.assembly == ()
     assert config.rules == ()
 

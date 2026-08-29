@@ -2,9 +2,10 @@
 
 An objective term is ``(x: DecisionVars, spec: ProblemSpec, params: P) -> ObjectiveTerm``; a
 constraint is the same signature returning ``ConstraintSet``. Add ``chain: ChainState`` to read
-what earlier portfolios in the run have already ordered. Everything is expressed through the
-typed atoms in :mod:`portfolio_optimizer.cvx.adapter`, so the post-solve verifier can recompute
-each shipped term and constraint without cvxpy.
+what higher-priority portfolios in the run have already *bought* among the names this portfolio
+may buy; declaring it is what makes this portfolio wait for those with overlapping buy universes.
+Everything is expressed through the typed atoms in :mod:`portfolio_optimizer.cvx.adapter`, so the
+post-solve verifier can recompute each shipped term and constraint without cvxpy.
 
 Decision variables are fractions of NAV: ``w`` is the target weight, ``buy`` and ``sell`` its
 non-negative split against the current weight ``spec.w0``.
@@ -108,14 +109,17 @@ def turnover_cap(x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
 
 
 def cumulative_adv_participation(x: DecisionVars, spec: ProblemSpec, chain: ChainState) -> ConstraintSet:
-    """``buy + sell ≤ remaining`` where earlier portfolios' orders have already consumed part of each name's ADV budget."""
-    return ConstraintSet("cumulative_adv_participation", (at_most(plus(x.buy, x.sell), adv_remaining(spec, chain)),))
+    """``buy + sell ≤ adv_capacity`` for this portfolio's own participation, and ``buy ≤ remaining`` where higher-priority portfolios' buys have already consumed part of each name's budget.
+
+    Sells are the portfolio's own business: what others bought never limits them.
+    """
+    return ConstraintSet("cumulative_adv_participation", (at_most(plus(x.buy, x.sell), spec.adv_capacity), at_most(x.buy, adv_remaining(spec, chain))))
 
 
 def adv_remaining(spec: ProblemSpec, chain: ChainState) -> np.ndarray:
-    """The per-name ADV budget left for this portfolio, as a fraction of its NAV; shared with the verifier."""
+    """The per-name buy budget left for this portfolio after predecessors' buys, as a fraction of its NAV; shared with the verifier."""
     if chain.security_ids != spec.security_ids:
         msg = "chain state is not aligned to this spec's securities"
         raise ValueError(msg)
-    consumed = chain.cumulative_shares * spec.price / spec.nav
+    consumed = chain.bought_shares * spec.price / spec.nav
     return np.maximum(0.0, spec.adv_capacity - consumed)
