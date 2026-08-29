@@ -241,7 +241,7 @@ def test_source_hash_is_stable_and_function_specific(fake_steps: str) -> None:
 
 
 def fake_config(
-    fake_steps: str, *, on_error: str = "fail_fast", rules: list[str] | None = None, constraints: list[str] | None = None, solve_order: str | None = None, solver: dict[str, object] | None = None
+    fake_steps: str, *, on_error: str = "fail_fast", rules: list[str] | None = None, constraints: list[object] | None = None, solve_order: str | None = None, solver: dict[str, object] | None = None
 ) -> RunConfig:
     body: dict[str, object] = {
         "run": {"name": "r", "as_of": "2026-01-01T00:00:00Z"},
@@ -301,6 +301,18 @@ def test_resolve_config_checks_the_solver_against_what_this_process_has_installe
     with pytest.raises(ConfigResolutionError) as info:
         resolve_config(config, config_sha256="abc", installed=lambda: installed)
     assert info.value.failures == (failure,)
+
+
+def test_constraints_resolve_under_unique_labels_that_default_to_the_bare_name(fake_steps: str) -> None:
+    resolved = resolve_config(fake_config(fake_steps, constraints=[f"{fake_steps}:chained_constraint", {"name": f"{fake_steps}:chained_constraint", "label": "adv_again"}]), config_sha256="abc")
+    assert [(constraint.label, constraint.reads_chain, constraint.qualname) for constraint in resolved.constraints] == [
+        ("chained_constraint", True, "fake_steps:chained_constraint"),
+        ("adv_again", True, "fake_steps:chained_constraint"),
+    ]
+    assert resolved.constraints[1].spec.kind == "function"
+    with pytest.raises(ConfigResolutionError) as info:
+        resolve_config(fake_config(fake_steps, constraints=[f"{fake_steps}:chained_constraint", f"{fake_steps}:chained_constraint"]), config_sha256="abc")
+    assert info.value.failures == ("constraints[1]: label 'chained_constraint' is also used by constraints[0]; give one of them a `label`",)
 
 
 def test_trade_balance_is_refused_by_name_because_sides_supplies_the_identity(fake_steps: str) -> None:
