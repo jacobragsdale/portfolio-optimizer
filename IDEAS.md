@@ -241,6 +241,42 @@ function of a snapshot and `diff-manifests` works across the boundary: holdings 
 ADV usage as an `adv_consumed` column that `adv_remaining` subtracts alongside predecessors' buys —
 one line in the build, no chain machinery. Two runs, two manifests, one program.
 
+## Solving without cvxpy: a pure function for one side
+
+Raised 2026-08-29. Some of what a desk does on one side is not an optimization at all — "spend the
+cash pro rata to the underweights, capped by ADV and the single-name limit", "raise the cash from the
+largest overweights, losses first" — and today the only way to run it is to dress it as a cvxpy
+objective and pay 7.5 s of Clarabel at 100k names for an answer a numpy function computes in
+milliseconds. The engine around the solve is the valuable part: the build, the chain, the derived
+graph, the verifier, the rounding, the manifest. None of it cares where `w` came from.
+
+So `solver` becomes a step like the others: the shipped `cvxpy` step, or a qualified function with the
+contract `(spec: ProblemSpec, chain: ChainState[, params]) -> F64` — the weights, aligned to the spec.
+The side profile derives the trade from `w`, the verifier checks the configured constraints against the
+result exactly as it does for the solver's answer, rounding and drift run unchanged, and the manifest
+records the step and its hashes where it records the solver and its version today. What is *different*
+for a pure-function solve, and has to be said plainly:
+
+- **Terms do not apply.** There is no objective to minimize; the objective terms in the config are
+  either forbidden with this step or evaluated after the fact as a report line ("this fill scores
+  0.0042 on the configured objective"), which is the more useful of the two — it is how a heuristic is
+  compared with the optimizer on the same book.
+- **Verification is the whole contract.** A heuristic that violates a constraint is refused, with the
+  same `ConstraintReport`, so a pure-function step is exactly as auditable as a solve — and a
+  constraint that step cannot verify (a custom Python one) is reported `unverified`, as now. This is
+  the argument for the design: the engine's guarantees are the verifier's, not the solver's.
+- **The chain is unchanged.** The function receives the same `ChainState` a constraint would, so a
+  buy-only pro-rata fill respects predecessors' ADV usage by reading `adv_remaining` — the closed set of
+  chain quantities the declarative-constraints thread names is what a pure function should read too.
+- **Infeasibility has no diagnosis.** A solver says *infeasible*; a function either returns a `w` or
+  raises. The step raising is a portfolio failure at stage `solve` with its message; the engine does not
+  try to explain it.
+
+Leaning: do it, after the side profiles exist, since a pure function for one side is the case that
+motivates it and the profile is what turns a `w` into a trade. The `Solution` record gains a way to say
+"no solver" (`solver = "function:<qualname>"`, no iterations, no solver objective), the verifier's
+objective comparison is skipped for it, and `solve_task` picks the step the way it picks a term.
+
 ## Acceptance scenarios the business writes, and a harness that runs them
 
 The suite today is tiered — pure functions, invariants no schema can express, boundary rejects, one
