@@ -6,6 +6,10 @@ arguments by fixed names (``request``, ``frames``, ``data``, ``x``, ``spec``, ``
 and — for terms and constraints only — an optional ``chain`` argument that reads what higher-priority
 portfolios bought. The engine calls steps with keyword arguments, so the order does not matter.
 Loaders may be ``async def``; every other kind runs synchronously.
+
+The solver is checked here too — known to the adapter, installed, able to honor ``time_limit_s`` —
+because every process that will solve resolves the config first: the client at ``validate-config``
+and at the start of ``run``, and each worker before it does any work.
 """
 
 import asyncio
@@ -13,7 +17,7 @@ import hashlib
 import importlib
 import inspect
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal, get_type_hints
@@ -22,7 +26,7 @@ import pandas as pd
 from pydantic import ValidationError
 
 from portfolio_optimizer.config.models import RunConfig, StepSpec
-from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, installed_solvers, solver_failures
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec
 from portfolio_optimizer.domain.types import Params
@@ -148,9 +152,13 @@ class ResolvedConfig:
         return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *ordering, *self.terms, *self.constraints, self.sink)
 
 
-def resolve_config(config: RunConfig, config_sha256: str) -> ResolvedConfig:
-    """Resolve every step in ``config``; every failure is collected and reported together."""
-    failures: list[str] = []
+def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable[[], Sequence[str]] = installed_solvers) -> ResolvedConfig:
+    """Resolve every step in ``config`` and check its solver can run in this process; every failure is collected and reported together.
+
+    ``installed`` names the solvers cvxpy can use here; it is a parameter so the check can be exercised
+    against any environment.
+    """
+    failures: list[str] = [f"solver: {failure}" for failure in solver_failures(config.solver.name, config.solver.time_limit_s, installed())]
 
     def resolve(spec: StepSpec, kind: StepKind, where: str) -> ResolvedStep | None:
         try:

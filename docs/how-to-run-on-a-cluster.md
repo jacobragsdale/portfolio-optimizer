@@ -15,9 +15,11 @@ execute.
 - On Kubernetes: the [Dask Kubernetes operator](https://kubernetes.dask.org/) installed in the cluster,
   and a service account for the run's pod that may create, watch, and delete
   `daskclusters.kubernetes.dask.org` in its namespace.
-- An image that contains this package, the firm's step packages, and the same locked environment. The
-  run's own image is the worker image; every task carries the fingerprint of the process that ran it,
-  and a worker whose fingerprint differs from the run's fails its portfolio at stage `worker`.
+- An image that contains this package, the firm's step packages, the solver the config names (cvxpy
+  installs `CLARABEL`, `OSQP`, `SCS`, and `HIGHS`; `PIQP` is `--extra piqp`), and the same locked
+  environment. The run's own image is the worker image; every worker is checked before the run shares
+  any data with it — the config must resolve there and its fingerprint must equal the run's — and a
+  worker that joins later and differs fails its portfolio at stage `worker`.
 
 ## 1. Choose the cluster and size it
 
@@ -81,9 +83,11 @@ and every fingerprint carries it. What happens, in order:
 1. The config resolves. A `DaskCluster` resource named after the run id is created with `MIN_WORKERS`
    workers, running `WORKER_IMAGE` with `--nthreads 1` and `OMP_NUM_THREADS=1`.
 2. The loaders run. The scheduler pod and the first workers come up underneath them.
-3. Assembly finishes. The run asks for `MAX_WORKERS`, waits for the first worker, scatters the assembled
-   datasets and the config to it once, and starts submitting tasks; workers that join later receive the
-   data from their peers.
+3. Assembly finishes. The run asks for `MAX_WORKERS`, waits for the first worker, checks every worker
+   that has joined — the config resolves there, so the solver and every step package are present, and
+   its fingerprint equals the run's — and stops with exit code 3 if one cannot. It then scatters the
+   assembled datasets and the config once and starts submitting tasks; workers that join later receive
+   the data from their peers.
 4. Every build runs at once; the pod derives the dependency graph from what the builds report and
    submits each solve with its predecessors' contributions as dependencies, so a solve runs on the
    worker that holds its build the moment its predecessors finish. Outcomes are classified in solve order.

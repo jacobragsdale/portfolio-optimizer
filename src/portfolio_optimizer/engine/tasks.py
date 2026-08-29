@@ -1,6 +1,9 @@
-"""The per-portfolio tasks every run submits to its cluster: build, summarize, solve, contribute.
+"""The tasks every run submits to its cluster: a probe of each worker, then per portfolio build, summarize, solve, contribute.
 
-:func:`build_task` runs first for every portfolio, chain-free and in parallel: slice, rules, the
+:func:`probe_task` runs on every worker the run starts with, before any data is shared: it resolves
+the config there — every step importable, the solver installed — and reports the fingerprint, so a
+worker that cannot do the run's work stops the run before it does any. :func:`build_task` then runs
+for every portfolio, chain-free and in parallel: slice, rules, the
 solve-order key, and the spec. Its result stays on the worker; :func:`summarize` sends the main
 process only what it needs to derive the schedule — the key, the buyable securities, the spec hash,
 the rule audit — stamped with the build's environment. :func:`solve_task` then runs where the build
@@ -18,6 +21,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+from portfolio_optimizer.config.models import RunConfig
 from portfolio_optimizer.config.resolve import ResolvedConfig, ResolvedStep, resolve_config
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError
 from portfolio_optimizer.domain.results import (
@@ -210,6 +214,19 @@ def resolved_for(shared: SharedRunData) -> ResolvedConfig:
 def worker_environment(shared: SharedRunData) -> WorkerEnvironment:
     """This process's fingerprint for the run; the image digest is read from this process's own environment, which is the point."""
     return environment_for(shared.config, cwd=Path.cwd(), image_digest=os.environ.get(IMAGE_DIGEST_VARIABLE))
+
+
+def probe_task(config: RunConfig, config_sha256: str) -> TaskOutput[None]:
+    """Resolve the config in this process and report the fingerprint; a resolution failure is returned, never raised.
+
+    The resolution is kept, so the first build on this worker does not repeat it.
+    """
+    environment = environment_for(config, cwd=Path.cwd(), image_digest=os.environ.get(IMAGE_DIGEST_VARIABLE))
+    try:
+        _RESOLVED[config_sha256] = resolve_config(config, config_sha256)
+    except Exception as error:  # noqa: BLE001  # a solver or step package missing on this worker is what the probe exists to report
+        return TaskOutput(outcome=failure("*", "worker", error), environment=environment, host=host_name())
+    return TaskOutput(outcome=None, environment=environment, host=host_name())
 
 
 def build_task(shared: SharedRunData, portfolio_id: PortfolioId) -> TaskOutput[BuildResult]:

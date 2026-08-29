@@ -155,8 +155,10 @@ arbitrate between runs, and cost start-up latency that the load stage mostly hid
 The fingerprint is kept anyway, because it is cheap and it is what makes any shared machine safe: every
 task returns the environment of the process that ran it — interpreter, libraries, solver, the versions of
 the packages behind external steps, git revision, image digest — and a worker whose environment differs
-from the run's fails its portfolio at stage `worker` rather than answering. The manifest records the
-backend's lifetime and every environment that did work.
+from the run's fails its portfolio at stage `worker` rather than answering. The workers the run starts
+with are checked before it shares any data with them: each resolves the config — the solver and every
+step package must be present — and reports its fingerprint, and one that cannot stops the run before
+it has done any work. The manifest records the backend's lifetime and every environment that did work.
 
 ## Failure semantics
 

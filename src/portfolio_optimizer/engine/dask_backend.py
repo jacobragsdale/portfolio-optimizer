@@ -127,6 +127,13 @@ class DaskBackend:
         joined = len(info["workers"]) if isinstance(info, dict) and isinstance(info.get("workers"), dict) else workers
         return WorkersReady(workers=joined, scheduler_address=str(client.scheduler.address) if client.scheduler is not None else None)
 
+    def probe[T](self, fn: Callable[..., T], /, *args: object) -> Mapping[str, T]:
+        """``fn(*args)`` on every connected worker at once, keyed by worker address; a worker's exception is re-raised here."""
+        results: dict[str, T] = {}
+        for address, result in self._require_client().run(fn, *args).items():
+            results[str(address)] = result
+        return results
+
     def share(self, data: SharedRunData) -> object:
         """Scatter the run's shared data once; the future is what every task receives."""
         return self._require_client().scatter(data, hash=False)

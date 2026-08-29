@@ -329,17 +329,24 @@ is accepted and reported as `unverified` in the manifest rather than refused.
 "solver": {"name": "CLARABEL", "options": {"max_iter": 200}, "time_limit_s": 60.0, "verbose": false}
 ```
 
-`name` selects a solver installed in cvxpy. The engine checks that it is present before solving and
-there is no automatic fallback: a run configured for one solver never silently produces answers from
-another, because the manifest records the solver and its version as part of what makes a run
-reproducible. `options` is passed verbatim to `Problem.solve`; the engine does not interpret it, so
-what is valid depends entirely on the solver. `time_limit_s` is the one option the engine does
-translate, because every solver spells it differently — `time_limit` for Clarabel, OSQP, and HiGHS,
-`time_limit_secs` for SCS — and a solver the adapter does not know rejects the setting rather than
-guessing. `verbose` turns on the solver's own iteration log, which is the first thing to enable when a
-solve is slow or hits its limit.
+`name` selects a solver. It must be one the adapter has a record for — `CLARABEL`, `OSQP`, `SCS`,
+`HIGHS`, which cvxpy installs, or `PIQP`, the `piqp` extra — and it must be installed, and both are
+checked when the config *resolves*, not when the first portfolio solves: `validate-config` rejects a
+typo, `run` rejects it before asking for a cluster, and every worker checks its own image before it
+does any work. A solver cvxpy can see but the adapter has no record for is refused too, because the
+record is what names the distribution whose version goes into the environment fingerprint; without it
+two different builds of the solver would compare equal. There is no automatic fallback: a run
+configured for one solver never silently produces answers from another, because the manifest records
+the solver and its version as part of what makes a run reproducible. `options` is passed verbatim to
+`Problem.solve`; the engine does not interpret it, so what is valid depends entirely on the solver.
+`time_limit_s` is the one option the engine does translate, because every solver spells it differently
+— `time_limit` for Clarabel, OSQP, and HiGHS, `time_limit_secs` for SCS — and a solver with no such
+option (`PIQP`) rejects the setting at resolve rather than guessing. `verbose` turns on the solver's
+own iteration log, which is the first thing to enable when a solve is slow or hits its limit.
 
-This block is read once per portfolio at solve time, inside the worker, and is otherwise inert.
+Adding a solver is one row in the adapter's table (name, distribution, time-limit option) and one
+extra in `pyproject.toml`, so that "install the solver" is the same `uv sync --extra` on a laptop and
+in the worker image.
 
 ## `post_solve`
 

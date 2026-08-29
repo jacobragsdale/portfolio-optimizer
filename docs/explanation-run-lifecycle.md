@@ -46,8 +46,9 @@ or `"mypkg.mod:my_rule"`. Before any data loads, the resolver:
   portfolio wait for another. A rule cannot declare it — rules never see other portfolios;
 - records three hashes — the function's source text, its whole module file, and its params.
 
-Every failure is collected and reported together. There is no execution mode to check the steps
-against: the schedule is derived later, from the steps and the data (§9).
+The resolver also checks the solver: known to the adapter, installed in this process, and able to
+honor `time_limit_s`. Every failure is collected and reported together. There is no execution mode to
+check the steps against: the schedule is derived later, from the steps and the data (§9).
 
 `portfolio-optimizer validate-config` stops here and prints one line per resolved step. `run` then,
 **before any data loads, asks for its cluster** — local worker processes or Kubernetes pods. The call
@@ -269,10 +270,12 @@ Which cluster the run provisions is a *setting*: a `LocalCluster` of worker proc
 the runner can also be tested against with a fake (`engine/backends.py`). The runner drives it through
 one lifetime: **start** it before the load stage, so worker processes import the solver stack and pods
 come up while the loaders wait on their sources; **scale** it and **wait** for the first worker after
-assembly; **share** the assembled datasets and the config with it once — scattered, and replicated
-between workers on demand — so a task carries a portfolio id and nothing else; **submit** every build,
-then every solve with its dependencies; **close** it in a `finally`. Workers re-resolve the config
-themselves — function objects are never pickled, only their names.
+assembly; **probe** every worker that has joined — each resolves the config itself, which is where a
+missing solver or step package surfaces, and reports its fingerprint — and stop the run as an
+infrastructure failure if any cannot; **share** the assembled datasets and the config with it once —
+scattered, and replicated between workers on demand — so a task carries a portfolio id and nothing
+else; **submit** every build, then every solve with its dependencies; **close** it in a `finally`.
+Workers re-resolve the config themselves — function objects are never pickled, only their names.
 
 ![The run owns its cluster: provisioning overlaps the load stage](images/cluster-lifecycle.svg)
 
@@ -353,7 +356,8 @@ again (the diff names only the config). The [tutorial](tutorial-first-run.md) wa
 
 1. **Settings** — unknown or missing environment variables; a Kubernetes cluster without a worker image.
 2. **Config** — strict models; money as strings; timestamps with a zone.
-3. **Resolver** — the function exists, its signature matches the contract, its params validate.
+3. **Resolver** — the function exists, its signature matches the contract, its params validate; the
+   solver is known and installed. Run on the client, and again on every worker before it does any work.
 4. **Loaders** — dtypes declared up front; exact `Decimal` coercion.
 5. **Assembly** — each step's own claims (join keys, cardinality, coverage, dtype agreement on a
    union); then the required frames exist and every frame schema holds; then details and constraints
@@ -361,7 +365,7 @@ again (the diff names only the config). The [tutorial](tutorial-first-run.md) wa
 6. **`PortfolioData`** — cross-frame invariants including holdings/universe dtype agreement, re-run
    after every rule; a frame a rule replaces is re-validated against its schema.
 7. **`ProblemSpec`** — shapes, finiteness, bound ordering, read-only arrays.
-8. **Solver** — installed, DCP-compliant, status classified, infeasibility diagnosed.
+8. **Solver** — DCP-compliant, status classified, infeasibility diagnosed.
 9. **Verifier** — every shipped constraint and the objective, independently of cvxpy.
 10. **Orders** — the `ORDERS` schema including `notional = quantity × price`, every BUY inside the
     buyable set, then the drift bound.

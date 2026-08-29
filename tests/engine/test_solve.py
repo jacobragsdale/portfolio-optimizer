@@ -6,8 +6,7 @@ from decimal import Decimal
 import numpy as np
 import pytest
 
-from portfolio_optimizer.config.resolve import ResolvedConfig
-from portfolio_optimizer.cvx.adapter import UnavailableSolverError
+from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedConfig
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, SolveStatus, derive_chain_state
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.solve import InfeasibleError, SolveSetupError, solve
@@ -76,10 +75,9 @@ def test_empty_universe_solves_trivially(make: Factories) -> None:
     assert solution.status is SolveStatus.OPTIMAL
 
 
-def test_unavailable_solver_is_refused(make: Factories) -> None:
-    spec = make.spec()
-    with pytest.raises(UnavailableSolverError, match="'NOPE' is not installed"):
-        solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], CORE_CONSTRAINTS, solver={"name": "NOPE"}))
+def test_a_solver_this_process_cannot_run_is_refused_when_the_config_resolves_not_when_it_solves() -> None:
+    with pytest.raises(ConfigResolutionError, match="solver: solver 'NOPE' is not one the adapter knows"):
+        resolved_with(["tracking_error"], CORE_CONSTRAINTS, solver={"name": "NOPE"})
 
 
 def test_tax_cost_refuses_a_free_loss_harvest(make: Factories) -> None:

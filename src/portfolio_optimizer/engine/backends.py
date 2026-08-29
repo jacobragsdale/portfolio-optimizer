@@ -5,7 +5,8 @@ A backend is what executes tasks. There is one real implementation — a Dask cl
 someone else runs — and the seam exists so the runner can be exercised against a fake. The runner asks
 for the backend right after config resolution (:meth:`Backend.start`, non-blocking, so the cluster
 warms up under the load stage), scales it and waits for the first worker after assembly
-(:meth:`Backend.scale`, :meth:`Backend.ready`), hands it the run's shared data once
+(:meth:`Backend.scale`, :meth:`Backend.ready`), checks every worker that has joined can do the run's
+work (:meth:`Backend.probe`), hands it the run's shared data once
 (:meth:`Backend.share`), submits every portfolio's build and then, once the schedule is known, every
 solve with its predecessors' contributions as dependencies (:meth:`Backend.submit`), collects results
 as they complete (:meth:`Backend.as_completed`), cancels what a failure makes pointless
@@ -30,6 +31,10 @@ from portfolio_optimizer.settings import ExecutionSettings
 
 class ClusterError(RuntimeError):
     """The backend could not provide a worker: provisioning failed or timed out."""
+
+
+class WorkerEnvironmentError(ClusterError):
+    """A worker the run started with cannot do its work: the config does not resolve there, or its environment differs from the run's."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +89,14 @@ class Backend(Protocol):
 
     def ready(self, workers: int, timeout_s: float) -> WorkersReady:
         """Block until at least ``workers`` can take a task, or raise :class:`ClusterError`."""
+        ...
+
+    def probe[T](self, fn: Callable[..., T], /, *args: object) -> Mapping[str, T]:
+        """Run ``fn(*args)`` once on every worker connected now and return the results by worker address.
+
+        Called once, after :meth:`ready` and before :meth:`share`, with a function that never raises for
+        its own findings; a worker that raises anyway is the backend's failure to report.
+        """
         ...
 
     def share(self, data: SharedRunData) -> object:

@@ -34,7 +34,7 @@
   <rect class="box" x="164" y="56" width="128" height="40" rx="4" /><text class="label" x="228" y="74">start cluster</text><text class="note" x="228" y="88">non-blocking</text>
   <rect class="box" x="304" y="56" width="104" height="40" rx="4" /><text class="label" x="356" y="74">load</text><text class="note" x="356" y="88">async</text>
   <rect class="box" x="420" y="56" width="116" height="40" rx="4" /><text class="label" x="478" y="74">assemble</text><text class="note" x="478" y="88">once</text>
-  <rect class="box" x="548" y="56" width="128" height="40" rx="4" /><text class="label" x="612" y="80">wait ≥ 1 worker</text>
+  <rect class="box" x="548" y="56" width="128" height="40" rx="4" /><text class="label" x="612" y="74">wait ≥ 1 worker</text><text class="note" x="612" y="88">then probe each</text>
   <rect class="box" x="688" y="56" width="104" height="40" rx="4" /><text class="label" x="740" y="74">share</text><text class="note" x="740" y="88">once</text>
   <path class="flow" d="M152,76 L164,76" /><path class="flow" d="M292,76 L304,76" /><path class="flow" d="M408,76 L420,76" /><path class="flow" d="M536,76 L548,76" /><path class="flow" d="M676,76 L688,76" />
   <path class="flow" d="M792,76 L820,76 L820,112 L32,112 L32,128" />

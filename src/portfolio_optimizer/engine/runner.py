@@ -24,7 +24,7 @@ from portfolio_optimizer.cvx.adapter import solver_version
 from portfolio_optimizer.domain.data import IoContext
 from portfolio_optimizer.domain.results import Artifact, AssemblyAuditRecord, Contribution, PortfolioFailure, PortfolioResult
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.engine.backends import Backend, BackendFactory, ClusterError, Pending, SharedRunData, TaskOutput, WorkersReady
+from portfolio_optimizer.engine.backends import Backend, BackendFactory, ClusterError, Pending, SharedRunData, TaskOutput, WorkerEnvironmentError, WorkersReady
 from portfolio_optimizer.engine.dask_backend import DaskBackend
 from portfolio_optimizer.engine.environment import GitInfo, WorkerEnvironment, environment_for, package_versions
 from portfolio_optimizer.engine.hashing import file_sha256
@@ -47,7 +47,7 @@ from portfolio_optimizer.engine.manifest import (
     write_manifest,
 )
 from portfolio_optimizer.engine.schedule import Coupling, Schedule, dependency_graph, order_portfolios
-from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, contribution, skipped, solve_task, step_refs, summarize
+from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, contribution, probe_task, skipped, solve_task, step_refs, summarize
 from portfolio_optimizer.settings import ExecutionSettings
 
 log = logging.getLogger(__name__)
@@ -189,7 +189,8 @@ def run(
     except ClusterError as error:
         log.error("cluster unavailable", extra={"run_id": io.run_id, "stage": "cluster", "error": type(error).__name__})
         cluster_error = PortfolioFailure("*", "cluster", type(error).__name__, str(error))
-        outcomes = {portfolio_id: PortfolioFailure(portfolio_id, "skipped", "ClusterUnavailable", "not processed because the cluster did not come up") for portfolio_id in order}
+        reason = "a worker failed its environment check" if isinstance(error, WorkerEnvironmentError) else "the cluster did not come up"
+        outcomes = {portfolio_id: PortfolioFailure(portfolio_id, "skipped", "ClusterUnavailable", f"not processed because {reason}") for portfolio_id in order}
     finally:
         session.close()
     ordered = tuple(outcomes[portfolio_id] for portfolio_id in order)
@@ -224,9 +225,9 @@ def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session,
     config = resolved.config
     fail_fast = config.execution.on_error == "fail_fast"
     backend = session.wait()
-    dispatch = _Dispatch(
-        backend, backend.share(shared), shared.run_id, len(shared.assembled.portfolio_ids), session, environment_for(config, cwd=Path.cwd(), image_digest=session.execution.image_digest)
-    )
+    expected = environment_for(config, cwd=Path.cwd(), image_digest=session.execution.image_digest)
+    _check_workers(backend, shared, session, expected)
+    dispatch = _Dispatch(backend, backend.share(shared), shared.run_id, len(shared.assembled.portfolio_ids), session, expected)
     builds, failed, keys, buyable = _build_all(dispatch, shared)
     order = order_portfolios(keys)
     coupling: Coupling = "none" if not resolved.chain_aware_steps else config.execution.dependencies
@@ -250,6 +251,28 @@ def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session,
     solves = _submit_solves(dispatch, schedule, to_solve, builds, outcomes)
     artifacts = _gather_solves(dispatch, schedule, solves, outcomes, fail_fast=fail_fast, run_dir=run_dir)
     return Executed(outcomes=outcomes, schedule=schedule, keys=keys, artifacts=artifacts)
+
+
+def _check_workers(backend: Backend, shared: SharedRunData, session: _Session, expected: WorkerEnvironment) -> None:
+    """Every worker the run starts with must resolve the config and match the run's fingerprint before any data is shared.
+
+    A worker that cannot — the solver or a step package missing from its image, a stale image — would
+    fail every portfolio it touched at stage ``worker``; one round trip here catches it before the run
+    has done any work. Workers that join later are gated per result by :func:`_accept`.
+    """
+    problems: list[str] = []
+    probes = backend.probe(probe_task, shared.config, shared.config_sha256)
+    for address, output in probes.items():
+        session.saw(output.environment, output.host, solved=False)
+        if isinstance(output.outcome, PortfolioFailure):
+            problems.append(f"worker {output.host} ({address}) cannot resolve the config: {output.outcome.message}")
+            continue
+        differences = expected.differences(output.environment)
+        if differences:
+            problems.append(f"worker {output.host} ({address}) runs a different environment: {'; '.join(differences)}")
+    if problems:
+        raise WorkerEnvironmentError("; ".join(problems))
+    log.info("%d worker(s) checked: config resolves and fingerprints match", len(probes), extra={"run_id": shared.run_id, "stage": "cluster"})
 
 
 def _build_all(

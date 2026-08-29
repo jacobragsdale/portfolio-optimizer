@@ -509,34 +509,6 @@ graph — nothing an aggregator does can feed back into which portfolio waits fo
 
 Not threads: known, decided, and only waiting for someone to do them.
 
-### The solver is checked last, when it should be checked first
-
-Which solver runs is already the run config's: `solver.name`, `solver.options`, `solver.time_limit_s`,
-`solver.verbose`. And the adapter already refuses a solver cvxpy cannot see — but it refuses it in
-`solve_problem`, on a worker, after the run has provisioned its cluster, loaded and assembled every
-dataset, and built every spec. A typo in `solver.name`, or a worker image without `highspy`, costs a
-whole run's worth of work to discover, and `validate-config` — the command that exists to catch this
-class of mistake without loading data — prints `config ok`. Three parts, in order:
-
-- **Check on the client at resolve.** `resolve_config` asks `installed_solvers()` and adds the missing
-  solver to the same collected-failures `ConfigResolutionError` a bad step name produces, naming what is
-  installed. `validate-config` and the first line of `run` then fail before anything is provisioned.
-- **Check on every worker before load.** The client having the solver says nothing about the worker
-  image. The cluster's `min_workers` are up before the load stage; ask each of them for its
-  `installed_solvers()` and `solver_version` right there and stop the run — cluster torn down, manifest
-  written with the failure — if any differs from the client's. Workers that scale up after assembly
-  are still covered by `_accept`'s fingerprint; this is the earlier, cheaper gate for the workers the
-  run starts with.
-- **Adding a solver is one declaration, not two edits.** Two closed tables in `cvx/adapter.py` decide
-  what the engine knows about a solver: `_SOLVER_PACKAGES`, which distribution to version — without a
-  row the fingerprint records `unknown` and two builds of the same solver compare equal — and
-  `_TIME_LIMIT_OPTION`, without which `time_limit_s` is rejected. Fold them into one record per solver
-  (name, distribution, time-limit option) so a solver cannot be half-registered, and give each a
-  `pyproject.toml` extra (`highs = ["highspy"]`) so "install the solver" is `uv sync --extra highs` on
-  the laptop and the same spelling in the worker image. A solver cvxpy lists but the adapter has no
-  record for should be a resolve-time rejection too: an untracked version is a hole in the environment
-  fingerprint, which is the one thing `_accept` relies on.
-
 ### Smaller things noticed in passing
 
 - **The example never exercises `sector_bounds`.** `configs/example_run.json` lists the constraint, but

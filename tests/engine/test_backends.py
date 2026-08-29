@@ -1,4 +1,4 @@
-"""Tier 1/2: the backend seam — builds first, solves along the schedule with dependencies, fail-fast cancellation, dead and stale workers, and a cluster that never comes up."""
+"""Tier 1/2: the backend seam — workers probed before data is shared, builds first, solves along the schedule with dependencies, fail-fast cancellation, dead and stale workers, and a cluster that never comes up."""
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import BrokenExecutor
@@ -66,7 +66,9 @@ class LazyBackend:
     fail_ready: bool = False
     dead_keys: frozenset[str] = frozenset()
     tamper: Tamper = lambda output: output
+    probe_tamper: Tamper = lambda output: output
     started: bool = False
+    probed: int = 0
     closed: bool = False
     scaled_to: int | None = None
     shared_count: int = 0
@@ -86,6 +88,14 @@ class LazyBackend:
             msg = "no worker within the timeout"
             raise ClusterError(msg)
         return WorkersReady(workers=workers, scheduler_address="fake://scheduler")
+
+    def probe[T](self, fn: Callable[..., T], /, *args: object) -> Mapping[str, T]:
+        self.probed += 1
+        output = fn(*args)
+        if isinstance(output, TaskOutput):
+            erased: TaskOutput[object] = TaskOutput(outcome=output.outcome, environment=output.environment, host=output.host)
+            return {"fake://worker-1": self.probe_tamper(erased)}  # ty: ignore[invalid-return-type]  # the fake erases T
+        return {"fake://worker-1": output}
 
     def share(self, data: SharedRunData) -> SharedRunData:
         self.shared_count += 1
@@ -172,6 +182,35 @@ def test_nothing_reading_the_chain_means_no_portfolio_waits(tmp_path: Path) -> N
     assert p2.chain_state.predecessors == ()
 
 
+def test_a_worker_that_cannot_resolve_the_config_stops_the_run_before_any_data_is_shared(tmp_path: Path) -> None:
+    def missing_solver(output: TaskOutput[object]) -> TaskOutput[object]:
+        rejected = PortfolioFailure("*", "worker", "ConfigResolutionError", "1 config resolution failure(s): solver: solver 'CLARABEL' is not installed in this environment; installed: []")
+        return TaskOutput(outcome=rejected, environment=output.environment, host="pod-3")
+
+    backend = LazyBackend(probe_tamper=missing_solver)
+    report = execute(tmp_path, backend)
+    assert report.exit_code == EXIT_INFRASTRUCTURE
+    assert backend.probed == 1 and backend.shared_count == 0 and backend.submitted == [] and backend.closed
+    assert [(o.stage, o.error_type) for o in report.outcomes if isinstance(o, PortfolioFailure)] == [("skipped", "ClusterUnavailable")] * 2
+    records = {record.portfolio_id: record for record in report.manifest.portfolios}
+    assert records["*"].failure_stage == "cluster" and records["*"].error is not None
+    assert "worker pod-3 (fake://worker-1) cannot resolve the config" in records["*"].error and "'CLARABEL' is not installed" in records["*"].error
+    (worker,) = report.manifest.versions.workers
+    assert worker.hosts == ("pod-3",) and worker.portfolios == 0
+
+
+def test_a_worker_whose_environment_differs_at_the_start_stops_the_run(tmp_path: Path) -> None:
+    def stale(output: TaskOutput[object]) -> TaskOutput[object]:
+        return TaskOutput(outcome=output.outcome, environment=output.environment.model_copy(update={"image_digest": "sha256:old"}), host="pod-7")
+
+    backend = LazyBackend(probe_tamper=stale)
+    report = execute(tmp_path, backend)
+    assert report.exit_code == EXIT_INFRASTRUCTURE
+    assert backend.shared_count == 0 and backend.submitted == []
+    records = {record.portfolio_id: record for record in report.manifest.portfolios}
+    assert records["*"].error is not None and "worker pod-7 (fake://worker-1) runs a different environment: image_digest: None here, 'sha256:old' there" in records["*"].error
+
+
 def test_a_worker_whose_environment_differs_fails_its_portfolios_at_stage_worker(tmp_path: Path) -> None:
     def stale(output: TaskOutput[object]) -> TaskOutput[object]:
         assert output.environment is not None
@@ -183,8 +222,8 @@ def test_a_worker_whose_environment_differs_fails_its_portfolios_at_stage_worker
         assert isinstance(outcome, PortfolioFailure)
         assert (outcome.stage, outcome.error_type) == ("worker", "EnvironmentMismatch")
         assert "git_sha: '0" not in outcome.message and "'stale' there" in outcome.message
-    (worker,) = report.manifest.versions.workers
-    assert worker.hosts == ("pod-7",) and worker.environment.git_sha == "stale"
+    by_hosts = {worker.hosts: worker for worker in report.manifest.versions.workers}
+    assert by_hosts[("pod-7",)].environment.git_sha == "stale", "the tasks' environment is recorded beside the probe's"
     assert report.manifest.schedule is not None and report.manifest.schedule.edges == 1, "two failed builds are treated as overlapping"
 
 

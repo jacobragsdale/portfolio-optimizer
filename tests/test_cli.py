@@ -74,6 +74,16 @@ def test_validate_config_lists_every_resolved_step() -> None:
     assert "constraint          portfolio_optimizer.terms:cumulative_adv_participation [chain]" in out
 
 
+def test_validate_config_rejects_a_solver_the_adapter_does_not_know(tmp_path: Path) -> None:
+    body = json.loads(EXAMPLE_CONFIG.read_text())
+    body["solver"] = {"name": "SCIPY"}  # cvxpy ships it; the adapter has no record for it, so its version could not be fingerprinted
+    config = tmp_path / "scipy.json"
+    config.write_text(json.dumps(body))
+    code, out, err = cli(["validate-config", str(config)])
+    assert code == 2 and out == ""
+    assert "config rejected" in err and "solver: solver 'SCIPY' is not one the adapter knows" in err
+
+
 def test_exit_code_contract(tmp_path: Path, env: dict[str, str]) -> None:
     bad_json = tmp_path / "bad.json"
     bad_json.write_text('{"run": {}}')

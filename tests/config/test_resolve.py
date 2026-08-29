@@ -240,7 +240,9 @@ def test_source_hash_is_stable_and_function_specific(fake_steps: str) -> None:
 # --- resolve_config ---
 
 
-def fake_config(fake_steps: str, *, on_error: str = "fail_fast", rules: list[str] | None = None, constraints: list[str] | None = None, solve_order: str | None = None) -> RunConfig:
+def fake_config(
+    fake_steps: str, *, on_error: str = "fail_fast", rules: list[str] | None = None, constraints: list[str] | None = None, solve_order: str | None = None, solver: dict[str, object] | None = None
+) -> RunConfig:
     body: dict[str, object] = {
         "run": {"name": "r", "as_of": "2026-01-01T00:00:00Z"},
         "portfolios": f"{fake_steps}:loader",
@@ -253,6 +255,8 @@ def fake_config(fake_steps: str, *, on_error: str = "fail_fast", rules: list[str
     }
     if solve_order is not None:
         body["solve_order"] = solve_order
+    if solver is not None:
+        body["solver"] = solver
     return RunConfig.model_validate_json(json.dumps(body))
 
 
@@ -277,6 +281,32 @@ def test_continue_is_allowed_with_chain_aware_steps(fake_steps: str) -> None:
     resolved = resolve_config(fake_config(fake_steps, on_error="continue", constraints=[f"{fake_steps}:chained_constraint"]), config_sha256="abc")
     assert len(resolved.chain_aware_steps) == 1
     assert resolved.config.execution.dependencies == "overlap"
+
+
+@pytest.mark.parametrize(
+    ("solver", "installed", "failure"),
+    [
+        ({"name": "CLARABEL", "time_limit_s": 5.0}, ("CLARABEL", "SCIPY"), None),
+        ({"name": "SCIPY"}, ("CLARABEL", "SCIPY"), "solver: solver 'SCIPY' is not one the adapter knows; known: ['CLARABEL', 'HIGHS', 'OSQP', 'PIQP', 'SCS']"),
+        ({"name": "OSQP"}, ("CLARABEL", "SCIPY"), "solver: solver 'OSQP' is not installed in this environment; installed: ['CLARABEL']"),
+        ({"name": "PIQP", "time_limit_s": 5.0}, ("PIQP",), "solver: solver 'PIQP' has no time-limit option; remove solver.time_limit_s"),
+    ],
+    ids=["installed", "cvxpy-has-it-but-the-adapter-does-not", "not-installed", "no-time-limit-option"],
+)
+def test_resolve_config_checks_the_solver_against_what_this_process_has_installed(fake_steps: str, solver: dict[str, object], installed: tuple[str, ...], failure: str | None) -> None:
+    config = fake_config(fake_steps, solver=solver)
+    if failure is None:
+        assert resolve_config(config, config_sha256="abc", installed=lambda: installed).config.solver.name == solver["name"]
+        return
+    with pytest.raises(ConfigResolutionError) as info:
+        resolve_config(config, config_sha256="abc", installed=lambda: installed)
+    assert info.value.failures == (failure,)
+
+
+def test_a_solver_failure_is_reported_together_with_the_step_failures(fake_steps: str) -> None:
+    with pytest.raises(ConfigResolutionError) as info:
+        resolve_config(fake_config(fake_steps, rules=["no_such_rule"], solver={"name": "OSQP"}), config_sha256="abc", installed=lambda: ("CLARABEL",))
+    assert [failure.partition(":")[0] for failure in info.value.failures] == ["solver", "rules[0]"]
 
 
 def test_a_failing_solve_order_step_is_reported_under_its_own_key(fake_steps: str) -> None:

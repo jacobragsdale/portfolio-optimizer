@@ -120,10 +120,14 @@ class SolverConfig(StrictModel):
     name: str = Field(
         default="CLARABEL",
         min_length=1,
-        description="A solver installed in cvxpy (`CLARABEL`, `OSQP`, `SCS`, `HIGHS`, ...). The run fails before solving if it is missing; there is no automatic fallback.",
+        description="A solver the adapter knows and cvxpy has installed: `CLARABEL`, `OSQP`, `SCS`, `HIGHS` (installed with cvxpy) or `PIQP` (the `piqp` extra). Checked when the config resolves — by `validate-config`, at the start of `run`, and on every worker before it does any work; there is no automatic fallback.",
     )
     options: dict[str, float | int | bool | str] = Field(default_factory=dict, description='Passed verbatim to `Problem.solve(**options)`, e.g. `{"max_iter": 200}`.')
-    time_limit_s: float | None = Field(default=None, gt=0, description="Wall-clock limit per solve in seconds, translated to the solver's own option; omit for no limit.")
+    time_limit_s: float | None = Field(
+        default=None,
+        gt=0,
+        description="Wall-clock limit per solve in seconds, translated to the solver's own option; omit for no limit. Rejected at resolve for a solver with no such option (`PIQP`).",
+    )
     verbose: bool = Field(default=False, description="Let the solver print its iteration log.")
 
 

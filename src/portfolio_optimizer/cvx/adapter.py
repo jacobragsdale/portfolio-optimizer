@@ -19,8 +19,33 @@ from portfolio_optimizer.domain.results import F64, SolveStatus
 type Expr = cp.Expression
 type Constraint = cp.Constraint
 
-_SOLVER_PACKAGES: Mapping[str, str] = {"CLARABEL": "clarabel", "OSQP": "osqp", "SCS": "scs", "ECOS": "ecos", "HIGHS": "highspy", "PIQP": "piqp"}
-_TIME_LIMIT_OPTION: Mapping[str, str] = {"CLARABEL": "time_limit", "OSQP": "time_limit", "SCS": "time_limit_secs", "HIGHS": "time_limit"}
+
+@dataclass(frozen=True, slots=True)
+class SolverSpec:
+    """What the engine knows about one cvxpy solver: the distribution that versions it and how it spells a time limit.
+
+    A solver cvxpy can see but this table does not name is refused when the config resolves: without
+    its distribution the environment fingerprint would record ``unknown`` for its version on every
+    process, and two different builds of it would compare equal.
+    """
+
+    name: str
+    distribution: str
+    time_limit_option: str | None
+
+
+SOLVERS: Mapping[str, SolverSpec] = {
+    spec.name: spec
+    for spec in (
+        SolverSpec("CLARABEL", "clarabel", "time_limit"),
+        SolverSpec("OSQP", "osqp", "time_limit"),
+        SolverSpec("SCS", "scs", "time_limit_secs"),
+        SolverSpec("HIGHS", "highspy", "time_limit"),
+        SolverSpec("PIQP", "piqp", None),
+    )
+}
+"""Every solver a config may name. cvxpy installs the first four; ``PIQP`` is the ``piqp`` extra. Adding one is a row here and an extra in ``pyproject.toml``."""
+
 _STATUS: Mapping[str, SolveStatus] = {
     cp.OPTIMAL: SolveStatus.OPTIMAL,
     cp.OPTIMAL_INACCURATE: SolveStatus.OPTIMAL_INACCURATE,
@@ -155,7 +180,7 @@ class RawSolve:
 
 
 class UnavailableSolverError(RuntimeError):
-    """The configured solver is not installed in this environment."""
+    """The configured solver cannot run in this environment."""
 
 
 def installed_solvers() -> tuple[str, ...]:
@@ -163,13 +188,30 @@ def installed_solvers() -> tuple[str, ...]:
     return tuple(str(name) for name in cp.installed_solvers())
 
 
+def solver_failures(name: str, time_limit_s: float | None, installed: Sequence[str]) -> list[str]:
+    """Why solver ``name`` cannot run against ``installed``, if it cannot; empty when it can.
+
+    Unknown to :data:`SOLVERS`, not installed, or asked for a time limit it has no option for. The
+    resolver runs this in every process that will solve, so a run fails before any data loads.
+    """
+    spec = SOLVERS.get(name)
+    if spec is None:
+        return [f"solver {name!r} is not one the adapter knows; known: {sorted(SOLVERS)}"]
+    failures: list[str] = []
+    if name not in installed:
+        failures.append(f"solver {name!r} is not installed in this environment; installed: {sorted(set(installed) & set(SOLVERS))}")
+    if time_limit_s is not None and spec.time_limit_option is None:
+        failures.append(f"solver {name!r} has no time-limit option; remove solver.time_limit_s")
+    return failures
+
+
 def solver_version(solver: str) -> str:
-    """Installed version of the package backing ``solver``, or ``"unknown"``."""
-    package = _SOLVER_PACKAGES.get(solver)
-    if package is None:
+    """Installed version of the distribution behind ``solver``, or ``"unknown"``."""
+    spec = SOLVERS.get(solver)
+    if spec is None:
         return "unknown"
     try:
-        return importlib.metadata.version(package)
+        return importlib.metadata.version(spec.distribution)
     except importlib.metadata.PackageNotFoundError:
         return "unknown"
 
@@ -178,9 +220,9 @@ def solve_problem(
     x: DecisionVars, terms: Sequence[ObjectiveTerm], constraints: Sequence[ConstraintSet], *, solver: str, options: Mapping[str, float | int | bool | str], time_limit_s: float | None, verbose: bool
 ) -> RawSolve:
     """Build the cvxpy problem from the given terms and constraints and solve it once."""
-    if solver not in installed_solvers():
-        msg = f"solver {solver!r} is not installed; available: {list(installed_solvers())}"
-        raise UnavailableSolverError(msg)
+    failures = solver_failures(solver, time_limit_s, installed_solvers())
+    if failures:
+        raise UnavailableSolverError("; ".join(failures))
     if not terms:
         msg = "an objective needs at least one term"
         raise ValueError(msg)
@@ -192,11 +234,8 @@ def solve_problem(
         msg = "the objective and constraints are not DCP-compliant; every term must be convex and every constraint affine or convex"
         raise ValueError(msg)
     kwargs: dict[str, float | int | bool | str] = dict(options)
-    if time_limit_s is not None:
-        option = _TIME_LIMIT_OPTION.get(solver)
-        if option is None:
-            msg = f"solver {solver!r} has no known time-limit option; remove solver.time_limit_s or add the option name to the adapter"
-            raise ValueError(msg)
+    option = SOLVERS[solver].time_limit_option
+    if time_limit_s is not None and option is not None:
         kwargs[option] = time_limit_s
     started = time.perf_counter()
     detail = ""
