@@ -61,10 +61,10 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `run_id`, `run_name`, `created_at_utc`, `as_of` | Identity. `created_at_utc` comes from the injected clock. |
 | `git_sha`, `git_dirty` | The code revision, or `unknown` outside a repository. |
 | `execution_mode` | |
-| `cluster` | Absent in `sequential` mode. Otherwise the backend's lifetime: `executor`, `kind` (`process`, `thread`, `local`, `kubernetes`, `address`), `min_workers`, `max_workers`, `workers_ready` (workers joined when the first task could run), `scheduler_address`, `provision_started_at` (before the load stage), `first_worker_ready_at` (after assembly), `closed_at`. |
+| `cluster` | Absent in `sequential` mode. Otherwise the cluster's lifetime: `kind` (`local`, `kubernetes`, `address`), `min_workers`, `max_workers`, `workers_ready` (workers joined when the first task could run), `scheduler_address`, `provision_started_at` (before the load stage), `first_worker_ready_at` (after assembly), `closed_at`. |
 | `versions` | `python`, `cvxpy`, `numpy`, `pandas`, `solver`, `solver_version`, `packages`: the installed version of every distribution that supplied a step named outside the template modules (`{"my-firm-quant": "1.4.2"}`; a module no distribution provides is listed under its own name as `unknown`), and `workers[]`: every distinct environment that executed a task (`environment` — interpreter, libraries, solver, step packages, git sha, image digest — with `hosts` and `portfolios`). Normally one entry, equal to the run's own environment. |
 | `config` | `path`, `sha256` of the canonical resolved config, and `resolved` (the full config). |
-| `settings` | Every setting the run used, including the executor and worker counts, with `cluster` resolved. |
+| `settings` | Every setting the run used, including the worker counts, with `cluster` resolved. |
 | `terms`, `constraints` | Qualified name and params of every configured step, in order; `verify` uses these. |
 | `datasets[]` | `name`, `loader_qualname`, `loader_source_sha256`, `params_sha256`, `rows`, `columns`, `content_sha256`, `load_time_s` (wall-clock seconds the loader took). |
 | `assembly[]` | Per assembly step, in order: `qualname`, `source_sha256`, `params_sha256`, `rows_in` and `rows_out` (rows per dataset before and after), `columns_added` (per dataset, the columns the step introduced). |

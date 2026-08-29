@@ -8,8 +8,9 @@ Builders are exposed as fixtures because ``--import-mode=importlib`` keeps ``tes
 
 import asyncio
 import json
+import logging
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -18,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from distributed import LocalCluster
 
 from portfolio_optimizer.config.models import RunConfig, load_run_config
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
@@ -28,6 +30,7 @@ from portfolio_optimizer.domain.frames import FrameSchema
 from portfolio_optimizer.domain.results import F64, Artifact, ProblemSpec
 from portfolio_optimizer.domain.schemas import DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
 from portfolio_optimizer.domain.types import Clock, IdFactory
+from portfolio_optimizer.settings import ExecutionSettings
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
@@ -350,6 +353,24 @@ def _protocols_hold(clock: Clock, ids: IdFactory) -> None:
 
 
 _protocols_hold(FixedClock(), FixedIds())
+
+
+# --- one local Dask cluster for the whole session; runs connect to it by address so no test pays a cluster start ---
+
+
+@pytest.fixture(scope="session")
+def scheduler_address() -> Iterator[str]:
+    """A two-worker ``LocalCluster`` shared by every test that runs portfolios through workers."""
+    cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None, silence_logs=logging.WARNING)
+    try:
+        yield str(cluster.scheduler_address)
+    finally:
+        cluster.close()
+
+
+def execution_on(scheduler_address: str, *, max_workers: int = 2) -> ExecutionSettings:
+    """Execution settings that use the session cluster."""
+    return ExecutionSettings(cluster=scheduler_address, min_workers=1, max_workers=max_workers, cluster_timeout_s=120.0)
 
 
 # --- loaders that prove the load stage's concurrency and plumbing ---

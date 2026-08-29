@@ -18,14 +18,12 @@ fails at the earliest stage that can detect it, with a message naming what is wr
 
 **Settings** (`settings.py`) come from environment variables: where data is read from
 (`PORTFOLIO_OPTIMIZER_DATA_ROOT`), where runs are written (`PORTFOLIO_OPTIMIZER_OUTPUT_DIR`), how loudly
-to log, and — deliberately here rather than in the config — where per-portfolio work runs and how many
-workers there are (`PORTFOLIO_OPTIMIZER_EXECUTOR`, `PORTFOLIO_OPTIMIZER_MAX_WORKERS`, and, for a Dask
-cluster, which cluster, how many workers to provision up front, and how long to wait for the first).
-There are no defaults, `.env` files are read only when you pass `--env-file`, an *unknown*
-`PORTFOLIO_OPTIMIZER_*` variable is an error — a typo fails loudly instead of being ignored — and the
-cluster variables are refused unless the executor is `dask`. `PORTFOLIO_OPTIMIZER_CLUSTER=auto` is
-resolved right here, to `kubernetes` inside a pod and `local` anywhere else, so what the manifest
-records is what happened.
+to log, and — deliberately here rather than in the config — which Dask cluster the run provisions for
+itself and how big it is (`PORTFOLIO_OPTIMIZER_CLUSTER`, how many workers to provision up front, how
+many after assembly, and how long to wait for the first). There are no defaults, `.env` files are read
+only when you pass `--env-file`, and an *unknown* `PORTFOLIO_OPTIMIZER_*` variable is an error — a typo
+fails loudly instead of being ignored. `PORTFOLIO_OPTIMIZER_CLUSTER=auto` is resolved right here, to
+`kubernetes` inside a pod and `local` anywhere else, so what the manifest records is what happened.
 
 **The config** (`config/models.py`) is a strict pydantic model: unknown keys are errors, money is written
 as strings (`"0.05"`) so it becomes exact `Decimal`, and `as_of` must carry a timezone. The validated
@@ -50,11 +48,9 @@ steps; `parallel_build_sequential_solve` cannot run rules that take `ctx`, becau
 workers; and `on_error: continue` is refused alongside chain-aware steps, because a skipped portfolio
 would silently change what later solves see. Every failure is collected and reported together.
 
-`portfolio-optimizer validate-config` stops here and prints one line per resolved step. `run` checks
-one more thing the settings decide — `parallel` needs an executor that can solve, so `thread` is
-refused — and then, **before any data loads, asks for its backend**: a process pool spawns its
-interpreters, a Dask cluster is provisioned. Neither blocks; the point is that they come up underneath
-the slow stage that follows.
+`portfolio-optimizer validate-config` stops here and prints one line per resolved step. `run` then,
+**before any data loads, asks for its cluster** — local worker processes or Kubernetes pods. The call
+does not block; the point is that the cluster comes up underneath the slow stage that follows.
 
 ## 2. Loading and assembly: validation, first layer
 
@@ -241,29 +237,28 @@ portfolio in the manifest.
 
 ![Where each stage runs](images/execution-stages.svg)
 
-Where the workers are is a *setting*, and every kind sits behind the same seam (`engine/backends.py`):
-a pool of `spawn`-ed interpreters, threads, or a Dask cluster the run owns — a `LocalCluster` on a
-laptop, a `KubeCluster` on Kubernetes, or a scheduler address (`engine/dask_backend.py`). The runner
-drives each through the same lifetime: **start** it before the load stage, so interpreters import the
-solver stack and pods come up while the loaders wait on their sources; **scale** it and **wait** for the
-first worker after assembly; **share** the assembled datasets and the config with it once, so a task
-carries a portfolio id and nothing else; **submit** a window of tasks — twice the worker count — and
-**consume results in configured solve order**, so the worker count and the order in which workers
-finish can never change the output; **close** it in a `finally`. Workers re-resolve the config
-themselves — function objects are never pickled, only their names.
+Which cluster the run provisions is a *setting*: a `LocalCluster` of worker processes on a laptop, a
+`KubeCluster` of pods on Kubernetes, or a scheduler address (`engine/dask_backend.py`), behind a seam
+the runner can also be tested against with a fake (`engine/backends.py`). The runner drives it through
+one lifetime: **start** it before the load stage, so worker processes import the solver stack and pods
+come up while the loaders wait on their sources; **scale** it and **wait** for the first worker after
+assembly; **share** the assembled datasets and the config with it once — scattered, and replicated
+between workers on demand — so a task carries a portfolio id and nothing else; **submit** a window of
+tasks — twice the worker count — and **consume results in configured solve order**, so the worker count
+and the order in which workers finish can never change the output; **close** it in a `finally`. Workers
+re-resolve the config themselves — function objects are never pickled, only their names.
 
 ![The run owns its cluster: provisioning overlaps the load stage](images/cluster-lifecycle.svg)
 
 Every task returns the **fingerprint of the process that ran it** — interpreter, numerical libraries,
 solver, the versions of the packages behind external steps, the git revision, the image digest — and
 the runner compares it with its own. A worker running different code fails its portfolio at stage
-`worker` rather than answering, and the manifest lists every environment that did work. On a laptop
-pool the fingerprints agree by construction; on a cluster this is what makes sharing machines safe.
+`worker` rather than answering, and the manifest lists every environment that did work. A local
+cluster's workers are spawned from the run's own environment, so the fingerprints agree by construction;
+on Kubernetes this is what makes sharing machines safe.
 
-The `thread` executor is allowed only where nothing is solved in the worker, because cvxpy solves are
-not thread-safe; `run` refuses `parallel` with it before loading. Under `fail_fast`, once any consumed
-outcome is a failure nothing more is submitted, what is queued is cancelled, and the rest are recorded
-as `skipped`. A worker that dies — for instance on an unpicklable result — becomes a per-portfolio
+Under `fail_fast`, once any consumed outcome is a failure nothing more is submitted, what is queued is
+cancelled, and the rest are recorded as `skipped`. A worker that dies — for instance on an unpicklable result — becomes a per-portfolio
 failure at stage `worker`; a cluster that never produces a worker within its timeout is an
 infrastructure failure, exit code 3, with a `cluster` record in the manifest and every portfolio
 skipped. [How to run on a cluster](how-to-run-on-a-cluster.md) has the settings.
@@ -291,7 +286,7 @@ written.
 The **manifest** (`engine/manifest.py`) records the run id, name, and timestamps; the git revision and
 whether the tree was dirty; the Python, cvxpy, numpy, pandas, and solver versions, and every worker
 environment that executed a task; the backend's lifetime — what was asked for, when the first worker
-answered, when it was released; the resolved config and its hash; the settings, with the executor and
+answered, when it was released; the resolved config and its hash; the settings, with the cluster and
 worker counts; every term and constraint with its params; every dataset's provenance and content hash;
 and, per portfolio, the rule audits, spec hash, chain-input hash, solver statistics, verification
 outcome, drift, and the orders' count, hash, and gross notional. The manifest is then self-hashed, and
@@ -318,7 +313,7 @@ produces no orders. Run the config twice and `diff-manifests` reports `no differ
 
 ## Where validation happens, in one list
 
-1. **Settings** — unknown or missing environment variables; cluster variables without the Dask executor.
+1. **Settings** — unknown or missing environment variables; a Kubernetes cluster without a worker image.
 2. **Config** — strict models; money as strings; timestamps with a zone.
 3. **Resolver** — the function exists, its signature matches the contract, its params validate, and the
    execution mode is compatible with the steps.

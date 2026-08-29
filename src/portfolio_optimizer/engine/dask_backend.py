@@ -16,7 +16,7 @@ from typing import Protocol, runtime_checkable
 from distributed import Client, LocalCluster
 
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.engine.backends import ClusterError, ExecutionSettingsError, Pending, SharedRunData, Task, TaskOutput, WorkersReady
+from portfolio_optimizer.engine.backends import ClusterError, Pending, SharedRunData, Task, TaskOutput, WorkersReady
 from portfolio_optimizer.engine.environment import IMAGE_DIGEST_VARIABLE
 from portfolio_optimizer.settings import ExecutionSettings
 
@@ -70,11 +70,7 @@ class DaskBackend:
     """The run's own cluster, sized from the execution settings and torn down with the run."""
 
     def __init__(self, execution: ExecutionSettings, *, run_id: str) -> None:
-        kind = execution.cluster_kind
-        if kind is None or execution.cluster is None or execution.min_workers is None or execution.cluster_timeout_s is None:
-            msg = "executor 'dask' needs cluster, min_workers, and cluster_timeout_s settings"
-            raise ExecutionSettingsError(msg)
-        self._kind = kind
+        self._kind = execution.cluster_kind
         self._cluster_setting = execution.cluster
         self._execution = execution
         self._run_id = run_id
@@ -89,7 +85,8 @@ class DaskBackend:
     @property
     def kind(self) -> str:
         """``local``, ``kubernetes``, or ``address``."""
-        return self._kind
+        kind: str = self._kind
+        return kind
 
     def start(self) -> None:
         """Issue provisioning from a helper thread and return."""

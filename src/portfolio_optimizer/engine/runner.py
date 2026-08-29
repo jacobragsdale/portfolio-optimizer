@@ -21,7 +21,8 @@ from portfolio_optimizer.cvx.adapter import solver_version
 from portfolio_optimizer.domain.data import IoContext
 from portfolio_optimizer.domain.results import Artifact, AssemblyAuditRecord, PortfolioFailure, PortfolioResult, SolveContext
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.engine.backends import PROCESS_START_TIMEOUT_S, Backend, BackendFactory, ClusterError, Pending, SharedRunData, Task, TaskOutput, WorkersReady, check_execution, make_backend
+from portfolio_optimizer.engine.backends import Backend, BackendFactory, ClusterError, Pending, SharedRunData, Task, TaskOutput, WorkersReady
+from portfolio_optimizer.engine.dask_backend import DaskBackend
 from portfolio_optimizer.engine.environment import GitInfo, WorkerEnvironment, environment_for, host_name, package_versions
 from portfolio_optimizer.engine.hashing import file_sha256
 from portfolio_optimizer.engine.load import DatasetAudit, assemble, load_datasets
@@ -80,7 +81,7 @@ class RunReport:
 
 @dataclass(slots=True)
 class _Session:
-    """The backend's lifetime, and what the manifest records about it: timestamps, size, and every environment that did work."""
+    """The cluster's lifetime, and what the manifest records about it: timestamps, size, and every environment that did work."""
 
     execution: ExecutionSettings
     io: IoContext
@@ -107,7 +108,7 @@ class _Session:
             msg = "no backend was started"
             raise ClusterError(msg)
         self.backend.scale(self.execution.max_workers)
-        self.ready = self.backend.ready(1, self.execution.cluster_timeout_s or PROCESS_START_TIMEOUT_S)
+        self.ready = self.backend.ready(1, self.execution.cluster_timeout_s)
         self.first_worker_ready_at = self.io.clock.now()
         log.info("backend %s ready with %d worker(s)", self.backend.kind, self.ready.workers, extra={"run_id": self.io.run_id, "stage": "cluster"})
         return self.backend
@@ -128,9 +129,8 @@ class _Session:
         if self.backend is None:
             return None
         return ClusterRecord(
-            executor=self.execution.executor,
             kind=self.backend.kind,
-            min_workers=self.execution.min_workers or self.execution.max_workers,
+            min_workers=self.execution.min_workers,
             max_workers=self.execution.max_workers,
             workers_ready=self.ready.workers if self.ready is not None else None,
             scheduler_address=self.ready.scheduler_address if self.ready is not None else None,
@@ -148,11 +148,10 @@ class _Session:
 
 
 def run(
-    resolved: ResolvedConfig, io: IoContext, *, execution: ExecutionSettings, git: GitInfo, config_path: str, settings: Mapping[str, str], backend_factory: BackendFactory = make_backend
+    resolved: ResolvedConfig, io: IoContext, *, execution: ExecutionSettings, git: GitInfo, config_path: str, settings: Mapping[str, str], backend_factory: BackendFactory = DaskBackend
 ) -> RunReport:
     """Execute the run end to end and write its manifest. Raises only when nothing could start."""
     config = resolved.config
-    check_execution(config, execution)
     log.info("run starting", extra={"run_id": io.run_id, "mode": config.execution.mode, "stage": "load"})
     session = _Session(execution, io, backend_factory)
     ids: tuple[PortfolioId, ...] = ()
@@ -288,8 +287,6 @@ def _collect[T](
 
 def _accept[T](output: TaskOutput[T], session: _Session, expected: WorkerEnvironment) -> T | PortfolioFailure:
     """Record who did the work and refuse a result from an environment that differs from this run's."""
-    if output.environment is None:
-        return output.outcome
     session.saw(output.environment, output.host)
     differences = expected.differences(output.environment)
     if differences:

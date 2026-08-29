@@ -363,8 +363,8 @@ so the run's evidence survives a failed handoff.
 
 This block answers two questions: which stages of each portfolio's work may depend on earlier
 portfolios, and what happens when one fails. It deliberately does *not* say where the work runs or how
-many workers there are — those are settings (`PORTFOLIO_OPTIMIZER_EXECUTOR`,
-`PORTFOLIO_OPTIMIZER_MAX_WORKERS`, and the cluster variables), so a laptop run and a cluster run of
+many workers there are — those are settings (`PORTFOLIO_OPTIMIZER_CLUSTER`,
+`PORTFOLIO_OPTIMIZER_MAX_WORKERS`, and the other cluster variables), so a laptop run and a cluster run of
 one config hash identically and differ only in the manifest's `settings` block, where `diff-manifests`
 can name the difference.
 
@@ -383,14 +383,11 @@ The resolver enforces these rules in the first pass by looking at which function
 `chain`, so a mismatch is a config error with the offending step named, not a runtime surprise. The
 mode you can use is therefore determined by the steps you list, not the other way round.
 
-The executor and worker count are about throughput and never about output: results are consumed in
+The cluster and its worker count are about throughput and never about output: results are consumed in
 solve order regardless of which worker finishes first, so two runs with different worker counts
-produce identical portfolio records. Workers — spawned interpreters, threads, or the pods of a Dask
-cluster the run provisions for itself — receive the assembled datasets and the config once and
-re-resolve step names themselves (function objects are never pickled, only names). `thread` is allowed
-only where nothing is solved in the worker, because cvxpy solves are not thread-safe; `run` refuses
-`parallel` with it before loading anything. [How to run on a cluster](how-to-run-on-a-cluster.md) covers
-the settings.
+produce identical portfolio records. Workers — local processes on a laptop, pods on Kubernetes — receive
+the assembled datasets and the config once and re-resolve step names themselves (function objects are
+never pickled, only names). [How to run on a cluster](how-to-run-on-a-cluster.md) covers the settings.
 
 `on_error` decides what one failed portfolio does to the rest. `fail_fast` marks every portfolio after
 the first failure as `skipped`; `continue` isolates the failure and lets the rest proceed. The engine

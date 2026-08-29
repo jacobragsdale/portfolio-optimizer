@@ -5,33 +5,17 @@ from concurrent.futures import BrokenExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import pytest
 from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.results import PortfolioFailure, PortfolioResult
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.engine.backends import (
-    Backend,
-    ClusterError,
-    ExecutionSettingsError,
-    Pending,
-    ProcessBackend,
-    SharedRef,
-    SharedRunData,
-    Task,
-    TaskOutput,
-    ThreadBackend,
-    WorkersReady,
-    check_execution,
-    make_backend,
-    resolve_shared,
-)
+from portfolio_optimizer.engine.backends import Backend, ClusterError, Pending, SharedRunData, Task, TaskOutput, WorkersReady
 from portfolio_optimizer.engine.environment import GitInfo, WorkerEnvironment, environment_for, external_modules
 from portfolio_optimizer.engine.load import assemble, load_datasets
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, RunReport, run
 from portfolio_optimizer.engine.tasks import BuildResult, build_task
 from portfolio_optimizer.settings import ExecutionSettings
-from tests.conftest import EXAMPLE_DATA, example_config, io_context, resolved_example_real
+from tests.conftest import EXAMPLE_DATA, example_config, example_config_real, execution_on, io_context, resolved_example_real
 
 GIT = GitInfo(sha="0123456789abcdef", dirty=False)
 NO_CHAIN_CONSTRAINTS = ["trade_balance", "long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds"]
@@ -120,7 +104,7 @@ def execute(
     constraints = NO_CHAIN_CONSTRAINTS if mode == "parallel" or on_error == "continue" else None
     overrides: dict[str, object] = {"constraints": constraints} if constraints is not None else {}
     resolved = resolved_example_real(execution={"mode": mode, "on_error": on_error}, sink="orders_to_parquet", **overrides)
-    execution = ExecutionSettings(executor="process", max_workers=max_workers)
+    execution = execution_on("tcp://fake:8786", max_workers=max_workers)
 
     def factory(execution: ExecutionSettings, *, run_id: str) -> Backend:
         del execution, run_id
@@ -141,7 +125,7 @@ def test_the_runner_drives_the_lifecycle_and_keeps_a_window_of_tasks_outstanding
     assert backend.cancelled == []
     cluster = report.manifest.cluster
     assert cluster is not None
-    assert (cluster.executor, cluster.kind, cluster.max_workers, cluster.workers_ready, cluster.scheduler_address) == ("process", "lazy", 1, 1, "fake://scheduler")
+    assert (cluster.kind, cluster.min_workers, cluster.max_workers, cluster.workers_ready, cluster.scheduler_address) == ("lazy", 1, 1, 1, "fake://scheduler")
     assert cluster.provision_started_at is not None and cluster.first_worker_ready_at is not None and cluster.closed_at is not None
     (worker,) = report.manifest.versions.workers
     same_config = resolved_example_real(execution={"mode": "parallel_build_sequential_solve", "on_error": "fail_fast"}, sink="orders_to_parquet").config
@@ -188,7 +172,7 @@ def test_a_cluster_that_never_comes_up_is_infrastructure_and_still_leaves_a_mani
 def test_parallel_mode_through_a_backend_matches_the_sequential_run(tmp_path: Path) -> None:
     parallel = execute(tmp_path, LazyBackend(), mode="parallel", run_id="par")
     resolved = resolved_example_real(execution={"mode": "sequential", "on_error": "fail_fast"}, sink="orders_to_parquet", constraints=NO_CHAIN_CONSTRAINTS)
-    sequential = run(resolved, io_context(tmp_path / "seq", run_id="seq"), execution=ExecutionSettings(executor="process", max_workers=1), git=GIT, config_path="c.json", settings={})
+    sequential = run(resolved, io_context(tmp_path / "seq", run_id="seq"), execution=execution_on("tcp://fake:8786", max_workers=1), git=GIT, config_path="c.json", settings={})
     assert parallel.exit_code == EXIT_OK
     for left, right in zip(sequential.solved, parallel.solved, strict=True):
         assert_frame_equal(left.orders.drop(columns=["run_id"]), right.orders.drop(columns=["run_id"]))
@@ -219,46 +203,12 @@ def test_build_task_slices_rules_and_builds_from_the_shared_data_and_reports_its
     assert isinstance(missing.outcome, PortfolioFailure) and missing.outcome.stage == "slice"
 
 
-def test_a_ref_to_a_run_this_process_never_received_is_a_worker_failure() -> None:
-    with pytest.raises(ClusterError, match="holds no shared data for run 'run-nope'"):
-        resolve_shared(SharedRef(run_id="run-nope"))
-    output = build_task(SharedRef(run_id="run-nope"), PortfolioId("P1"))
-    assert isinstance(output.outcome, PortfolioFailure) and output.outcome.stage == "worker"
-    assert output.environment is None
-
-
-def test_the_process_backend_delivers_shared_data_to_every_worker_once() -> None:
-    backend = ProcessBackend(2, start_timeout_s=120.0)
-    backend.start()
-    try:
-        assert backend.ready(1, 120.0) == WorkersReady(workers=2, scheduler_address=None)
-        shared = _shared()
-        handle = backend.share(shared)
-        assert handle == SharedRef(run_id="run-x")
-        outputs = [backend.submit(build_task, handle, PortfolioId(p)).result(timeout=120.0) for p in ("P1", "P2", "P1", "P2")]
-        assert all(isinstance(output.outcome, BuildResult) for output in outputs)
-        assert {output.environment for output in outputs} == {environment_for(shared.config, cwd=Path.cwd(), image_digest=None)}
-    finally:
-        backend.close()
-
-
-def test_the_thread_backend_shares_by_reference() -> None:
-    backend = ThreadBackend(2)
-    backend.start()
-    try:
-        shared = _shared()
-        assert backend.share(shared) is shared
-        assert isinstance(backend.submit(build_task, shared, PortfolioId("P2")).result(timeout=30.0).outcome, BuildResult)
-    finally:
-        backend.close()
-
-
-def test_make_backend_picks_the_executor_and_refuses_threads_for_parallel_mode() -> None:
-    assert make_backend(ExecutionSettings(executor="process", max_workers=1), run_id="r").kind == "process"
-    assert make_backend(ExecutionSettings(executor="thread", max_workers=1), run_id="r").kind == "thread"
-    with pytest.raises(ExecutionSettingsError, match="not thread-safe"):
-        check_execution(example_config(execution={"mode": "parallel"}, constraints=[]), ExecutionSettings(executor="thread", max_workers=1))
-    check_execution(example_config(execution={"mode": "parallel"}, constraints=[]), ExecutionSettings(executor="process", max_workers=1))
+def test_a_step_package_the_worker_cannot_import_is_a_worker_failure() -> None:
+    shared = _shared()
+    unresolvable = SharedRunData(assembled=shared.assembled, config=example_config_real(sink="no_such_package.sinks:publish"), config_sha256="other", run_id="run-y")
+    output = build_task(unresolvable, PortfolioId("P1"))
+    assert isinstance(output.outcome, PortfolioFailure) and (output.outcome.stage, output.outcome.error_type) == ("worker", "ConfigResolutionError")
+    assert output.environment.packages == (("no_such_package", "unknown"),)
 
 
 def test_environment_fingerprint_names_what_differs_and_which_packages_it_covers() -> None:

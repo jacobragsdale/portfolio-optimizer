@@ -138,14 +138,14 @@ class PostSolveConfig(StrictModel):
 class ExecutionConfig(StrictModel):
     """How portfolios are scheduled across the build and solve phases, and what a failure means.
 
-    Where the work runs — a process pool, threads, or a Dask cluster — and how many workers are
-    settings (`PORTFOLIO_OPTIMIZER_EXECUTOR`, `PORTFOLIO_OPTIMIZER_MAX_WORKERS`, ...), not config, so the
-    same config hashes the same on a laptop and on a cluster. Results are consumed in solve order
-    whatever the executor, so neither changes the output.
+    Which cluster the run provisions for itself and how many workers it has are settings
+    (`PORTFOLIO_OPTIMIZER_CLUSTER`, `PORTFOLIO_OPTIMIZER_MAX_WORKERS`, ...), not config, so the same config
+    hashes the same on a laptop and on a cluster. Results are consumed in solve order whatever the
+    cluster, so neither changes the output.
     """
 
     mode: ExecutionMode = Field(
-        description="`sequential`: build and solve one after another with a live chain context. `parallel_build_sequential_solve`: build in workers, solve in order (constraints may use `chain`, rules may not use `ctx`). `parallel`: everything in workers; no chain-aware steps allowed, and the executor must be able to solve (`process` or `dask`, not `thread`)."
+        description="`sequential`: build and solve one after another with a live chain context. `parallel_build_sequential_solve`: build in workers, solve in order (constraints may use `chain`, rules may not use `ctx`). `parallel`: everything in workers; no chain-aware steps allowed."
     )
     on_error: OnError = Field(
         default="fail_fast", description="`fail_fast` stops after the first failed portfolio and records the rest as skipped; `continue` isolates failures. Chain-aware steps require `fail_fast`."

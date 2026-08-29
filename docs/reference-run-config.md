@@ -24,8 +24,7 @@ Ways to validate a config:
 
 The schema cannot express two rules the models enforce: `as_of` must carry a time zone, and chain-aware
 steps (those declaring `ctx`/`chain`) are only allowed under the sequential modes with `fail_fast`.
-`validate-config` reports both. A third rule crosses into settings — `execution.mode: parallel` needs an
-executor that can solve (`process` or `dask`, not `thread`) — and `run` reports it before loading.
+`validate-config` reports both.
 
 ## Top level
 
@@ -42,7 +41,7 @@ executor that can solve (`process` or `dask`, not `thread`) — and `run` report
 | `solver` | object | no | `name` (default `CLARABEL`; must be installed in cvxpy), `options` (map of solver options passed verbatim to `Problem.solve`, default `{}`), `time_limit_s` (number > 0 or absent; mapped to `time_limit` for `CLARABEL`, `OSQP`, and `HIGHS` and to `time_limit_secs` for `SCS`; any other solver rejects it), `verbose` (default `false`). |
 | `post_solve` | object | no | `violation_tol` (default `1e-6`), `objective_rel_tol` (`1e-5`), `objective_abs_tol` (`1e-9`); all > 0. |
 | `sink` | step | yes | Where orders go. |
-| `execution` | object | yes | See below. Where the work runs and how many workers are settings, not config. |
+| `execution` | object | yes | See below. Which cluster the run provisions and how many workers it has are settings, not config. |
 
 ## Step references
 
@@ -157,8 +156,8 @@ Unmatched rows of a Decimal (`object`) column are `None`.
 | `parallel` | workers, whole pipeline per portfolio | in the worker | none |
 
 Config-load errors: a chain-aware step under `parallel`; a `ctx` rule under
-`parallel_build_sequential_solve`; any chain-aware step with `on_error: continue`. Where the workers
-are — a process pool, threads, or a Dask cluster the run provisions — and how many, are the execution
+`parallel_build_sequential_solve`; any chain-aware step with `on_error: continue`. The workers are the Dask cluster the run provisions for itself — local worker
+processes on a laptop, pods on Kubernetes, or a scheduler someone else runs — sized by the execution
 settings below; they are recorded in the manifest's `settings` block and never affect the config hash.
 
 ## Shipped steps
@@ -198,12 +197,11 @@ All required unless stated; no defaults; an unknown `PORTFOLIO_OPTIMIZER_*` vari
 | `PORTFOLIO_OPTIMIZER_OUTPUT_DIR` | path | Where `<run_id>/` directories are written. |
 | `PORTFOLIO_OPTIMIZER_DATA_ROOT` | path | `request.data_root` for the shipped file loaders. |
 | `PORTFOLIO_OPTIMIZER_LOG_LEVEL` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` | |
-| `PORTFOLIO_OPTIMIZER_EXECUTOR` | `process` \| `thread` \| `dask` | Where per-portfolio tasks run: spawned interpreters, threads (cannot solve), or a Dask cluster the run owns. |
-| `PORTFOLIO_OPTIMIZER_MAX_WORKERS` | integer ≥ 1 | Pool size, or the cluster size after assembly. The run keeps twice this many tasks outstanding. |
-| `PORTFOLIO_OPTIMIZER_CLUSTER` | `local` \| `kubernetes` \| `auto` \| `tcp://host:port` | `dask` only, required. `auto` becomes `kubernetes` when `KUBERNETES_SERVICE_HOST` is set and `local` otherwise; the manifest records the resolved value. |
-| `PORTFOLIO_OPTIMIZER_MIN_WORKERS` | integer ≥ 1, ≤ max | `dask` only, required. Workers provisioned before the load stage. |
-| `PORTFOLIO_OPTIMIZER_CLUSTER_TIMEOUT_S` | number > 0 | `dask` only, required. How long to wait, after assembly, for the first worker. |
+| `PORTFOLIO_OPTIMIZER_CLUSTER` | `local` \| `kubernetes` \| `auto` \| `tcp://host:port` | The Dask cluster the run provisions for itself (`local`: worker processes on this machine; `kubernetes`: pods through the Dask operator) or a scheduler to connect to. `auto` becomes `kubernetes` when `KUBERNETES_SERVICE_HOST` is set and `local` otherwise; the manifest records the resolved value. |
+| `PORTFOLIO_OPTIMIZER_MIN_WORKERS` | integer ≥ 1, ≤ max | Workers provisioned before the load stage. |
+| `PORTFOLIO_OPTIMIZER_MAX_WORKERS` | integer ≥ 1 | Workers after assembly. The run keeps twice this many tasks outstanding. |
+| `PORTFOLIO_OPTIMIZER_CLUSTER_TIMEOUT_S` | number > 0 | How long to wait, after assembly, for the first worker. |
 | `PORTFOLIO_OPTIMIZER_WORKER_IMAGE` | image reference | Required when the cluster resolves to `kubernetes`: the image worker pods run, normally this run's own. |
 | `PORTFOLIO_OPTIMIZER_IMAGE_DIGEST` | string | Optional; set by the platform. Part of every process's environment fingerprint and forwarded to worker pods. |
 
-The cluster variables are refused unless the executor is `dask`. See [how to run on a cluster](how-to-run-on-a-cluster.md).
+See [how to run on a cluster](how-to-run-on-a-cluster.md).

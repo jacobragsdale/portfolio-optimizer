@@ -19,15 +19,16 @@ solver. Nothing else needs to be installed.
 
 ## 2. Point the engine at the example data
 
-Every run needs five environment variables. The example file sets them to the shipped data:
+Every run needs seven environment variables. The example file sets them to the shipped data:
 
 ```bash
 cp .env.example .env
 ```
 
 `.env` now says where data is read from (`examples/data`), where runs are written (`./out`), how
-loudly to log, and where per-portfolio work runs (`process`: a pool of two spawned interpreters on this
-machine). There are no defaults: a missing variable stops the run before it starts.
+loudly to log, and the cluster the run provisions for itself — `local`, two worker processes on this
+machine, torn down when the run ends. There are no defaults: a missing variable stops the run before it
+starts.
 
 ## 3. Check the config before touching any data
 

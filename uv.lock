@@ -1674,6 +1674,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "cvxpy" },
+    { name = "distributed" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyarrow" },
@@ -1682,9 +1683,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-dask = [
-    { name = "distributed" },
-]
 kubernetes = [
     { name = "dask-kubernetes" },
 ]
@@ -1692,7 +1690,6 @@ kubernetes = [
 [package.dev-dependencies]
 dev = [
     { name = "dask-kubernetes" },
-    { name = "distributed" },
     { name = "hypothesis" },
     { name = "jsonschema" },
     { name = "pandas-stubs" },
@@ -1709,7 +1706,7 @@ dev = [
 requires-dist = [
     { name = "cvxpy", specifier = ">=1.9.2" },
     { name = "dask-kubernetes", marker = "extra == 'kubernetes'", specifier = ">=2026.3.0" },
-    { name = "distributed", marker = "extra == 'dask'", specifier = ">=2026.8.0" },
+    { name = "distributed", specifier = ">=2026.8.0" },
     { name = "numpy", specifier = ">=2.5.2" },
     { name = "pandas", specifier = ">=3.0.5" },
     { name = "pyarrow", specifier = ">=25.0.1" },
@@ -1721,7 +1718,6 @@ provides-extras = ["dask", "kubernetes"]
 [package.metadata.requires-dev]
 dev = [
     { name = "dask-kubernetes", specifier = ">=2026.3.0" },
-    { name = "distributed", specifier = ">=2026.8.0" },
     { name = "hypothesis", specifier = ">=6.165.10" },
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "pandas-stubs", specifier = ">=3.0.5.260730" },

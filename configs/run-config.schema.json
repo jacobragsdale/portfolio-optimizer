@@ -649,11 +649,11 @@
     },
     "ExecutionConfig": {
       "additionalProperties": false,
-      "description": "How portfolios are scheduled across the build and solve phases, and what a failure means.\n\nWhere the work runs — a process pool, threads, or a Dask cluster — and how many workers are\nsettings (`PORTFOLIO_OPTIMIZER_EXECUTOR`, `PORTFOLIO_OPTIMIZER_MAX_WORKERS`, ...), not config, so the\nsame config hashes the same on a laptop and on a cluster. Results are consumed in solve order\nwhatever the executor, so neither changes the output.",
+      "description": "How portfolios are scheduled across the build and solve phases, and what a failure means.\n\nWhich cluster the run provisions for itself and how many workers it has are settings\n(`PORTFOLIO_OPTIMIZER_CLUSTER`, `PORTFOLIO_OPTIMIZER_MAX_WORKERS`, ...), not config, so the same config\nhashes the same on a laptop and on a cluster. Results are consumed in solve order whatever the\ncluster, so neither changes the output.",
       "properties": {
         "mode": {
           "$ref": "#/$defs/ExecutionMode",
-          "description": "`sequential`: build and solve one after another with a live chain context. `parallel_build_sequential_solve`: build in workers, solve in order (constraints may use `chain`, rules may not use `ctx`). `parallel`: everything in workers; no chain-aware steps allowed, and the executor must be able to solve (`process` or `dask`, not `thread`)."
+          "description": "`sequential`: build and solve one after another with a live chain context. `parallel_build_sequential_solve`: build in workers, solve in order (constraints may use `chain`, rules may not use `ctx`). `parallel`: everything in workers; no chain-aware steps allowed."
         },
         "on_error": {
           "$ref": "#/$defs/OnError",

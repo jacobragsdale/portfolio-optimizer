@@ -7,6 +7,7 @@ authors = [{ name = "Jacob Ragsdale", email = "jacobragsdale@pm.me" }]
 requires-python = ">=3.12"
 dependencies = [
     "cvxpy>=1.9.2",
+    "distributed>=2026.8.0",
     "numpy>=2.5.2",
     "pandas>=3.0.5",
     "pyarrow>=25.0.1",
@@ -18,9 +19,7 @@ dependencies = [
 portfolio-optimizer = "portfolio_optimizer.cli:main"
 
 [project.optional-dependencies]
-dask = [
-    "distributed>=2026.8.0",
-]
+dask = []
 kubernetes = [
     "dask-kubernetes>=2026.3.0",
 ]
@@ -147,7 +146,6 @@ exclude_also = [
 [dependency-groups]
 dev = [
     "dask-kubernetes>=2026.3.0",
-    "distributed>=2026.8.0",
     "hypothesis>=6.165.10",
     "jsonschema>=4.26.0",
     "pandas-stubs>=3.0.5.260730",

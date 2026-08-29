@@ -49,14 +49,13 @@ class VersionInfo(StrictModel):
 
 
 class ClusterRecord(StrictModel):
-    """The backend's lifetime: what the run asked for, when it answered, and when it was released.
+    """The cluster's lifetime: what the run asked for, when it answered, and when it was released.
 
     ``provision_started_at`` is before the load stage and ``first_worker_ready_at`` after assembly, so
     their difference is the start-up the load stage hid; ``workers_ready`` is how many workers had
     joined when the first task could run.
     """
 
-    executor: str
     kind: str
     min_workers: int
     max_workers: int

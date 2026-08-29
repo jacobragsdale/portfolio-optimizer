@@ -1,7 +1,8 @@
 """The per-portfolio pipeline every backend runs: slice, rules, build, and — in ``parallel`` mode — solve, verify, orders.
 
-:func:`build_task` and :func:`full_task` are the worker entry points. Each resolves the shared data it
-was handed, resolves the config by name once per process, runs the pipeline, and returns a
+:func:`build_task` and :func:`full_task` are the worker entry points. Each receives the run's shared
+data (the backend resolves its handle on the worker), resolves the config by name once per process,
+runs the pipeline, and returns a
 :class:`TaskOutput` stamped with the fingerprint of the process that did the work. A task never raises:
 every failure becomes a :class:`PortfolioFailure` naming its stage, so the scheduler can apply
 ``on_error``. The sequential mode calls the same pipeline functions in the main process with a live
@@ -30,7 +31,7 @@ from portfolio_optimizer.domain.results import (
     derive_chain_state,
 )
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.engine.backends import ClusterError, SharedArg, SharedRunData, TaskOutput, resolve_shared
+from portfolio_optimizer.engine.backends import SharedRunData, TaskOutput
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.environment import IMAGE_DIGEST_VARIABLE, WorkerEnvironment, environment_for, host_name
@@ -158,12 +159,12 @@ def worker_environment(shared: SharedRunData) -> WorkerEnvironment:
     return environment_for(shared.config, cwd=Path.cwd(), image_digest=os.environ.get(IMAGE_DIGEST_VARIABLE))
 
 
-def build_task(shared: SharedArg, portfolio_id: PortfolioId) -> TaskOutput[BuildResult]:
+def build_task(shared: SharedRunData, portfolio_id: PortfolioId) -> TaskOutput[BuildResult]:
     """Worker entry for ``parallel_build_sequential_solve``: slice, rules, and build with no context."""
     return _task(shared, portfolio_id, lambda data, resolved: slice_and_build(data, resolved, portfolio_id, ctx=None))
 
 
-def full_task(shared: SharedArg, portfolio_id: PortfolioId) -> TaskOutput[PortfolioResult]:
+def full_task(shared: SharedRunData, portfolio_id: PortfolioId) -> TaskOutput[PortfolioResult]:
     """Worker entry for ``parallel``: the whole pipeline with an empty context."""
 
     def pipeline(data: SharedRunData, resolved: ResolvedConfig) -> Outcome:
@@ -175,11 +176,7 @@ def full_task(shared: SharedArg, portfolio_id: PortfolioId) -> TaskOutput[Portfo
     return _task(shared, portfolio_id, pipeline)
 
 
-def _task[T](shared: SharedArg, portfolio_id: PortfolioId, pipeline: Callable[[SharedRunData, ResolvedConfig], T | PortfolioFailure]) -> TaskOutput[T]:
-    try:
-        data = resolve_shared(shared)
-    except ClusterError as error:
-        return TaskOutput(outcome=failure(portfolio_id, "worker", error), environment=None, host=host_name())
+def _task[T](data: SharedRunData, portfolio_id: PortfolioId, pipeline: Callable[[SharedRunData, ResolvedConfig], T | PortfolioFailure]) -> TaskOutput[T]:
     environment = worker_environment(data)
     try:
         resolved = resolved_for(data)

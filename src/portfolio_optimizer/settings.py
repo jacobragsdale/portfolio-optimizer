@@ -1,9 +1,9 @@
 """Process configuration from the environment; loaded once at startup, never defaulted.
 
 Two kinds of setting live here. Where data is read from, where runs are written, and how loudly to
-log are the run's surroundings. Where per-portfolio work runs and how big the pool is are the run's
-*execution mechanics* — deliberately not part of the run config, so a laptop run and a cluster run of
-one config hash identically and differ only in the manifest's ``settings`` block.
+log are the run's surroundings. Which cluster the run provisions for itself and how big it is are the
+run's *execution mechanics* — deliberately not part of the run config, so a laptop run and a cluster
+run of one config hash identically and differ only in the manifest's ``settings`` block.
 """
 
 from collections.abc import Mapping
@@ -18,28 +18,24 @@ ENV_PREFIX = "PORTFOLIO_OPTIMIZER_"
 KUBERNETES_MARKER = "KUBERNETES_SERVICE_HOST"
 """Set in every pod by Kubernetes and on no laptop; what ``cluster: auto`` resolves on."""
 
-type Executor = Literal["process", "thread", "dask"]
 type ClusterKind = Literal["local", "kubernetes", "address"]
 
 CLUSTER_PATTERN = r"^(local|kubernetes|auto|tcp://\S+|tls://\S+)$"
-_CLUSTER_SETTINGS: tuple[str, ...] = ("cluster", "min_workers", "cluster_timeout_s")
 
 
 @dataclass(frozen=True, slots=True)
 class ExecutionSettings:
-    """Where per-portfolio work runs and how much of it at once; the runner's view of the settings.
+    """Which cluster the run provisions and how big it is; the runner's view of the settings.
 
-    Under ``executor: dask``, ``cluster`` is the resolved kind (``local``, ``kubernetes``) or a scheduler
-    address — never ``auto`` — ``min_workers`` is what is provisioned before the load stage and
-    ``max_workers`` what the run scales to after assembly. ``window`` is how many tasks a run keeps
-    outstanding whatever the executor.
+    ``cluster`` is the resolved kind (``local``, ``kubernetes``) or a scheduler address — never
+    ``auto``. ``min_workers`` is what is provisioned before the load stage and ``max_workers`` what the
+    run scales to after assembly; ``window`` is how many tasks the run keeps outstanding.
     """
 
-    executor: Executor
+    cluster: str
+    min_workers: int
     max_workers: int
-    cluster: str | None = None
-    min_workers: int | None = None
-    cluster_timeout_s: float | None = None
+    cluster_timeout_s: float
     worker_image: str | None = None
     image_digest: str | None = None
 
@@ -49,28 +45,27 @@ class ExecutionSettings:
         return 2 * self.max_workers
 
     @property
-    def cluster_kind(self) -> ClusterKind | None:
-        """``local``, ``kubernetes``, or ``address`` for a scheduler URL; ``None`` without a cluster."""
-        if self.cluster is None:
-            return None
-        if self.cluster in ("local", "kubernetes"):
-            return "local" if self.cluster == "local" else "kubernetes"
+    def cluster_kind(self) -> ClusterKind:
+        """``local``, ``kubernetes``, or ``address`` for a scheduler URL."""
+        if self.cluster == "local":
+            return "local"
+        if self.cluster == "kubernetes":
+            return "kubernetes"
         return "address"
 
 
 class Settings(BaseSettings):
-    """Where data is read from, where runs are written, how loudly to log, and where work runs."""
+    """Where data is read from, where runs are written, how loudly to log, and which cluster the run provisions."""
 
     model_config = SettingsConfigDict(env_prefix=ENV_PREFIX, strict=True, extra="forbid", frozen=True, validate_default=True, revalidate_instances="always", allow_inf_nan=False)
 
     output_dir: Path
     data_root: Path
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"]
-    executor: Executor
+    cluster: str = Field(pattern=CLUSTER_PATTERN)
+    min_workers: int = Field(ge=1)
     max_workers: int = Field(ge=1)
-    cluster: str | None = Field(default=None, pattern=CLUSTER_PATTERN)
-    min_workers: int | None = Field(default=None, ge=1)
-    cluster_timeout_s: float | None = Field(default=None, gt=0)
+    cluster_timeout_s: float = Field(gt=0)
     worker_image: str | None = Field(default=None, min_length=1)
     image_digest: str | None = Field(default=None, min_length=1)
 
@@ -89,21 +84,11 @@ class Settings(BaseSettings):
         return (init_settings, env_settings)
 
     @model_validator(mode="after")
-    def _cluster_settings_match_the_executor(self) -> Self:
-        present = [name for name in (*_CLUSTER_SETTINGS, "worker_image") if getattr(self, name) is not None]
-        if self.executor != "dask":
-            if present:
-                msg = f"{', '.join(_variable(name) for name in present)} only apply with {_variable('executor')}=dask"
-                raise ValueError(msg)
-            return self
-        missing = [name for name in _CLUSTER_SETTINGS if getattr(self, name) is None]
-        if missing:
-            msg = f"{_variable('executor')}=dask requires {', '.join(_variable(name) for name in missing)}"
-            raise ValueError(msg)
+    def _cluster_settings_agree(self) -> Self:
         if self.cluster == "kubernetes" and self.worker_image is None:
             msg = f"{_variable('cluster')}=kubernetes requires {_variable('worker_image')}: the image worker pods run, normally this run's own"
             raise ValueError(msg)
-        if self.min_workers is not None and self.min_workers > self.max_workers:
+        if self.min_workers > self.max_workers:
             msg = f"{_variable('min_workers')} ({self.min_workers}) exceeds {_variable('max_workers')} ({self.max_workers})"
             raise ValueError(msg)
         return self
@@ -111,13 +96,7 @@ class Settings(BaseSettings):
     def execution(self) -> ExecutionSettings:
         """The execution mechanics as the runner consumes them."""
         return ExecutionSettings(
-            executor=self.executor,
-            max_workers=self.max_workers,
-            cluster=self.cluster,
-            min_workers=self.min_workers,
-            cluster_timeout_s=self.cluster_timeout_s,
-            worker_image=self.worker_image,
-            image_digest=self.image_digest,
+            cluster=self.cluster, min_workers=self.min_workers, max_workers=self.max_workers, cluster_timeout_s=self.cluster_timeout_s, worker_image=self.worker_image, image_digest=self.image_digest
         )
 
     def shown(self) -> dict[str, str]:
