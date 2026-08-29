@@ -9,6 +9,7 @@ import json
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Self
@@ -213,6 +214,49 @@ class ProblemSpec:
             columns=columns,
             **vectors,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class OrderInputs:
+    """Exact (Decimal/int) per-security inputs the order step needs, aligned like the spec.
+
+    Built alongside the spec so orders never reconstruct money from float64.
+    """
+
+    security_ids: tuple[str, ...]
+    price: tuple[Decimal, ...]
+    shares_held: tuple[int, ...]
+    lot_size: tuple[int, ...]
+    nav: Decimal
+    min_trade_notional: Decimal
+
+    def __post_init__(self) -> None:
+        n = len(self.security_ids)
+        if not (len(self.price) == len(self.shares_held) == len(self.lot_size) == n):
+            msg = f"order inputs are not aligned to {n} securities"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class DriftReport:
+    """How far integer rounding moved the executed weights from the solved ones."""
+
+    max_weight_error: float
+    tolerance: float
+    dropped_orders: int
+
+    @property
+    def passed(self) -> bool:
+        """True when rounding stayed within the bound implied by lot sizes and the dust filter."""
+        return self.max_weight_error <= self.tolerance
+
+
+@dataclass(frozen=True, slots=True)
+class StepRef:
+    """A step's identity and parameters as data, for cvxpy-free verification and the manifest."""
+
+    qualname: str
+    params: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)

@@ -19,7 +19,7 @@ import pytest
 
 from portfolio_optimizer.config.models import RunConfig, load_run_config
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
-from portfolio_optimizer.cvx.adapter import DecisionVars, ObjectiveTerm
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm
 from portfolio_optimizer.domain.data import IoContext, LoadRequest, PortfolioData, PortfolioDetails, StyleConstraints
 from portfolio_optimizer.domain.frames import FrameSchema
 from portfolio_optimizer.domain.results import F64, Artifact, ProblemSpec
@@ -238,6 +238,12 @@ def noop_term(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:
     raise NotImplementedError
 
 
+def lying_term(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:
+    """Annotated as a term but returns a constraint set; solve must catch it."""
+    del x, spec
+    return ConstraintSet("lie", ())  # ty: ignore[invalid-return-type]  # the lie is the case under test
+
+
 def noop_sink(orders: pd.DataFrame, io: IoContext) -> tuple[Artifact, ...]:
     """Publish nothing."""
     del orders, io
@@ -255,16 +261,30 @@ def lying_rule(data: PortfolioData) -> PortfolioData:
     return data.universe  # ty: ignore[invalid-return-type]  # the lie is the case under test
 
 
-def example_config(**overrides: object) -> RunConfig:
-    """The shipped example config with sections replaced; objective, constraints, and sink default to no-ops."""
+def _example_body(real_steps: bool) -> dict[str, object]:
     body = json.loads(EXAMPLE_CONFIG.read_text())
-    body["objective"] = {"terms": ["tests.conftest:noop_term"]}
-    body["constraints"] = []
+    if not real_steps:
+        body["objective"] = {"terms": ["tests.conftest:noop_term"]}
+        body["constraints"] = []
     body["sink"] = "tests.conftest:noop_sink"
-    body.update(overrides)
-    return load_run_config(json.dumps(body))
+    return {str(key): value for key, value in body.items()}
+
+
+def example_config(**overrides: object) -> RunConfig:
+    """The shipped example config with no-op objective, constraints, and sink; sections replaced by ``overrides``."""
+    return load_run_config(json.dumps(_example_body(real_steps=False) | overrides))
+
+
+def example_config_real(**overrides: object) -> RunConfig:
+    """The shipped example config with its real terms and constraints and a no-op sink."""
+    return load_run_config(json.dumps(_example_body(real_steps=True) | overrides))
 
 
 def resolved_example(**overrides: object) -> ResolvedConfig:
     """``example_config`` resolved."""
     return resolve_config(example_config(**overrides), config_sha256="example")
+
+
+def resolved_example_real(**overrides: object) -> ResolvedConfig:
+    """``example_config_real`` resolved."""
+    return resolve_config(example_config_real(**overrides), config_sha256="example")
