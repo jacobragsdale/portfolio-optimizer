@@ -1,0 +1,21 @@
+# Environments and caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+
+# Run output
+out/
+
+# Secrets: only the example file is committed
+.env
+.env.*
+!.env.example
+
+.DS_Store

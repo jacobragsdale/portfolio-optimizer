@@ -1,0 +1,158 @@
+[project]
+name = "portfolio-optimizer"
+version = "0.1.0"
+description = "Template for a JSON-driven, auditable cvxpy portfolio-optimization engine"
+readme = "README.md"
+authors = [{ name = "Jacob Ragsdale", email = "jacobragsdale@pm.me" }]
+requires-python = ">=3.12"
+dependencies = [
+    "cvxpy>=1.9.2",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "pyarrow>=25.0.1",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "threadpoolctl>=3.6.0",
+]
+
+[project.scripts]
+portfolio-optimizer = "portfolio_optimizer.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.22,<0.12.0"]
+build-backend = "uv_build"
+
+
+[tool.ruff]
+line-length = 200
+required-version = ">=0.16.5"
+force-exclude = true
+show-fixes = true
+unsafe-fixes = false
+
+[tool.ruff.lint]
+extend-select = [  # Ruff's own defaults stay on; these are additions to them.
+    "E4",  # Keep imports valid and at the top level.
+    "E7",  # Reject ambiguous statements and comparisons.
+    "F",  # Reject star imports and invalid forward-reference annotations.
+    "I",  # Keep imports ordered and grouped consistently.
+    "UP",  # Use syntax appropriate for the target Python version.
+    "B",  # Catch likely bugs and hazardous design patterns.
+    "SIM",  # Replace needlessly complex control flow.
+    "C4",  # Remove wasteful collection constructions.
+    "RUF",  # Apply additional correctness and modernization checks.
+    "PTH",  # Use pathlib instead of legacy os.path calls.
+    "TC",  # Keep type-only imports out of the runtime namespace.
+    "N",  # Enforce standard naming conventions.
+    "A",  # Prevent names from shadowing builtins.
+    "SLF",  # Reject access to another object's private members.
+    "T20",  # Reject print and pprint in favor of logging.
+    "INP",  # Require explicit packages instead of implicit namespaces.
+    "TID",  # Reject parent-relative imports.
+    "ERA",  # Remove commented-out code.
+    "EM",  # Bind exception messages before raising them.
+    "ANN001",  # Require annotations for named function arguments.
+    "ANN002",  # Require annotations for *args.
+    "ANN003",  # Require annotations for **kwargs.
+    "ANN201",  # Require return annotations on public functions.
+    "ANN202",  # Require return annotations on private functions.
+    "ANN204",  # Require return annotations on special methods.
+    "ANN205",  # Require return annotations on static methods.
+    "ANN206",  # Require return annotations on class methods.
+    "LOG",  # Enforce safe logger and exception usage.
+    "G",  # Require lazy, valid log formatting.
+    "ARG",  # Expose unused parameters.
+    "PGH",  # Reject blanket `noqa` and `type: ignore` comments.
+    "RSE",  # Remove unnecessary syntax when raising exceptions.
+    "RET502",  # Reject implicit None returns in functions that return values.
+    "RET503",  # Require an explicit final return in value-returning functions.
+    "PLW",  # Catch suspicious control flow and API usage.
+    "C90",  # Limit cyclomatic complexity.
+    "PERF",  # Flag avoidable allocations and slow loop patterns.
+    "ASYNC",  # Catch blocking calls and async misuse.
+    "FAST",  # Validate route declarations and dependency annotations.
+    "PD",  # Enforce safer and more efficient dataframe idioms.
+]
+ignore = [
+    "ASYNC109",  # Allow deliberate timeout parameters in async APIs.
+    "S",  # Do not run flake8-bandit; its findings are noise outside audited code.
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may reach into private members and sit outside a package.
+"**/tests/**" = ["SLF001", "INP001"]
+"**/test_*.py" = ["SLF001", "INP001"]
+"**/conftest.py" = ["SLF001", "INP001"]
+
+[tool.ruff.lint.flake8-type-checking]
+runtime-evaluated-base-classes = [
+    "pydantic.BaseModel",
+]  # Keep model field types importable at runtime.
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false  # Do not preserve comma-forced import line breaks.
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.format]
+docstring-code-format = true
+skip-magic-trailing-comma = true  # Collapse comma-forced multiline constructs when they fit.
+
+[tool.ty.rules]
+blanket-ignore-comment = "error"
+missing-override-decorator = "error"
+missing-type-argument = "error"
+possibly-unresolved-reference = "warn"
+unsound-return-statement = "error"
+unsound-yield = "error"
+unsupported-dynamic-base = "warn"
+
+[tool.ty.analysis]
+respect-type-ignore-comments = false  # Require a specific `# ty: ignore[rule]` suppression.
+strict-generic-narrowing = true
+
+[tool.ty.terminal]
+error-on-warning = true
+
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib -m 'not integration'"
+testpaths = ["tests"]
+xfail_strict = true  # An xfail that starts passing is a failure, not a silent pass.
+filterwarnings = [
+    "error",  # pandas 3 chained assignment only warns; the lost write is otherwise invisible.
+    # Add narrow, dated `ignore::` entries with a reason for third-party
+    # deprecations you do not control. Never widen this back to "default".
+]
+markers = [
+    "integration: needs a real database, container, or network; excluded from the default run",
+]
+# asyncio_mode = "auto"  # Uncomment in repositories with async code (needs pytest-asyncio).
+
+[tool.coverage.run]
+branch = true  # Statement coverage hides the untaken half of every condition.
+source = ["src"]  # Set to the package directory; coverage of tests/ is noise.
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.165.10",
+    "pandas-stubs>=3.0.5.260730",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "pytest-randomly>=4.1.0",
+    "pytest-xdist>=3.8.0",
+    "ruff==0.16.5",
+    "ty==0.0.75",
+]
+# Deliberately no fail_under: coverage is a diagnostic here, not a CI gate.
