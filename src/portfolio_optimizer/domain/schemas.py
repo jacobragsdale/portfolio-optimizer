@@ -99,6 +99,8 @@ UNIVERSE = FrameSchema(
         ColumnSpec("restricted", "bool"),
         ColumnSpec("alpha", "Float64", required=False),
         ColumnSpec("tcost_bps", "decimal", required=False, ge=ZERO),
+        ColumnSpec("min_weight", "decimal", required=False, nullable=True, ge=ZERO, le=ONE),
+        ColumnSpec("max_weight", "decimal", required=False, nullable=True, ge=ZERO, le=ONE),
     ),
     key=("security_id",),
     allow_extra=True,  # rules may add signal columns; build exports every numeric extra by name

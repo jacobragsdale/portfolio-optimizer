@@ -160,24 +160,33 @@ class PortfolioData:
         """Identifier of this portfolio."""
         return PortfolioId(self.details.portfolio_id)
 
-    def with_frames(
-        self, *, rule: str, holdings: pd.DataFrame | None = None, universe: pd.DataFrame | None = None, targets: pd.DataFrame | None = None, covariance: pd.DataFrame | None = None
+    def with_changes(
+        self,
+        *,
+        rule: str,
+        holdings: pd.DataFrame | None = None,
+        universe: pd.DataFrame | None = None,
+        targets: pd.DataFrame | None = None,
+        covariance: pd.DataFrame | None = None,
+        style: StyleConstraints | None = None,
     ) -> "PortfolioData":
-        """Return a re-validated copy with the given frames replaced and ``rule`` recorded."""
+        """Return a re-validated copy with the given frames or style replaced and ``rule`` recorded."""
         return replace(
             self,
             holdings=self.holdings if holdings is None else holdings,
             universe=self.universe if universe is None else universe,
             targets=self.targets if targets is None else targets,
             covariance=self.covariance if covariance is None else covariance,
+            style=self.style if style is None else style,
             applied_rules=(*self.applied_rules, rule),
         )
 
 
 @dataclass(frozen=True, slots=True)
 class LoadRequest:
-    """What a loader is asked for: which portfolios, as of when, and where data lives."""
+    """What a loader is asked for: which dataset, for which portfolios, as of when, and where data lives."""
 
+    dataset: str
     portfolio_ids: tuple[PortfolioId, ...]
     as_of: datetime
     data_root: Path

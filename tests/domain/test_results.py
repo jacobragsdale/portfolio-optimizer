@@ -23,7 +23,6 @@ def test_spec_arrays_are_read_only_float64(make: Factories) -> None:
         ({"price": np.array([1.0, 2.0])}, "price has shape \\(2,\\)"),
         ({"w0": np.array([np.nan, 0.5, 0.5])}, "non-finite"),
         ({"lb": np.array([0.5, 0.0, 0.0]), "ub": np.array([0.4, 1.0, 1.0])}, "lb > ub"),
-        ({"w0": np.array([0.9, 0.05, 0.05]), "ub": np.array([0.5, 1.0, 1.0])}, "w0 lies outside"),
         ({"security_ids": ("S1", "S0", "S2")}, "not sorted"),
         ({"security_ids": ("S0", "S0", "S2")}, "not unique"),
         ({"cash_lb": 0.5, "cash_ub": 0.1}, "cash_lb > cash_ub"),

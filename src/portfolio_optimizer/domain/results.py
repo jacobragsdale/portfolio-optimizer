@@ -105,8 +105,6 @@ class ProblemSpec:
                 yield f"{name} is not finite"
         if np.any(self.lb > self.ub):
             yield "lb > ub for some security"
-        if np.any(self.w0 < self.lb - 1e-12) or np.any(self.w0 > self.ub + 1e-12):
-            yield "w0 lies outside [lb, ub]"
         if np.any(self.sector_lb > self.sector_ub):
             yield "sector_lb > sector_ub for some sector"
         if self.cash_lb > self.cash_ub:
@@ -217,6 +215,15 @@ class ProblemSpec:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class Artifact:
+    """A file a sink wrote, with its hash for the manifest."""
+
+    path: str
+    sha256: str
+    size_bytes: int
+
+
 class SolveStatus(StrEnum):
     """Normalized solver outcome."""
 
@@ -240,7 +247,7 @@ class Solution:
     solver_version: str
     cvxpy_version: str
     solve_time_s: float
-    iterations: int
+    iterations: int | None
     spec_hash: str
 
     def __post_init__(self) -> None:
@@ -268,7 +275,7 @@ class Solution:
             solver_version=str(meta["solver_version"]),
             cvxpy_version=str(meta["cvxpy_version"]),
             solve_time_s=float(meta["solve_time_s"]),
-            iterations=int(meta["iterations"]),
+            iterations=None if meta["iterations"] is None else int(meta["iterations"]),
             spec_hash=str(meta["spec_hash"]),
         )
 

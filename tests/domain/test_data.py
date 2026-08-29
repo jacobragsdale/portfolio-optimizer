@@ -53,14 +53,14 @@ def test_naive_as_of_is_rejected(make: Factories) -> None:
         make.portfolio_data(as_of=datetime(2026, 8, 28))  # noqa: DTZ001  # the naive datetime is the case under test
 
 
-def test_with_frames_revalidates_and_records_the_rule(make: Factories, frames: Frames) -> None:
+def test_with_changes_revalidates_and_records_the_rule(make: Factories, frames: Frames) -> None:
     data = make.portfolio_data()
-    updated = data.with_frames(rule="drop_b", holdings=data.holdings[data.holdings["security_id"] != "B"])
+    updated = data.with_changes(rule="drop_b", holdings=data.holdings[data.holdings["security_id"] != "B"])
     assert updated.applied_rules == ("drop_b",)
     assert list(updated.holdings["security_id"]) == ["A"]
     assert list(data.holdings["security_id"]) == ["A", "B"]
     with pytest.raises(PortfolioDataError):
-        data.with_frames(rule="bad", holdings=frames.holdings({"security_id": "Z"}))
+        data.with_changes(rule="bad", holdings=frames.holdings({"security_id": "Z"}))
 
 
 def test_details_from_frame_types_the_matching_row(frames: Frames) -> None:
