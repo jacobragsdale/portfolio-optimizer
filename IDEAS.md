@@ -392,105 +392,147 @@ Not needed, and worth refusing: a way for a scenario to reach into the engine. A
 stubs, or imports anything from `portfolio_optimizer` has stopped being an acceptance test. It runs the
 CLI over a directory and reads the artifacts, or it is a unit test in the wrong place.
 
-## Constraints written in the config, not only in Python
+## Constraints: one contract, three ways to author it
 
-A constraint today is a *function* — named in `constraints`, found in `terms.py` or an importable module,
-signature-checked at resolve time. Its *numbers* live somewhere else entirely: the `constraints` dataset,
-per portfolio, typed by `StyleConstraints`. Adding a limit that is structurally identical to one that
-exists — country bounds where there are sector bounds, an issuer cap where there is a single-name cap —
-means editing `terms.py`, writing its twin in `check.py`, extending `StyleConstraints`, and shipping a
-release. The shape is code, the numbers are data, and the two are joined only by convention.
+A constraint today is a Python *function* — named in `constraints`, found in `terms.py` or an importable
+module, signature-checked at resolve — returning cvxpy atoms, and its verification is a *second*
+function, hand-written in `check.py`. Its numbers live somewhere else again: the `constraints` dataset,
+per portfolio, typed by a fixed `StyleConstraints` model. Adding a limit that is structurally identical to
+one that exists — country bounds where there are sector bounds, an issuer cap where there is a single-name
+cap — means editing `terms.py`, writing its twin, extending `StyleConstraints`, and shipping a release.
+The shape is code, the numbers are data, and the two are joined only by convention.
 
-Two asks, and they are not the same ask.
+Three groups need to author constraints, and (2026-08-29) none of them is well served by that: portfolio
+managers, who are not in the code and will edit the template through a GUI; quants, who want a Python
+function for what no grammar says; and other optimizer types, which want a *constraints builder* — one
+function that turns loaded tables into the whole constraint set. The design that serves all three is not
+three features. It is one contract with three authoring surfaces.
 
-### Builder functions: one function, many instances
+### The contract is a data structure, not a function signature
 
-A parametrized constraint instantiated more than once in a run — `group_bounds(column="country", ...)`
-alongside `group_bounds(column="rating", ...)`. Most of this works already; three gaps:
+A **row block**: a `label`; the decision vector it constrains — `w`, `buy`, `sell`, or `trade`
+(`buy + sell`); a sparse matrix, or none for elementwise; a lower and/or upper bound as numpy vectors; a
+start policy, `accept` or `infeasible`; and, when a bound came from the chain, which chain quantity.
+Every shipped constraint is one or two of these: `long_only` is elementwise on `w` with a lower bound,
+`cash_bounds` a ones-row on `w`, `sector_bounds` the group matrix, `turnover_cap` a ones-row on `trade`,
+the ADV cap two elementwise blocks of which one, on `buy`, has a chain right-hand side. All affine, so
+convex by construction.
 
-- **Instances need labels.** `constraints` is a tuple of `StepSpec` and the model permits the same name
-  twice, but the manifest and `ConstraintReport` key on `qualname`, so two instances of one builder
-  collide in the report. An optional `label` on `StepSpec`, defaulting to the bare name and checked
-  unique at resolve, is the whole fix; `params_sha256` already tells the instances apart for provenance.
-- **Params need to carry tables.** A builder wants a grouping column and a mapping of group → bounds.
-  `Params` is a pydantic model, so `dict[str, tuple[Decimal, Decimal]]` validates for free. The real work
-  is in the spec: `sector_matrix` / `sector_lb` / `sector_ub` generalize to `groups: Mapping[str,
-  GroupBlock]` keyed by the universe column they were built from, and `sector_bounds` becomes
-  `group_bounds(column="sector")` — the shipped constraint is one instantiation of the general one. Build
-  it once, sparse, for every grouping, the way the sector matrix already is.
-- **The numbers have two homes.** A builder's params are per-run; `sector_bounds` gets its numbers per
-  portfolio from the style. So a param must be able to say *where* rather than *what*: a literal table,
-  or `{"from_style": "sector_bounds"}`, with the style overriding the config default per portfolio. This
-  is the one genuine fork in the design, and it wants deciding before anything is written — a run-wide
-  default with per-portfolio override is the guess, because that is how desks actually describe limits.
+Then the engine has **one** cvxpy interpreter — `A @ v` between its bounds — and **one** numpy verifier —
+`A @ v − b` — and every way of authoring a constraint compiles to rows:
 
-### Declarative constraints: the algebra in the config
+| Surface | Who | Rows come from |
+|---|---|---|
+| Declarative JSON in the template | PMs, through the GUI | a validated grammar, compiled with the spec, the style, and the chain |
+| A Python constraint function | quants | `(spec, chain?, params?) -> rows`, through a small typed API (`bound_on`, `group_sum`, ...) |
+| A constraints builder | other optimizer types | the same function contract, returning many labelled blocks from tables it reads out of params, the style, or spec columns |
+| cvxpy atoms | the rare non-affine case (a risk cone) | today's `x` signature, kept as the escape hatch; `unverified` unless twinned |
 
-The constraint itself written as data, no Python:
+The builder is not a step kind. It is a constraint function that returns fifty blocks instead of one; a
+table the spec does not carry is attached as columns by a *rule* first, so that "what the solver saw"
+stays entirely inside the spec.
+
+### Seven properties, which together are the "ironclad" part
+
+1. **The solver sees rows, and the rows are persisted.** They are numpy, so they go in the `.npz` beside
+   the spec and hash into the manifest. The problem the solver saw becomes a file.
+2. **Verification needs no code.** `verify` checks persisted rows against the persisted solution by
+   matrix arithmetic — no cvxpy, no custom package, no twin. Every row-based constraint is verified and
+   the twin table in `check.py` is deleted; only the atom escape hatch can be `unverified`. Two
+   interpreters over one datum is a stronger guarantee than two implementations by one author.
+3. **A row names its vector, and the side profile refuses what it does not have** — at resolve, from the
+   config alone for declarative rows, by the dry construction under *Sides* for Python ones.
+4. **Start policy is declared per block and applied by the engine, once.** For `a·w ≤ b` violated at
+   `w0`, `accept` relaxes the bound to `max(b, a·w0)` (`min` for a lower bound); the `ub = max(w0, cap)`
+   rule under *Sides* is the elementwise case. No constraint implements it itself.
+5. **Chain quantities are a closed set** — `adv_remaining` today — that a row may *name* in its bound;
+   the graph derivation reads the declaration. Never an expression: the verifier needs a numpy twin of
+   every chain quantity, and a closed set is the only way to have one for each.
+6. **Labels are unique per run**, checked at resolve, and everything downstream keys on them: the
+   report, the manifest, the acceptance harness's `bound_by: country_caps`. `params_sha256` tells two
+   instances of one builder apart for provenance; the label tells them apart for people.
+7. **Numbers come from exactly three places** — a config literal, the per-portfolio style, a spec column
+   or chain quantity — and the row records which.
+
+Property 7 is the genuine fork, and it wants deciding before anything is written. Today
+`StyleConstraints` is a fixed model. Under this design **the run config is the schema of the style**: a
+declarative constraint saying `"at_most": {"from_style": "country_bounds"}` is what makes
+`country_bounds` a required, typed key in every portfolio's style, validated at assembly before any
+build. A run-wide default with a per-portfolio override is the guess, because that is how desks
+describe limits — and it is the piece that makes the GUI honest: a PM adds a limit without a release,
+and a missing number is a config error, never a silent zero.
+
+### The declarative grammar
 
 ```json
 "constraints": [
-  "trade_balance",
   {"label": "country_caps", "of": {"sum": "w", "by": "country"}, "at_most": {"from_style": "country_bounds"}},
   {"label": "no_new_tobacco", "of": "buy", "where": {"flag": "is_tobacco"}, "at_most": "0"},
-  {"label": "issuer_cap", "of": {"sum": "w", "by": "issuer"}, "at_most": "0.05"},
-  {"label": "adv", "of": "buy", "at_most": {"chain": "adv_remaining"}}
+  {"label": "issuer_cap", "of": {"sum": "w", "by": "issuer"}, "at_most": "0.05", "at_start": "accept"},
+  {"label": "adv", "of": "buy", "at_most": {"chain": "adv_remaining"}},
+  "long_only",
+  {"name": "mypkg.limits:risk_budget", "params": {"sigma": "0.04"}}
 ]
 ```
 
-**The grammar stops at affine.** Every expression is affine in `(w, buy, sell)` with constant data, over
-a closed set of aggregations — elementwise, sum, sum-by-group, a boolean-flag subset — compared against a
-constant, a style value, a spec column, or a named chain quantity. Every shipped constraint fits; nothing
-in the objective does, which is why this is a constraint grammar and not a term grammar.
+**The grammar stops at affine.** An expression is one decision vector, optionally summed, summed by a
+categorical column, or restricted to a boolean flag, compared against a literal, a style value, a spec
+column, or a named chain quantity. It compiles to rows; it never lives beside a Python spelling of the
+same limit, so the two cannot drift. `constraints` becomes a heterogeneous list — bare name, step
+object, declarative object — so the published JSON Schema grows a discriminated union, which is also
+what a GUI renders forms from. A declarative row naming a column the universe does not carry cannot be
+caught at resolve, which runs before data loads; the check moves to a gate just after assembly, with the
+same collected-failures shape, so the run still dies before it does any work.
 
-Holding that line buys three things at once:
-
-- **The verifier twin is generated, not written.** This is the strongest argument for the declarative
-  path and it inverts the usual expectation. A custom Python constraint is reported as `unverified`
-  today — the auditor is told to trust it. A declarative one never can be: one interpreter walks the tree
-  emitting cvxpy atoms, another walks it emitting numpy residuals, and `check.py` gets a single entry for
-  the whole grammar. Constraints authored in config end up *more* verifiable than constraints authored in
-  Python.
-- **DCP never comes up.** Affine ≤ constant is convex by construction, so there is no convexity check to
-  write, no confusing failure to explain, and no temptation to grow the grammar until there is.
-- **Provenance is free.** `config_sha256` already covers it. No module to import on a worker, no
-  `source_sha256` to drift between the client image and the cluster's.
-
-Chain-awareness has to be declared, not inferred, because the buy-only dependency graph derives its edges
-from which steps read the chain. `{"chain": "adv_remaining"}` names one of a closed set of quantities the
-engine computes in numpy and shares with the verifier — `adv_remaining` is already exactly that function
-today. A closed set, never an expression: the verifier needs a numpy twin of every chain quantity, and
-a closed set is the only way to have one for each.
-
-### One implementation, two spellings
-
-The failure to design against is two ways to say the same limit that drift apart — a JSON `group_bounds`
-and a Python `group_bounds` that disagree at the third decimal after someone fixes one of them. So the
-declarative form should **compile to the builders**, not live beside them: JSON → validated model → a
-call to `group_bounds` or `bound_on`, with the same params model, the same twin, the same report label.
-The Python builder stays the extension point for what the grammar cannot say; the grammar is what
-business and QA read. And it is the same vocabulary the acceptance scenarios above assert in — one says
-what the optimizer must enforce, the other says what must hold afterward, and a QA analyst should not
-have to learn two syntaxes to write both.
-
-Two things this changes elsewhere. `constraints` becomes a heterogeneous list — bare name, step object,
-declarative object — so the published JSON Schema grows a discriminated union and the docs have to say
-plainly when to reach for which. And a declarative constraint naming a column the universe does not carry
-cannot be caught by `resolve_config`, which runs before any data loads; the check moves to a new gate
-just after assembly and before the first build, with the same collected-failures error shape, so the run
-still dies before it does any real work.
+The spec generalizes `sector_matrix` / `sector_lb` / `sector_ub` to `groups`: one sparse membership
+block per categorical universe column (a megabyte each at 100k names, however many groups), built the
+way the sector matrix already is, and `sector_bounds` becomes `group_bounds(column="sector")` — the
+shipped constraint as one instance of the general one.
 
 ### Where the line has to hold
 
 Someone will ask for a conditional, then for arithmetic between columns, then for a soft version with a
 penalty in the objective. Each is reasonable alone and together they are a worse cvxpy expressed in JSON,
-with a hand-written twin and a DCP checker of our own. The rule to write down now: **anything that is not
-affine in `(w, buy, sell)` against constant data is a Python builder, no exceptions.** A soft limit is a
-term, and terms stay in Python.
+with a DCP checker of our own. The rule: **anything that is not affine in one decision vector against
+constant data is a Python function, no exceptions** — rows if it can be, atoms if it must. A soft limit
+is a term, and terms stay in Python. Integer constraints — minimum trade notional, round lots, a cap on
+the number of holdings — are outside both paths and should be said so out loud: they are not convex,
+they are not what `orders.py` rounding already approximates, and a grammar that admitted them would
+promise something the solver will not deliver.
 
-Integer constraints are outside both paths and should be said so out loud: minimum trade notional, round
-lots, and a cap on the number of holdings are not convex, they are not what `orders.py` rounding already
-approximates, and putting them in the grammar would promise something the solver will not deliver.
+### Order of work, and what it composes with
+
+1. The row block, the one interpreter, the one verifier; the shipped constraints rewritten to return
+   rows and their twins deleted; rows persisted in the `.npz`. Self-contained, and most of the value.
+2. Labels on steps, unique at resolve.
+3. `groups` on the spec and `group_bounds`, with `sector_bounds` as its instance.
+4. The declarative grammar compiling to rows, the schema union, the after-assembly gate.
+5. The style schema derived from the config.
+6. The GUI, which by then is a form renderer over the schema plus a call to `validate-config`.
+
+It composes with the pure-function solve above — rows are data, so a pro-rata fill can *read* the
+constraints it must respect — and with the acceptance harness, whose expectation vocabulary is the
+labels and the residuals the rows already carry.
+
+## A GUI edits the template
+
+Raised 2026-08-29: portfolio managers will edit the run template through a GUI rather than a text editor,
+and PMs are the people who change constraints. What that asks of the engine, so the GUI is a client of it
+and not a second implementation:
+
+- **The JSON Schema is the GUI's contract.** Forms are rendered from it — which is why every property
+  must be documented (a test enforces that already), why the declarative constraint grammar must be a
+  discriminated union rather than a free object, and why step names and parameter models are the stable
+  surface a release must not break casually.
+- **Validation stays in the engine.** The GUI calls `validate-config` on save; it does not re-implement
+  rules. `validate-config` wants a `--json` mode with structured failures (path, message) so a GUI can
+  put each one beside the field it concerns, and an exit-code contract it already has.
+- **Two things get edited, not one.** The template — which constraints apply and their run-wide
+  defaults — and the per-portfolio style — the numbers. The style form is generated from the template's
+  declarations (property 7 above), so adding a constraint in the template is what makes its number
+  appear in every portfolio's form.
+- **The GUI never touches Python.** A constraint the grammar cannot say is a quant's job; the GUI shows
+  it by name and params and does not offer to edit its body.
 
 ## Order aggregation as a step: from per-portfolio orders to what goes to the street
 
