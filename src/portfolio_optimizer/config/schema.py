@@ -15,11 +15,11 @@ from typing import get_type_hints
 
 import pandas as pd
 
-from portfolio_optimizer import loaders, rules, sinks, terms
+from portfolio_optimizer import assembly, loaders, rules, sinks, terms
 from portfolio_optimizer.config.models import STEP_NAME_DESCRIPTION, STEP_NAME_PATTERN, RunConfig
 from portfolio_optimizer.config.resolve import StepKind
 from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm
-from portfolio_optimizer.domain.schemas import OPTIONAL_DATASETS, REQUIRED_DATASETS
+from portfolio_optimizer.domain.schemas import REQUIRED_DATASETS, REQUIRED_FRAMES
 from portfolio_optimizer.domain.types import Params
 
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
@@ -42,6 +42,7 @@ _STEP_DEFINITIONS: Mapping[StepKind, tuple[str, str, ModuleType]] = {
         "The loader for the `constraints` dataset: `(request: LoadRequest[, params]) -> dict[portfolio_id, style constraints]`, plain or `async def`.",
         loaders,
     ),
+    "assembly": ("AssemblyStep", "An assembly step from `assembly.py`: `(frames: Frames[, params]) -> Frames`, run once over every loaded dataset.", assembly),
     "rule": ("RuleStep", "A business-logic rule from `rules.py`: `(data: PortfolioData[, params][, ctx: SolveContext]) -> PortfolioData`.", rules),
     "term": ("TermStep", "An objective term from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ObjectiveTerm`.", terms),
     "constraint": ("ConstraintStep", "A constraint from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ConstraintSet`.", terms),
@@ -55,11 +56,12 @@ def run_config_schema() -> JsonObject:
     defs = _object(base["$defs"])
     del defs["StepSpec"]
     for kind, (title, description, module) in _STEP_DEFINITIONS.items():
-        defs[title] = _step_definition(title, description, shipped_steps(module, kind))
+        defs[title] = _step_definition(title, description, shipped_steps(module, kind), defs)
     for name, description in _ENUM_DESCRIPTIONS.items():
         defs[name] = {**_object(defs[name]), "description": description}
     properties = _object(base["properties"])
     properties["portfolios"] = _portfolios_schema(properties["portfolios"])
+    properties["assembly"] = _with_items(properties["assembly"], "AssemblyStep")
     properties["rules"] = _with_items(properties["rules"], "RuleStep")
     properties["constraints"] = _with_items(properties["constraints"], "ConstraintStep")
     properties["sink"] = _with_ref(properties["sink"], "SinkStep")
@@ -82,6 +84,8 @@ def run_config_schema() -> JsonObject:
         "title": "Portfolio optimizer run config",
         **{key: value for key, value in base.items() if key not in ("$defs", "title", "properties")},
         "properties": properties,
+        "if": {"properties": {"assembly": {"minItems": 1}}, "required": ["assembly"]},
+        "else": {"properties": {"datasets": {"required": list(REQUIRED_DATASETS)}}, "$comment": "Without assembly steps, nothing can produce the engine-known frames, so every one must be loaded."},
         "$defs": dict(sorted(defs.items())),
     }
 
@@ -108,6 +112,8 @@ def shipped_steps(module: ModuleType, kind: StepKind) -> dict[str, type[Params] 
 def _kind_of(module: ModuleType, returns: object) -> StepKind | None:
     if module is loaders:
         return "loader" if returns is pd.DataFrame else "constraints_loader"
+    if module is assembly:
+        return "assembly"
     if module is rules:
         return "rule"
     if module is sinks:
@@ -119,7 +125,7 @@ def _kind_of(module: ModuleType, returns: object) -> StepKind | None:
     return None
 
 
-def _step_definition(title: str, description: str, shipped: Mapping[str, type[Params] | None]) -> JsonObject:
+def _step_definition(title: str, description: str, shipped: Mapping[str, type[Params] | None], defs: JsonObject) -> JsonObject:
     needs_params = sorted(name for name, model in shipped.items() if model is not None and any(field.is_required() for field in model.model_fields.values()))
     string_form: JsonObject = {"type": "string", "pattern": STEP_NAME_PATTERN, "description": f"A step without parameters. {STEP_NAME_DESCRIPTION}"}
     if needs_params:
@@ -128,7 +134,7 @@ def _step_definition(title: str, description: str, shipped: Mapping[str, type[Pa
     conditions: list[JsonObject] = []
     for name, model in shipped.items():
         params_schema: JsonObject = (
-            _params_schema(model) if model is not None else {"type": "object", "additionalProperties": False, "maxProperties": 0, "description": f"`{name}` takes no parameters."}
+            _params_schema(model, defs) if model is not None else {"type": "object", "additionalProperties": False, "maxProperties": 0, "description": f"`{name}` takes no parameters."}
         )
         then: JsonObject = {"properties": {"params": params_schema}}
         if name in needs_params:
@@ -148,23 +154,28 @@ def _step_definition(title: str, description: str, shipped: Mapping[str, type[Pa
     return {"title": title, "description": description, "$comment": f"Shipped steps: {sorted(shipped)}", "anyOf": [string_form, object_form]}
 
 
-def _params_schema(model: type[Params]) -> JsonObject:
+def _params_schema(model: type[Params], defs: JsonObject) -> JsonObject:
+    """A params model's schema with its own definitions (enum aliases, nested models) hoisted into the top-level ``$defs``."""
     schema = _object(model.model_json_schema())
     schema.pop("title", None)
+    for name, definition in _object(schema.pop("$defs", {})).items():
+        if name in defs and defs[name] != definition:
+            msg = f"params model {model.__name__} defines {name!r} differently from an existing definition"
+            raise ValueError(msg)
+        defs[name] = definition
     return schema
 
 
 def _datasets_schema(datasets: object) -> JsonObject:
     schema = _object(datasets)
-    required = list(REQUIRED_DATASETS)
-    properties: JsonObject = {name: {"$ref": "#/$defs/DatasetConfig"} for name in (*required, *OPTIONAL_DATASETS) if name != "constraints"}
+    properties: JsonObject = {name: {"$ref": "#/$defs/DatasetConfig"} for name in REQUIRED_FRAMES}
     properties["constraints"] = {"$ref": "#/$defs/ConstraintsDatasetConfig"}
     return {
         **schema,
         "properties": dict(sorted(properties.items())),
-        "required": required,
+        "required": ["constraints"],
         "additionalProperties": {"$ref": "#/$defs/DatasetConfig"},
-        "$comment": f"Required: {required}; optional engine-known: {list(OPTIONAL_DATASETS)}; any other key is an extra dataset for assembly.joins.",
+        "$comment": f"Always required: constraints. Required unless an assembly step produces them: {list(REQUIRED_FRAMES)}. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
     }
 
 

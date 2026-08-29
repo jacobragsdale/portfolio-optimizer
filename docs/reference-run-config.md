@@ -32,9 +32,9 @@ steps (those declaring `ctx`/`chain`) are only allowed under the sequential mode
 |---|---|---|---|
 | `run` | object | yes | Run identity: `name` (non-empty), `as_of` (timezone-aware ISO-8601 timestamp), `tags` (string map, default `{}`). |
 | `portfolios` | step or input | yes | Loader returning the `portfolios` frame (`portfolio_id`, `solve_order`); a bare step, or `{"loader": step[, "rate_limit": ...]}` to bound its source. Solve order is ascending `solve_order`. |
-| `datasets` | object | yes | Named inputs, each `{"loader": step[, "rate_limit": name or bound]}`. Must include `holdings`, `universe`, `details`, `constraints`, `targets`; `covariance` is optional and enables the `risk` term; any other name is an extra dataset for `assembly.joins`. All dataset loaders run concurrently. |
+| `datasets` | object | yes | Named inputs, each `{"loader": step[, "rate_limit": name or bound]}`. `constraints` is always required; `holdings`, `universe`, `details`, and `targets` are required unless `assembly` is non-empty, in which case they may be produced by a step and are checked after assembly. Any other name is an extra dataset: visible to every assembly step, and carried into each portfolio's bundle as `data.extras` unless dropped. All dataset loaders run concurrently. |
 | `rate_limits` | object | no | Named pools that inputs on the same backend share; see below. Default `{}`. |
-| `assembly` | object | no | `portfolio_key` (default `portfolio_id`), `security_key` (default `security_id`), `joins` (default `[]`). |
+| `assembly` | step list | no | Assembly steps, run in order over every loaded dataset before schema validation. Default `[]`. See below. |
 | `rules` | step list | no | Business-logic rules, run in order. Default `[]`. |
 | `objective` | object | yes | `sense` (only `minimize`), `terms` (step list, at least one). |
 | `constraints` | step list | no | Constraint functions. Default `[]`. |
@@ -52,14 +52,15 @@ A step is either a bare string or an object:
 {"name": "cap_single_name", "params": {"max_weight": "0.05"}}
 ```
 
-`name` is a bare identifier resolved in the template module for its kind (`loaders.py`, `rules.py`,
-`terms.py`, `sinks.py`), or a qualified `package.module:function`. `params` (default `{}`) is validated
+`name` is a bare identifier resolved in the template module for its kind (`loaders.py`, `assembly.py`,
+`rules.py`, `terms.py`, `sinks.py`), or a qualified `package.module:function`. `params` (default `{}`) is validated
 against the function's `params` annotation; a function without a `params` argument rejects any params.
 
 | Kind | Signature |
 |---|---|
 | portfolios, dataset loader | `(request: LoadRequest[, params]) -> pd.DataFrame`, plain or `async def` |
 | constraints loader | `(request: LoadRequest[, params]) -> dict[str, dict[str, object]]`, plain or `async def` |
+| assembly step | `(frames: Frames[, params]) -> Frames` |
 | rule | `(data: PortfolioData[, params][, ctx: SolveContext]) -> PortfolioData` |
 | objective term | `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ObjectiveTerm` |
 | constraint | `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ConstraintSet` |
@@ -91,18 +92,55 @@ A bound, inline or in a pool, has these keys:
 At least one of `requests_per_second` and `max_in_flight` is required. Naming an undeclared pool is a
 config error.
 
-## `assembly.joins[]`
+## `assembly[]`
+
+Each entry is a step of kind `assembly`: `(frames: Frames[, params]) -> Frames`, where `Frames` is an
+immutable mapping of dataset name to frame (see [the bundle reference](reference-portfolio-data.md)).
+Steps run in order, once per run, after every loader has returned. A step that raises `ValueError` or
+`KeyError` rejects the run as `assembly[i] <qualname>: <message>`. After the last step, `holdings`,
+`universe`, `details`, and `targets` must exist and satisfy their schemas; every other dataset still
+present is carried into each portfolio's bundle as an extra. The manifest records each step's
+`rows_in`, `rows_out`, and `columns_added`.
+
+### `join`
 
 | Key | Type | Required | Description |
 |---|---|---|---|
-| `into` | `holdings` \| `universe` \| `targets` | yes | Frame that receives the columns. |
-| `source` | string | yes | A declared dataset other than `into` and `constraints`. |
-| `on` | string list | yes | Join keys; their dtypes are aligned to `into` before merging. |
+| `into` | string | yes | Dataset that receives the columns; any dataset. |
+| `source` | string | yes | Dataset the columns come from; any dataset other than `into`. |
+| `on` | string list | yes | Join keys present in both; their dtypes are aligned to `into` before merging. |
 | `how` | `left` \| `inner` | no | Default `left`. |
 | `cardinality` | `one_to_one` \| `one_to_many` \| `many_to_one` | yes | Enforced; a violation aborts the run. |
 | `require_all_matched` | bool | no | Default `false`. When true, every row of `into` must find a match; unmatched keys are reported. |
+| `columns` | string list | no | Source columns to bring, besides the keys. Default: every non-key column. |
+| `rename` | object | no | Source column → name in `into`, applied to brought columns. Default `{}`. |
+| `overwrite` | bool | no | Default `false`: a brought column that `into` already has is rejected. `true` replaces it. |
 
-Columns already present in `into` are never overwritten; such a join is rejected.
+Unmatched rows of a Decimal (`object`) column are `None`.
+
+### `union`
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `into` | string | yes | Name of the stacked result. If it already exists it must be one of `sources`. |
+| `sources` | string list | yes | Datasets stacked in order. Shared columns must agree on dtype; a column some lack is null there, with `bool`/`int64`/`float64` promoted to `boolean`/`Int64`/`Float64`. |
+| `source_column` | string | no | Column recording each row's source. Default: none. |
+| `keep_sources` | bool | no | Default `false`: sources other than `into` are dropped. |
+
+### `select`
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `dataset` | string | yes | Dataset to trim. |
+| `columns` | string list | no | Keep exactly these, in this order. Exclusive with `drop`. |
+| `drop` | string list | no | Columns to remove. Exclusive with `columns`. Default `[]`. |
+| `rename` | object | no | Old name → new, applied after `columns`/`drop`. Default `{}`. |
+
+### `drop`
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `datasets` | string list | yes | Datasets to discard; each must exist. |
 
 ## `execution`
 
@@ -129,9 +167,9 @@ Loaders: `csv` (`path`, `decimal_columns`, `utc_datetime_columns`, `dtypes`), `c
 (`directory`, `decimal_columns`, `utc_datetime_columns`, `dtypes`; reads `<directory>/<portfolio_id>.csv`
 per portfolio under the input's rate limit), `parquet` (`path`, `decimal_columns`), `json_constraints`
 (`path`). The column-typing params apply to extra datasets only; engine-known datasets are typed by
-their schema. Rules: `cap_single_name` (`max_weight`),
-`add_zero_alpha`, `restrict_low_liquidity` (`min_adv_shares`), `avoid_cross_portfolio_wash_sales`
-(`ctx`). Terms: `tracking_error`, `risk`, `alpha` (`column`), `tax_cost`, `transaction_cost` (`cost_bps`),
+their schema. Assembly steps: `join`, `union`, `select`, `drop` (parameters above). Rules:
+`cap_single_name` (`max_weight`), `add_zero_alpha`, `restrict_low_liquidity` (`min_adv_shares`),
+`avoid_cross_portfolio_wash_sales` (`ctx`). Terms: `tracking_error`, `alpha` (`column`), `tax_cost`, `transaction_cost` (`cost_bps`),
 each with `weight` (default `"1"`). Constraints: `trade_balance`, `long_only`, `max_weight`,
 `cash_bounds`, `sector_bounds` (`tolerance`), `turnover_cap`, `cumulative_adv_participation` (`chain`).
 Sinks: `orders_to_parquet`, `orders_to_csv` (`subdir`, default `orders`).

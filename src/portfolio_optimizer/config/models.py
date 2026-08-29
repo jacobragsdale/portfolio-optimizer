@@ -20,14 +20,9 @@ from portfolio_optimizer.ratelimit import RateLimit
 STEP_NAME_PATTERN = r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$"
 _STEP_NAME = re.compile(STEP_NAME_PATTERN)
 
-JOINABLE_DATASETS: tuple[str, ...] = ("holdings", "universe", "targets")
-"""Datasets an assembly join may enrich; each is validated against its schema afterwards."""
-
 type ExecutionMode = Literal["sequential", "parallel_build_sequential_solve", "parallel"]
 type ExecutorKind = Literal["process", "thread"]
 type OnError = Literal["fail_fast", "continue"]
-type JoinHow = Literal["left", "inner"]
-type JoinCardinality = Literal["one_to_one", "one_to_many", "many_to_one"]
 
 STEP_NAME_DESCRIPTION = (
     "A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process."
@@ -113,27 +108,6 @@ class DatasetConfig(StrictModel):
     )
 
 
-class JoinSpec(StrictModel):
-    """Enrich an engine-known frame with columns from another dataset."""
-
-    into: Literal["holdings", "universe", "targets"] = Field(description="The engine-known frame that receives the columns; it is validated against its schema after every join.")
-    source: str = Field(min_length=1, description="A declared dataset other than `into` and `constraints`; typically an extra dataset such as `prices`.")
-    on: tuple[str, ...] = Field(min_length=1, description="Join key columns present in both frames. Their dtypes are aligned to `into` before merging so a text key never silently becomes `object`.")
-    how: JoinHow = Field(default="left", description="`left` keeps every row of `into`; `inner` keeps only matched rows.")
-    cardinality: JoinCardinality = Field(
-        description="Expected key cardinality, enforced by pandas `merge(validate=...)`: a duplicate key on the wrong side aborts the run instead of multiplying rows."
-    )
-    require_all_matched: bool = Field(default=False, description="When true, every row of `into` must find a match in `source`; unmatched keys are reported and the run is rejected.")
-
-
-class AssemblyConfig(StrictModel):
-    """Key column names and the joins that combine datasets."""
-
-    portfolio_key: str = Field(default="portfolio_id", description="Column identifying a portfolio in per-portfolio frames.")
-    security_key: str = Field(default="security_id", description="Column identifying a security.")
-    joins: tuple[JoinSpec, ...] = Field(default=(), description="Joins applied in order after loading and before schema validation.")
-
-
 class ObjectiveConfig(StrictModel):
     """The objective as a list of named terms; the engine minimizes their sum."""
 
@@ -195,13 +169,16 @@ class RunConfig(StrictModel):
         description='The portfolio list (`portfolio_id`, `solve_order`): a bare loader step, or `{"loader": step, "rate_limit": ...}` to bound its source. Portfolios are processed in ascending `solve_order`.'
     )
     datasets: dict[str, DatasetConfig] = Field(
-        description="Named datasets. `holdings`, `universe`, `details`, `constraints`, and `targets` are required; `covariance` is optional and enables the `risk` term; any other name is an extra dataset for `assembly.joins`. Every dataset loader runs concurrently once the portfolio list is known."
+        description="Named datasets. `constraints` is always required; `holdings`, `universe`, `details`, and `targets` must be declared here unless an assembly step produces them. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known."
     )
     rate_limits: dict[str, RateLimitConfig] = Field(
         default_factory=dict,
         description='Named rate-limit pools for loaders, e.g. `{"vendor_api": {"requests_per_second": 20, "max_in_flight": 8}}`. A dataset opts in with `rate_limit`; datasets naming the same pool share its budget.',
     )
-    assembly: AssemblyConfig = Field(default_factory=AssemblyConfig, description="How datasets are combined.")
+    assembly: tuple[StepSpec, ...] = Field(
+        default=(),
+        description="Assembly steps from `assembly.py`, applied in order to the loaded datasets before the engine-known frames are validated: `join`, `union`, `select`, `drop`, or any custom `(frames: Frames[, params]) -> Frames` function. This is where analytics columns are attached to `holdings` and `universe`.",
+    )
     rules: tuple[StepSpec, ...] = Field(default=(), description="Business-logic rule steps from `rules.py`, applied in order to each portfolio's bundle.")
     objective: ObjectiveConfig = Field(description="What the optimizer minimizes.")
     constraints: tuple[StepSpec, ...] = Field(default=(), description="Constraint steps from `terms.py`. Keep `trade_balance`; it defines the buy/sell split the other steps rely on.")
@@ -218,18 +195,13 @@ class RunConfig(StrictModel):
         return value
 
     @model_validator(mode="after")
-    def _datasets_and_joins_are_consistent(self) -> Self:
-        missing = [name for name in REQUIRED_DATASETS if name not in self.datasets]
+    def _datasets_are_consistent(self) -> Self:
+        required = REQUIRED_DATASETS if not self.assembly else ("constraints",)
+        missing = [name for name in required if name not in self.datasets]
         if missing:
-            msg = f"datasets must declare {list(REQUIRED_DATASETS)}; missing {missing}"
+            hint = "" if self.assembly else "; a run without assembly steps has nothing else to produce them"
+            msg = f"datasets must declare {list(required)}; missing {missing}{hint}"
             raise ValueError(msg)
-        for index, join in enumerate(self.assembly.joins):
-            if join.source not in self.datasets:
-                msg = f"assembly.joins[{index}]: source dataset {join.source!r} is not declared"
-                raise ValueError(msg)
-            if join.source in (join.into, "constraints"):
-                msg = f"assembly.joins[{index}]: cannot join {join.source!r} into {join.into!r}"
-                raise ValueError(msg)
         inputs = [("portfolios", self.portfolios), *((f"datasets.{name}", dataset) for name, dataset in self.datasets.items())]
         for where, dataset in inputs:
             if isinstance(dataset.rate_limit, str) and dataset.rate_limit not in self.rate_limits:

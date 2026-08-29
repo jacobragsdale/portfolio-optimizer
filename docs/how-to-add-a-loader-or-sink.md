@@ -7,8 +7,10 @@ dependency.
 ## Prerequisites
 
 - You know the dataset's shape. Engine-known datasets (`portfolios`, `holdings`, `universe`, `details`,
-  `targets`, `covariance`) must satisfy the schemas in `src/portfolio_optimizer/domain/schemas.py` after
-  assembly; any other dataset only needs the columns your joins and rules use.
+  `targets`) must satisfy the schemas in `src/portfolio_optimizer/domain/schemas.py` after assembly
+  (`holdings` and `universe` may carry any further columns); any other dataset only needs the columns
+  your assembly steps and rules use, typed the way you want them to arrive — declare `dtypes` for its
+  key columns (`{"security_id": "string"}`) so a join never has to guess.
 - The `constraints` dataset is a dict per portfolio, not a frame.
 
 ## Add a loader
@@ -93,9 +95,10 @@ that paced it.
 }
 ```
 
-Datasets that are not engine-known are combined through `assembly.joins`; each join declares its
-cardinality (`one_to_one`, `one_to_many`, `many_to_one`) and can require every row to match. A join
-never silently overwrites a column the target frame already has.
+Datasets that are not engine-known are combined by the `assembly` steps — the shipped `join`
+declares its cardinality (`one_to_one`, `one_to_many`, `many_to_one`), can require every row to match,
+and never silently overwrites a column the target frame already has — or carried into each portfolio's
+bundle as `data.extras`. See [how to add security analytics](how-to-add-security-analytics.md).
 
 ### 3. Check and test
 

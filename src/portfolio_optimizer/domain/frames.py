@@ -27,7 +27,7 @@ class ColumnSpec:
 
     ``decimal`` columns are ``object`` dtype whose every non-null element is a finite
     :class:`decimal.Decimal`; they carry money, prices, quantities-as-fractions, and rates.
-    ``Float64`` is reserved for statistical estimates (alpha, covariance).
+    ``Float64`` is reserved for statistical estimates (alpha, scores, loadings).
     """
 
     name: str

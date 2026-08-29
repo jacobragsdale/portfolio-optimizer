@@ -8,7 +8,7 @@ machinery seen from the config file's side — block by block, what each one tel
 layout under `src/portfolio_optimizer/` will feel inevitable.
 
 The short version: **read the config → prove every named function exists and has the right shape →
-load data through loaders → join and validate → slice per portfolio → apply rules → build a
+load data through loaders → assemble and validate → slice per portfolio → apply rules → build a
 pure-numpy problem → solve with cvxpy → re-check the answer without cvxpy → round to whole shares →
 publish the orders once → write a manifest.** Money is `Decimal` everywhere except inside the solver,
 and there are exactly two conversion points. Every stage validates its own output, so a bad input
@@ -74,29 +74,44 @@ only ever becomes `Decimal(repr(value))`, the shortest round-tripping form. `csv
 fan-out pattern with files in place of a client. The `constraints` dataset is different: its loader
 returns a mapping of portfolio id to style-constraint object, not a frame.
 
-`assemble` applies the config's **joins** in order — the example joins a `prices` dataset into
-`universe`. Each join is defensive: key dtypes are aligned so a `str` key never silently joins to a
-`string` key as `object`; overlapping non-key columns are refused rather than suffixed `_x`/`_y`; the
-declared cardinality is enforced by pandas' `merge(validate=...)`; and `require_all_matched` uses the
-merge indicator to report unmatched keys by example. After the joins, **every engine-known frame is
-validated against its schema** — column set, dtype, nullability, bounds, unique key, and frame-level
-invariants such as "target weights sum to one" — and all failures across all frames are reported at
-once. Finally, `details` and `constraints` must have an entry for every portfolio.
+`assemble` runs the config's **assembly steps** in order. Each is a function `Frames → Frames` over
+every loaded dataset by name; the example's first step joins the `prices` dataset into `universe` and
+its second drops `prices`. The shipped `join` is defensive: key dtypes are aligned so a `str` key never
+silently joins to a `string` key as `object`; a brought column the target already has is refused unless
+`overwrite` is set; the declared cardinality is enforced by pandas' `merge(validate=...)`; and
+`require_all_matched` uses the merge indicator to report unmatched keys by example. A custom step gets
+the same treatment: a `ValueError` it raises rejects the run under the step's name, and its source hash,
+row counts, and the columns it added go into the manifest. After the last step, `holdings`, `universe`,
+`details`, and `targets` must exist, and **every engine-known frame is validated against its schema** —
+column set, dtype, nullability, bounds, unique key, and frame-level invariants such as "target weights
+sum to one" — with all failures across all frames reported at once. `holdings` and `universe` may carry
+any further columns; that is where security analytics live. Finally, `details` and `constraints` must
+have an entry for every portfolio. Whatever datasets remain that the engine does not know become the
+run's extras.
 
 Anything failing here raises `InputRejectedError` and the run exits with code 2. Nothing was solved.
 
 ## 3. Slice per portfolio: validation, second layer
 
 `slice_portfolio` builds a `PortfolioData` bundle: this portfolio's `details` row typed into a
-`PortfolioDetails` model, its holdings, the full universe, its benchmark's targets, the optional
-covariance, and its style constraints typed into `StyleConstraints` (round-tripped through JSON so money
-strings become `Decimal`).
+`PortfolioDetails` model, its holdings, the full universe, its benchmark's targets, its style
+constraints typed into `StyleConstraints` (round-tripped through JSON so money strings become
+`Decimal`), and its share of the extras — a dataset with a `portfolio_id` column reduced to this
+portfolio's rows, one without passed whole.
 
 `PortfolioData.__post_init__` (`domain/data.py`) holds the cross-frame invariants: `as_of` is UTC,
-holdings contain only this portfolio, every held security is in the universe, targets belong to this
-benchmark and are all in the universe, the covariance covers the universe, and every sector named in
-`sector_bounds` exists. A failure here is a per-portfolio failure at stage `slice`, not a run-level
-rejection; other portfolios proceed according to `on_error`.
+holdings contain only this portfolio, targets belong to this benchmark and every target name is held or
+buyable, every sector named in `sector_bounds` exists, every extra with a `portfolio_id` column belongs
+to this portfolio, and — because the two tables will be stacked into one optimizer frame — every column
+that `holdings` and `universe` share has the same dtype on both. A held name need not be in the
+universe; that is the shipped build's requirement, not the bundle's. A failure here is a per-portfolio
+failure at stage `slice`, not a run-level rejection; other portfolios proceed according to `on_error`.
+
+`PortfolioData.optimizer_frame()` is the bundle's view for an optimizer that wants one table: the
+holdings rows followed by the universe rows, tagged by a `source` column, over the union of both tables'
+columns with typed nulls where a side lacks a column. The shipped build does not use it — it aligns
+everything to the universe — but a custom build that takes "one optimizer frame plus the style
+constraints" gets exactly that from `data.optimizer_frame()` and `data.style`.
 
 ## 4. Rules: validation, third layer
 
@@ -112,20 +127,19 @@ sold — a chain-aware rule, available in `sequential` mode only.
 
 ## 5. Build: `Decimal` becomes float64, once
 
-`engine/build.py` sorts the universe by `security_id` and aligns everything to that order. In exact
-`Decimal` it computes current weights (`shares × price / nav`), tax per dollar sold (gain fraction times
+`engine/build.py` sorts the universe by `security_id` and aligns everything to that order, which is
+why it requires every held name to be in the universe (a `BuildError` otherwise). In exact `Decimal` it
+computes current weights (`shares × price / nav`), tax per dollar sold (gain fraction times
 the short- or long-term rate, long-term when held longer than 365 days; losses come out negative),
 transaction cost from `tcost_bps`, per-name bounds (restricted names frozen at their current weight,
 optional `min_weight`/`max_weight` columns tightening the style cap), the sector indicator matrix, and
 ADV capacity as a fraction of NAV. Only then does `to_float64` convert — refusing bools, non-Decimals,
 and anything non-finite.
 
-If there is a covariance, it is symmetrized, eigendecomposed under `threadpool_limits(1)` (multithreaded
-BLAS can change the last bits and with them the spec hash), clipped to the PSD cone, and factored so the
-risk term is a plain sum of squares. Too much clipping is a `BuildError`.
-
-Any numeric universe column the schema does not declare is exported into `spec.columns` by name, so a
-custom term can read `spec.column("my_signal")`.
+Any universe column the schema does not declare is exported by name — numeric ones into
+`spec.columns` for `spec.column("my_signal")`, boolean ones into `spec.flags` as real boolean masks for
+`spec.flag("excluded")` — so a custom term can read either. Holdings' extra columns are not exported:
+the build has no row for a name that is not in the universe.
 
 The result is a `ProblemSpec` (`domain/results.py`): pure numpy, read-only arrays, no cvxpy. Its own
 `__post_init__` checks shapes, sortedness, finiteness, `lb ≤ ub`, positive prices, and so on, and it
@@ -251,7 +265,7 @@ orders. "Did the data change, or did the solver?" is a one-command question. The
 ## The example, stage by stage
 
 `configs/example_run.json` declares two portfolios over three securities, a `prices` dataset joined into
-the universe, two rules, three terms (tracking error, tax cost, transaction cost), seven constraints,
+the universe by an assembly step and dropped by the next, two rules, three terms (tracking error, tax cost, transaction cost), seven constraints,
 the Clarabel solver, and `parallel_build_sequential_solve` with two workers.
 
 P1 holds 500,000 shares each of A and B against an equal-weight target. C trades 100,000 shares a day at
@@ -268,9 +282,11 @@ produces no orders. Run the config twice and `diff-manifests` reports `no differ
 3. **Resolver** — the function exists, its signature matches the contract, its params validate, and the
    execution mode is compatible with the steps.
 4. **Loaders** — dtypes declared up front; exact `Decimal` coercion.
-5. **Assembly** — join keys, cardinality, and coverage; then every frame schema; then details and
-   constraints for every portfolio.
-6. **`PortfolioData`** — cross-frame invariants, re-run after every rule.
+5. **Assembly** — each step's own claims (join keys, cardinality, coverage, dtype agreement on a
+   union); then the required frames exist and every frame schema holds; then details and constraints
+   for every portfolio.
+6. **`PortfolioData`** — cross-frame invariants including holdings/universe dtype agreement, re-run
+   after every rule.
 7. **`ProblemSpec`** — shapes, finiteness, bound ordering, read-only arrays.
 8. **Solver** — installed, DCP-compliant, status classified, infeasibility diagnosed.
 9. **Verifier** — every shipped constraint and the objective, independently of cvxpy.

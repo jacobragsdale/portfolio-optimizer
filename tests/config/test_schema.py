@@ -81,7 +81,8 @@ REJECTED: list[tuple[str, dict[str, object], str]] = [
     ("shipped term with a negative weight", {"objective": {"terms": [{"name": "tracking_error", "params": {"weight": -1}}]}}, "objective/terms/0"),
     ("threads with parallel mode", {"execution": {"mode": "parallel", "executor": "thread"}}, "execution"),
     ("zero workers", {"execution": {"mode": "sequential", "max_workers": 0}}, "execution/max_workers"),
-    ("join into a non-engine frame", {"assembly": {"joins": [{"into": "prices", "source": "universe", "on": ["security_id"], "cardinality": "one_to_one"}]}}, "assembly/joins/0/into"),
+    ("shipped assembly step missing a required param", {"assembly": [{"name": "join", "params": {"into": "universe", "source": "prices", "on": ["security_id"]}}]}, "assembly/0"),
+    ("engine frame neither loaded nor assembled", {"datasets": {name: {"loader": "csv"} for name in ("holdings", "universe", "details", "constraints")}, "assembly": []}, "datasets"),
 ]
 
 
@@ -113,6 +114,7 @@ def test_every_shipped_step_is_described(schema: dict[str, object]) -> None:
     assert "cap_single_name" in str(as_object(defs["RuleStep"])["$comment"])
     assert "tracking_error" in str(as_object(defs["TermStep"])["$comment"])
     assert "orders_to_parquet" in str(as_object(defs["SinkStep"])["$comment"])
+    assert "union" in str(as_object(defs["AssemblyStep"])["$comment"])
     assert "json_constraints" in str(as_object(defs["ConstraintsLoaderStep"])["$comment"])
 
 

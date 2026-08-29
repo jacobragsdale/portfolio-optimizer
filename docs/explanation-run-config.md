@@ -23,12 +23,12 @@ functions need. Every failure across the whole document is collected and reporte
 `portfolio-optimizer validate-config` runs exactly this pass and stops.
 
 The **second pass** is the run itself: each block is consumed at the stage that needs it. `run.as_of`
-goes to every loader and to the tax calculation; `assembly.joins` runs after loading; `rules` run per
+goes to every loader and to the tax calculation; `assembly` runs once after loading; `rules` run per
 portfolio; `solver` and `post_solve` are read once per solve; `sink` runs once at the end. So the
 config is not a script the engine executes top to bottom — it is a description of a pipeline, and the
 order of blocks in the file is for the reader, not the engine.
 
-One shape recurs in six of the thirteen blocks: a **step**. A step is either a bare string naming a
+One shape recurs in seven of the thirteen blocks: a **step**. A step is either a bare string naming a
 function, or an object with `name` and `params`:
 
 ```json
@@ -37,7 +37,8 @@ function, or an object with `name` and `params`:
 ```
 
 A bare name is looked up in the template module for that kind of step — `loaders.py` for loaders,
-`rules.py` for rules, `terms.py` for terms and constraints, `sinks.py` for sinks. A qualified name
+`assembly.py` for assembly steps, `rules.py` for rules, `terms.py` for terms and constraints, `sinks.py`
+for sinks. A qualified name
 such as `mypkg.rules:my_rule` is imported from anywhere the engine (and any worker process) can
 import. Because the resolver reads the function's `params` annotation, the JSON Schema knows the exact
 parameter shape of every shipped step and rejects a typo before the engine ever runs.
@@ -108,25 +109,28 @@ Each key is a dataset name and each value says how to load it. The names fall in
 the engine treats them differently.
 
 **Five names are required**, because the build cannot produce a problem without them: `holdings`
-(what each portfolio owns, with cost basis and acquisition date), `universe` (every tradable security
-with its sector, ADV, lot size, and restricted flag), `details` (per-portfolio NAV, cash, tax rates,
-and benchmark), `targets` (per-benchmark target weights), and `constraints` (per-portfolio style
-limits). Leaving one out is a config error, not a runtime one. The first four are frames and are
-validated against a fixed schema after loading — column set, dtypes, nullability, bounds, unique key,
-and invariants such as "target weights sum to one". `constraints` is the odd one out: its loader
-returns a mapping of portfolio id to a style-constraint object rather than a frame, which is why it
-has its own step kind and its own shipped loader, `json_constraints`.
+(what each portfolio owns, with cost basis and acquisition date), `universe` (every security the
+portfolio may buy, with its sector, ADV, lot size, and restricted flag), `details` (per-portfolio NAV,
+cash, tax rates, and benchmark), `targets` (per-benchmark target weights), and `constraints`
+(per-portfolio style limits). `constraints` must always be declared here. The four frames must be
+declared here too unless the config has assembly steps, in which case a step may produce them — two
+custodians' files stacked into one `holdings`, say — and their presence is checked after assembly
+instead. Each frame is validated against a fixed schema after assembly — column set, dtypes,
+nullability, bounds, unique key, and invariants such as "target weights sum to one" — with one
+deliberate opening: `holdings` and `universe` accept any columns beyond their schemas, because that is
+where security analytics go. `constraints` is the odd one out: its loader returns a mapping of
+portfolio id to a style-constraint object rather than a frame, which is why it has its own step kind
+and its own shipped loader, `json_constraints`.
 
-**`covariance` is optional** and does one thing: it enables the `risk` objective term. Declare it and
-the build eigendecomposes it into a PSD factor the term can use; omit it and naming `risk` in the
-objective fails at build time with a message saying so.
-
-**Any other name is an extra dataset.** The engine knows nothing about its columns; it exists to be
-joined into an engine-known frame by `assembly.joins`. The example's `prices` is one — the universe
+**Any other name is an extra dataset.** The engine knows nothing about its columns. It is visible to
+every assembly step by name, and whatever is still present after the last step is carried into each
+portfolio's bundle as `data.extras` — reduced to that portfolio's rows when it has a `portfolio_id`
+column, passed whole otherwise — where a rule can use it. The example's `prices` is one: the universe
 schema requires a `price` column, but the example's universe file does not carry it, so prices arrive
-as a separate file and are joined in before the schema is checked. Because the engine
-cannot type an extra frame from a schema, the loader has to be told: `decimal_columns` here is what
-makes `price` an exact `Decimal` rather than a float.
+as a separate file, are joined in by the first assembly step, and are dropped by the second so they are
+not carried further. Because the engine cannot type an extra frame from a schema, the loader has to be
+told: `dtypes` makes `security_id` a `string` key and `decimal_columns` makes `price` an exact
+`Decimal` rather than a float.
 
 Once the portfolio list is known, **every dataset loader starts at once**. Each is called exactly once
 with a `LoadRequest` carrying the dataset name, the ordered portfolio ids, `as_of`, the data root, the
@@ -179,36 +183,43 @@ to look at when a run is slower than expected.
 ## `assembly`
 
 ```json
-"assembly": {
-  "portfolio_key": "portfolio_id",
-  "security_key": "security_id",
-  "joins": [{"into": "universe", "source": "prices", "on": ["security_id"], "how": "inner",
-             "cardinality": "one_to_one", "require_all_matched": true}]
-}
+"assembly": [
+  {"name": "join", "params": {"into": "universe", "source": "prices", "on": ["security_id"],
+                              "cardinality": "one_to_one", "require_all_matched": true}},
+  {"name": "drop", "params": {"datasets": ["prices"]}}
+]
 ```
 
-`assembly` is how separately loaded datasets become the frames the build expects. The two key names
-tell the engine which columns identify a portfolio and a security; the defaults match the shipped
-schemas, and the example spells them out for the reader.
+`assembly` is how separately loaded datasets become the tables the build expects, and it is a list of
+steps like `rules` — the same convention, applied once per run to all the data rather than once per
+portfolio to one bundle. Each step is a function `(frames: Frames[, params]) -> Frames` that sees every
+loaded dataset by name and returns the new set; the shipped ones live in `assembly.py`, and a desk's
+own live in its package. The list runs after every loader has returned and before the engine-known
+frames are validated against their schemas, which is what lets a step *supply* a required column, as
+the example's join supplies `price`.
 
-`joins` is a list applied in order, after every loader has returned and before the engine-known frames
-are validated against their schemas. Each join enriches one of `holdings`, `universe`, or `targets`
-with columns from another declared dataset. The example is the typical case: the universe file has no
-prices but the universe schema requires them, so a `prices` dataset is joined in on `security_id`.
-Read the join spec as a set of claims
-about the data, each of which the engine checks:
+The four shipped steps are the shapes that recur: `join` brings columns from one dataset into another,
+`union` stacks datasets with the same meaning into one, `select` trims and renames, `drop` discards.
+Read the example's join as a set of claims about the data, each of which the engine checks:
 
 - `cardinality: one_to_one` claims each security appears once on both sides; pandas enforces it, so a
   duplicated price row aborts the run instead of silently doubling a universe row.
 - `require_all_matched: true` claims every universe security has a price; an unmatched key is reported
   by example and the run is rejected.
-- `how: inner` would otherwise drop unmatched universe rows; `left` would keep them with nulls, which
-  the universe schema would then reject if the column is required.
+- A brought column that the target already has is refused unless `overwrite` is set, so a stale
+  column is never silently replaced — or silently kept.
 
-Two things a join cannot do: overwrite a column that already exists in the target frame (the engine
-refuses rather than suffixing `_x`/`_y`), and join into `constraints` or from it, because it is a
-mapping, not a frame. The key columns' dtypes are aligned to the target before merging so a `str` key
-never silently joins to a `string` key as `object` and matches nothing.
+The key columns' dtypes are aligned to the target before merging so a `str` key never joins to a
+`string` key as `object` and matches nothing. The `drop` afterwards is a courtesy to memory: any dataset
+still present after the last step is carried into every portfolio's bundle, which is exactly right for
+a per-portfolio exclusion list a rule will read, and wasteful for a price file that has done its job.
+
+Most real assembly lists are longer than the example's and mostly about one thing: attaching
+per-security analytics to `holdings` and `universe`. Both tables accept any columns beyond their
+schemas, and the two are later stacked into a single optimizer frame, so a column attached to both must
+have the same dtype on both — the bundle refuses otherwise, naming the column.
+[How to add security analytics](how-to-add-security-analytics.md) walks through that work; the
+manifest records every step's source hash, parameters, row counts, and the columns it added.
 
 ## `rules`
 
@@ -260,10 +271,10 @@ is why the weights here are the only tuning knobs on the objective: the shape of
 code so that its numpy twin stays in step with it.
 
 The example's three terms make the solver trade off closeness to the benchmark against the taxes and
-trading costs of getting there. Two terms carry conditions worth knowing: `risk` needs the optional
-`covariance` dataset, and `tax_cost` refuses to run when losses could be harvested but nothing charges
-for trading (no `transaction_cost` term with a positive `cost_bps` and no `tcost_bps` column), because
-that combination lets the solver sell and rebuy a name for free.
+trading costs of getting there. One term carries a condition worth knowing: `tax_cost` refuses to run
+when losses could be harvested but nothing charges for trading (no `transaction_cost` term with a
+positive `cost_bps` and no `tcost_bps` column), because that combination lets the solver sell and
+rebuy a name for free.
 
 ## `constraints`
 

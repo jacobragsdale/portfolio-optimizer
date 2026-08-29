@@ -86,13 +86,6 @@ def _tracking_error(spec: ProblemSpec, sol: Solution, params: Mapping[str, objec
     return param(params, "weight", 1.0) * float(((sol.w - spec.w_target) ** 2).sum())
 
 
-def _risk(spec: ProblemSpec, sol: Solution, params: Mapping[str, object]) -> float:
-    if spec.sigma_factor is None:
-        msg = "risk term without a covariance factor"
-        raise ValueError(msg)
-    return param(params, "weight", 1.0) * float(((spec.sigma_factor @ (sol.w - spec.w_target)) ** 2).sum())
-
-
 def _alpha(spec: ProblemSpec, sol: Solution, params: Mapping[str, object]) -> float:
     column = params.get("column", "alpha")
     return -param(params, "weight", 1.0) * float((spec.column(str(column)) * sol.w).sum())
@@ -120,7 +113,6 @@ CONSTRAINT_TWINS: Mapping[str, ConstraintTwin] = {
 
 TERM_TWINS: Mapping[str, TermTwin] = {
     "portfolio_optimizer.terms:tracking_error": _tracking_error,
-    "portfolio_optimizer.terms:risk": _risk,
     "portfolio_optimizer.terms:alpha": _alpha,
     "portfolio_optimizer.terms:tax_cost": _tax_cost,
     "portfolio_optimizer.terms:transaction_cost": _transaction_cost,

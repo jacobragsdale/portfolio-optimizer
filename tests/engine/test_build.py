@@ -1,4 +1,4 @@
-"""Tier 1: building the spec — alignment, the single Decimal→float64 conversion, bounds, and the risk factor."""
+"""Tier 1: building the spec — alignment, the single Decimal→float64 conversion, and bounds."""
 
 from datetime import timedelta
 from decimal import Decimal
@@ -24,7 +24,6 @@ def test_spec_aligns_to_the_sorted_universe(make: Factories) -> None:
     np.testing.assert_allclose(spec.adv_capacity, [100.0, 50.0, 1.0])
     assert spec.sector_names == ("TECH",)
     np.testing.assert_array_equal(spec.sector_matrix, [[1.0, 1.0, 1.0]])
-    assert spec.sigma_factor is None
     assert output.order_inputs.price == (Decimal(100), Decimal(50), Decimal(10))
     assert output.order_inputs.shares_held == (5000, 10000, 0)
     assert output.order_inputs.nav == Decimal(1_000_000)
@@ -82,26 +81,36 @@ def test_extra_numeric_columns_are_exported_by_name(make: Factories, frames: Fra
     np.testing.assert_array_equal(spec.column("momentum"), [1.0, 2.0, 3.0])
 
 
+@pytest.mark.parametrize("dtype", ["bool", "boolean"])
+def test_boolean_columns_are_exported_as_real_boolean_flags(make: Factories, frames: Frames, dtype: str) -> None:
+    universe = frames.three_security_universe().assign(esg=pd.Series([True, False, True], dtype=dtype))
+    spec = build_problem_spec(make.portfolio_data(universe=universe)).spec
+    assert "esg" not in spec.columns
+    assert spec.flag("esg").dtype == np.bool_
+    np.testing.assert_array_equal(spec.flag("esg"), [True, False, True])
+
+
+def test_null_in_a_flag_column_is_rejected(make: Factories, frames: Frames) -> None:
+    universe = frames.three_security_universe().assign(esg=pd.Series([True, None, True], dtype="boolean"))
+    with pytest.raises(BuildError, match="flag column 'esg' has null values"):
+        build_problem_spec(make.portfolio_data(universe=universe))
+
+
 def test_null_in_an_exported_column_is_rejected(make: Factories, frames: Frames) -> None:
     universe = frames.three_security_universe().assign(momentum=pd.Series([1, None, 3], dtype="Int64"))
     with pytest.raises(BuildError, match="column 'momentum' has null values"):
         build_problem_spec(make.portfolio_data(universe=universe))
 
 
-def test_covariance_factor_reproduces_sigma(make: Factories, frames: Frames) -> None:
-    entries = {("A", "A"): 0.04, ("B", "B"): 0.09, ("C", "C"): 0.01, ("A", "B"): 0.01, ("B", "A"): 0.01, ("A", "C"): 0.0, ("C", "A"): 0.0, ("B", "C"): 0.0, ("C", "B"): 0.0}
-    covariance = frames.covariance(*[{"security_id_a": a, "security_id_b": b, "covariance": v} for (a, b), v in entries.items()])
-    spec = build_problem_spec(make.portfolio_data(covariance=covariance)).spec
-    assert spec.sigma_factor is not None
-    np.testing.assert_allclose(spec.sigma_factor.T @ spec.sigma_factor, [[0.04, 0.01, 0.0], [0.01, 0.09, 0.0], [0.0, 0.0, 0.01]], atol=1e-15)
-    assert spec.psd_shift == 0.0
+def test_a_held_name_outside_the_universe_cannot_be_built(make: Factories, frames: Frames) -> None:
+    with pytest.raises(BuildError, match="held securities missing from universe \\['Z'\\]"):
+        build_problem_spec(make.portfolio_data(holdings=frames.holdings({"security_id": "Z"})))
 
 
-def test_indefinite_covariance_is_rejected(make: Factories, frames: Frames) -> None:
-    entries = {("A", "A"): 1.0, ("B", "B"): 1.0, ("C", "C"): 1.0, ("A", "B"): 2.0, ("B", "A"): 2.0, ("A", "C"): 0.0, ("C", "A"): 0.0, ("B", "C"): 0.0, ("C", "B"): 0.0}
-    covariance = frames.covariance(*[{"security_id_a": a, "security_id_b": b, "covariance": v} for (a, b), v in entries.items()])
-    with pytest.raises(BuildError, match="not positive semidefinite"):
-        build_problem_spec(make.portfolio_data(covariance=covariance))
+def test_holdings_analytics_columns_do_not_reach_the_spec(make: Factories, frames: Frames) -> None:
+    holdings = frames.holdings({"security_id": "A"}).assign(lot_score=pd.Series([0.5], dtype="Float64"))
+    spec = build_problem_spec(make.portfolio_data(holdings=holdings)).spec
+    assert spec.columns == {}
 
 
 @pytest.mark.parametrize("bad", [[1.5], [True], [Decimal("NaN")], [Decimal("Infinity")], ["1"]])

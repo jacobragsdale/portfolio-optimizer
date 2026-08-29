@@ -68,25 +68,19 @@ def test_missing_required_dataset_is_rejected(example_dict: dict[str, object]) -
     datasets = section(example_dict, "datasets")
     del datasets["targets"]
     with pytest.raises(ValidationError, match="missing \\['targets'\\]"):
-        load_run_config(json.dumps(example_dict | {"datasets": datasets}))
+        load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": []}))
 
 
-def test_join_must_reference_a_declared_dataset(example_dict: dict[str, object]) -> None:
-    assembly = {"joins": [{"into": "universe", "source": "sectors", "on": ["security_id"], "cardinality": "one_to_one"}]}
-    with pytest.raises(ValidationError, match="source dataset 'sectors' is not declared"):
-        load_run_config(json.dumps(example_dict | {"assembly": assembly}))
-
-
-def test_join_cannot_target_itself_or_use_constraints(example_dict: dict[str, object]) -> None:
-    assembly = {"joins": [{"into": "universe", "source": "universe", "on": ["security_id"], "cardinality": "one_to_one"}]}
-    with pytest.raises(ValidationError, match="cannot join 'universe' into 'universe'"):
-        load_run_config(json.dumps(example_dict | {"assembly": assembly}))
-
-
-def test_join_into_must_be_an_engine_frame(example_dict: dict[str, object]) -> None:
-    assembly = {"joins": [{"into": "prices", "source": "universe", "on": ["security_id"], "cardinality": "one_to_one"}]}
-    with pytest.raises(ValidationError, match="into"):
-        load_run_config(json.dumps(example_dict | {"assembly": assembly}))
+def test_engine_frames_may_come_from_assembly_steps_but_constraints_must_be_loaded(example_dict: dict[str, object]) -> None:
+    datasets = section(example_dict, "datasets")
+    del datasets["holdings"]
+    with pytest.raises(ValidationError, match="missing \\['holdings'\\]; a run without assembly steps has nothing else to produce them"):
+        load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": []}))
+    config = load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": [{"name": "union", "params": {"into": "holdings", "sources": ["prices"]}}]}))
+    assert [step.name for step in config.assembly] == ["union"]
+    del datasets["constraints"]
+    with pytest.raises(ValidationError, match="missing \\['constraints'\\]"):
+        load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": ["my_pkg.assembly:everything"]}))
 
 
 def test_parallel_mode_cannot_use_threads(example_dict: dict[str, object]) -> None:
@@ -133,7 +127,7 @@ def test_defaults_fill_optional_sections() -> None:
     config = RunConfig.model_validate_json(json.dumps(minimal))
     assert config.solver.name == "CLARABEL"
     assert config.execution.executor == "process"
-    assert config.assembly.joins == ()
+    assert config.assembly == ()
     assert config.rules == ()
 
 

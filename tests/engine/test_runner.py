@@ -116,15 +116,23 @@ def test_continue_isolates_the_failure_and_publishes_the_rest(tmp_path: Path) ->
     assert report.manifest.portfolios[1].status == "solved"
 
 
-def test_a_portfolio_whose_bundle_is_inconsistent_fails_at_slice(tmp_path: Path) -> None:
+def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_path: Path) -> None:
     holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P2,C,100000,10", "P2,Z,100000,10")
     data_root = _data_with(tmp_path, **{"holdings.csv": holdings})
     report = execute(tmp_path, mode="sequential", on_error="continue", data_root=data_root, constraints=NO_CHAIN_CONSTRAINTS)
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioResult)
     assert isinstance(p2, PortfolioFailure)
-    assert p2.stage == "slice"
+    assert p2.stage == "build"
     assert "held securities missing from universe ['Z']" in p2.message
+
+
+def test_a_portfolio_whose_bundle_is_inconsistent_fails_at_slice(tmp_path: Path) -> None:
+    targets = (EXAMPLE_DATA / "targets.csv").read_text().replace("B1,C,", "B1,Z,")
+    data_root = _data_with(tmp_path, **{"targets.csv": targets})
+    report = execute(tmp_path, mode="sequential", on_error="continue", data_root=data_root, constraints=NO_CHAIN_CONSTRAINTS)
+    assert [outcome.stage for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)] == ["slice", "slice"]
+    assert "target securities in neither holdings nor universe ['Z']" in report.outcomes[0].message  # ty: ignore[unresolved-attribute]  # both outcomes are failures, asserted above
 
 
 def test_sink_failure_is_infrastructure_and_the_manifest_still_records_it(tmp_path: Path) -> None:

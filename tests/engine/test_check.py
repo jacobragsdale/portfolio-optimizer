@@ -111,7 +111,7 @@ def test_objective_gap_is_checked_and_custom_steps_are_reported_unverified(make:
 def test_every_shipped_term_and_constraint_has_a_twin() -> None:
     from portfolio_optimizer import terms  # imported here so this module's header stays cvxpy-free
 
-    shipped_terms = {f"portfolio_optimizer.terms:{name}" for name in ("tracking_error", "risk", "alpha", "tax_cost", "transaction_cost")}
+    shipped_terms = {f"portfolio_optimizer.terms:{name}" for name in ("tracking_error", "alpha", "tax_cost", "transaction_cost")}
     shipped_constraints = {f"portfolio_optimizer.terms:{name}" for name in ("trade_balance", "long_only", "max_weight", "cash_bounds", "sector_bounds", "turnover_cap", "cumulative_adv_participation")}
     assert shipped_terms == set(TERM_TWINS)
     assert shipped_constraints == set(CONSTRAINT_TWINS)

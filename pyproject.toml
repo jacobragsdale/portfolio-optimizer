@@ -12,7 +12,6 @@ dependencies = [
     "pyarrow>=25.0.1",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
-    "threadpoolctl>=3.6.0",
 ]
 
 [project.scripts]

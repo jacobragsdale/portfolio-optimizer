@@ -12,17 +12,13 @@ from decimal import Decimal
 
 import numpy as np
 import pandas as pd
-from threadpoolctl import threadpool_limits
 
 from portfolio_optimizer.domain.data import PortfolioData
-from portfolio_optimizer.domain.results import F64, OrderInputs, ProblemSpec
+from portfolio_optimizer.domain.results import F64, Flags, OrderInputs, ProblemSpec
 from portfolio_optimizer.domain.schemas import UNIVERSE
 
 LONG_TERM_HOLDING = timedelta(days=365)
 """Positions held strictly longer than this are taxed at the long-term rate."""
-
-PSD_SHIFT_TOLERANCE = 1e-8
-"""Reject a covariance whose most negative eigenvalue exceeds this fraction of its largest."""
 
 BPS = Decimal(10_000)
 
@@ -60,6 +56,10 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
     """Align every input to the sorted universe and express it as a fraction of NAV."""
     universe = data.universe.sort_values("security_id", kind="stable").reset_index(drop=True)
     ids = tuple(str(value) for value in universe["security_id"])
+    unbuyable = sorted({str(value) for value in data.holdings["security_id"]} - set(ids))
+    if unbuyable:
+        msg = f"held securities missing from universe {unbuyable}; this build aligns every input to the universe, so add held names to it (restricted if they must not be bought)"
+        raise BuildError(msg)
     n = len(ids)
     nav = data.details.nav
     price = [_decimal(value) for value in universe["price"]]
@@ -78,7 +78,7 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
     sector_lb = [data.style.sector_bounds[name][0] if name in data.style.sector_bounds else Decimal(0) for name in sector_names]
     sector_ub = [data.style.sector_bounds[name][1] if name in data.style.sector_bounds else Decimal(1) for name in sector_names]
     adv_capacity = [data.style.max_adv_participation * Decimal(int(adv)) * px / nav for adv, px in zip(universe["adv_shares"], price, strict=True)]
-    sigma_factor, psd_shift = _sigma_factor(data, ids)
+    columns, flags = _extra_columns(universe)
     spec = ProblemSpec(
         portfolio_id=data.details.portfolio_id,
         as_of=data.as_of,
@@ -102,9 +102,8 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
         cash_lb=float(data.style.cash_bounds[0]),
         cash_ub=float(data.style.cash_bounds[1]),
         min_trade_notional=float(data.style.min_trade_notional),
-        sigma_factor=sigma_factor,
-        psd_shift=psd_shift,
-        columns=_extra_columns(universe),
+        columns=columns,
+        flags=flags,
     )
     inputs = OrderInputs(security_ids=ids, price=tuple(price), shares_held=tuple(shares_held), lot_size=tuple(lot_size), nav=nav, min_trade_notional=data.style.min_trade_notional)
     return BuildOutput(spec=spec, order_inputs=inputs)
@@ -166,42 +165,35 @@ def _optional_decimal(value: object) -> Decimal | None:
     return _decimal(value)
 
 
-def _sigma_factor(data: PortfolioData, ids: tuple[str, ...]) -> tuple[F64 | None, float]:
-    """Factor the covariance as ``FᵀF = Σ`` after projecting to the PSD cone; record how much was clipped."""
-    if data.covariance is None:
-        return None, 0.0
-    position = {security: index for index, security in enumerate(ids)}
-    sigma = np.zeros((len(ids), len(ids)), dtype=np.float64)
-    for a, b, value in zip(data.covariance["security_id_a"], data.covariance["security_id_b"], data.covariance["covariance"], strict=True):
-        if str(a) in position and str(b) in position:
-            sigma[position[str(a)], position[str(b)]] = float(value)
-    sigma = (sigma + sigma.T) / 2.0
-    with threadpool_limits(limits=1):  # multithreaded BLAS can change the last bits, and with them the spec hash
-        eigenvalues, eigenvectors = np.linalg.eigh(sigma)
-    largest = float(eigenvalues.max(initial=0.0))
-    psd_shift = float(max(0.0, -eigenvalues.min(initial=0.0)))
-    if psd_shift > PSD_SHIFT_TOLERANCE * max(largest, np.finfo(np.float64).tiny):
-        msg = f"covariance is not positive semidefinite: most negative eigenvalue {-psd_shift:.3e} against largest {largest:.3e}"
-        raise BuildError(msg)
-    clipped = np.clip(eigenvalues, 0.0, None)
-    factor = (np.sqrt(clipped)[:, None] * eigenvectors.T).astype(np.float64)
-    return factor, psd_shift
+def _extra_columns(universe: pd.DataFrame) -> tuple[dict[str, F64], dict[str, Flags]]:
+    """Export every numeric universe column the schema does not declare as a float64 column, and every boolean one as a boolean flag.
 
-
-def _extra_columns(universe: pd.DataFrame) -> dict[str, F64]:
-    """Export every numeric column the schema does not declare, by name, for custom terms."""
+    Holdings' extra columns are not exported: this build is aligned to the universe, and a
+    per-position analytic has no value for names not held. A term that needs one reads it from the
+    universe after a rule copies it across, or consumes the optimizer frame in a custom build.
+    """
     declared = {column.name for column in UNIVERSE.columns}
-    exported: dict[str, F64] = {}
+    columns: dict[str, F64] = {}
+    flags: dict[str, Flags] = {}
     for name in universe.columns:
         column_name = str(name)
         if column_name in declared and column_name != "alpha":
             continue
         column = universe[column_name]
-        if column_name == "alpha" or pd.api.types.is_numeric_dtype(column.dtype) or column.dtype == "object":
+        if pd.api.types.is_bool_dtype(column.dtype):
+            flags[column_name] = _flag_values(column, column_name)
+        elif column_name == "alpha" or pd.api.types.is_numeric_dtype(column.dtype) or column.dtype == "object":
             values = _numeric_values(column, column_name)
             if values is not None:
-                exported[column_name] = values
-    return exported
+                columns[column_name] = values
+    return columns, flags
+
+
+def _flag_values(column: pd.Series, name: str) -> Flags:
+    if column.isna().any():
+        msg = f"flag column {name!r} has null values; fill them in a rule before the optimizer runs"
+        raise BuildError(msg)
+    return np.asarray(column.to_numpy(dtype="bool"), dtype=np.bool_)
 
 
 def _numeric_values(column: pd.Series, name: str) -> F64 | None:

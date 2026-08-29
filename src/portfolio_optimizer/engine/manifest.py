@@ -12,13 +12,13 @@ from typing import Literal
 
 from pydantic import AwareDatetime, Field
 
-from portfolio_optimizer.domain.results import Artifact, ConstraintReport, DriftReport, PortfolioFailure, PortfolioResult, RuleAuditRecord, StepRef
+from portfolio_optimizer.domain.results import Artifact, AssemblyAuditRecord, ConstraintReport, DriftReport, PortfolioFailure, PortfolioResult, RuleAuditRecord, StepRef
 from portfolio_optimizer.domain.types import StrictModel
 from portfolio_optimizer.engine.hashing import frame_sha256, json_sha256
 from portfolio_optimizer.engine.load import DatasetAudit
 
 MANIFEST_FILENAME = "manifest.json"
-STAGES: tuple[str, ...] = ("config", "datasets", "rules", "spec", "solve", "orders")
+STAGES: tuple[str, ...] = ("config", "datasets", "assembly", "rules", "spec", "solve", "orders")
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +75,17 @@ class DatasetRecord(StrictModel):
     columns: tuple[str, ...]
     content_sha256: str
     load_time_s: float
+
+
+class AssemblyRecord(StrictModel):
+    """What one assembly step did to the run's datasets."""
+
+    qualname: str
+    source_sha256: str
+    params_sha256: str
+    rows_in: dict[str, int]
+    rows_out: dict[str, int]
+    columns_added: dict[str, tuple[str, ...]]
 
 
 class RuleRecord(StrictModel):
@@ -176,6 +187,7 @@ class RunManifest(StrictModel):
     terms: tuple[StepRecord, ...]
     constraints: tuple[StepRecord, ...]
     datasets: tuple[DatasetRecord, ...]
+    assembly: tuple[AssemblyRecord, ...] = ()
     portfolios: tuple[PortfolioRecord, ...]
     artifacts: tuple[ArtifactRecord, ...]
     exit_code: int
@@ -239,6 +251,21 @@ def dataset_records(audits: Sequence[DatasetAudit]) -> tuple[DatasetRecord, ...]
             columns=a.columns,
             content_sha256=a.content_sha256,
             load_time_s=a.load_time_s,
+        )
+        for a in audits
+    )
+
+
+def assembly_records(audits: Sequence[AssemblyAuditRecord]) -> tuple[AssemblyRecord, ...]:
+    """Convert assembly audits into manifest records."""
+    return tuple(
+        AssemblyRecord(
+            qualname=a.qualname,
+            source_sha256=a.source_sha256,
+            params_sha256=a.params_sha256,
+            rows_in=dict(a.rows_in),
+            rows_out=dict(a.rows_out),
+            columns_added={name: tuple(columns) for name, columns in a.columns_added.items()},
         )
         for a in audits
     )
@@ -335,6 +362,8 @@ def diff_manifests(left: RunManifest, right: RunManifest) -> list[str]:
     left_datasets = {d.name: d.content_sha256 for d in left.datasets}
     right_datasets = {d.name: d.content_sha256 for d in right.datasets}
     lines.extend(f"datasets: {name} content differs" for name in sorted(set(left_datasets) | set(right_datasets)) if left_datasets.get(name) != right_datasets.get(name))
+    if _assembly_identity(left) != _assembly_identity(right):
+        lines.append("assembly: steps, their parameters, or their effect on the datasets differ")
     right_portfolios = {p.portfolio_id: p for p in right.portfolios}
     for portfolio in left.portfolios:
         other = right_portfolios.get(portfolio.portfolio_id)
@@ -346,6 +375,10 @@ def diff_manifests(left: RunManifest, right: RunManifest) -> list[str]:
             lines.append(f"{portfolio.portfolio_id}: first divergence at {stage}")
     lines.extend(f"{portfolio_id}: missing from the first manifest" for portfolio_id in sorted(set(right_portfolios) - {p.portfolio_id for p in left.portfolios}))
     return lines
+
+
+def _assembly_identity(manifest: RunManifest) -> list[tuple[str, str, str, dict[str, int], dict[str, tuple[str, ...]]]]:
+    return [(a.qualname, a.source_sha256, a.params_sha256, a.rows_out, a.columns_added) for a in manifest.assembly]
 
 
 def _first_divergence(left: PortfolioRecord, right: PortfolioRecord) -> str | None:

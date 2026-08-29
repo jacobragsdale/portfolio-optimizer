@@ -15,7 +15,7 @@ from pydantic import Field
 from portfolio_optimizer.config.models import RunConfig, StepSpec
 from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedStep, StepKind, resolve_config, resolve_step
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm
-from portfolio_optimizer.domain.data import IoContext, LoadRequest, PortfolioData
+from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec, SolveContext
 from portfolio_optimizer.domain.types import Params
 from tests.conftest import AS_OF
@@ -94,6 +94,10 @@ async def async_rule(data: PortfolioData) -> PortfolioData:  # async is the case
 
 def constraints_loader(request: LoadRequest) -> dict[str, dict[str, object]]:  # noqa: ARG001  # never invoked here
     return {}
+
+
+def assembly_step(frames: Frames) -> Frames:
+    return frames
 
 
 def sink(orders: pd.DataFrame, io: IoContext) -> tuple[Artifact, ...]:  # noqa: ARG001  # never invoked here
@@ -178,6 +182,7 @@ def test_every_contract_kind_accepts_its_canonical_signature(fake_steps: str) ->
         ("loader", "portfolios"),
         ("loader", "loader"),
         ("constraints_loader", "constraints_loader"),
+        ("assembly_step", "assembly"),
         ("term", "term"),
         ("chained_constraint", "constraint"),
         ("sink", "sink"),

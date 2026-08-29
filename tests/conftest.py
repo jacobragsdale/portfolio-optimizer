@@ -22,10 +22,11 @@ import pytest
 from portfolio_optimizer.config.models import RunConfig, load_run_config
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm
+from portfolio_optimizer.domain.data import Frames as DatasetFrames
 from portfolio_optimizer.domain.data import IoContext, LoadRequest, PortfolioData, PortfolioDetails, StyleConstraints
 from portfolio_optimizer.domain.frames import FrameSchema
 from portfolio_optimizer.domain.results import F64, Artifact, ProblemSpec
-from portfolio_optimizer.domain.schemas import COVARIANCE, DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
+from portfolio_optimizer.domain.schemas import DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
 from portfolio_optimizer.domain.types import Clock, IdFactory
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -65,7 +66,6 @@ _DEFAULTS: dict[str, Row] = {
     HOLDINGS.name: {"portfolio_id": "P1", "security_id": "A", "quantity": 5000, "avg_cost": Decimal(90), "acquired_on": ACQUIRED},
     UNIVERSE.name: {"security_id": "A", "price": Decimal(100), "sector": "TECH", "adv_shares": 1_000_000, "lot_size": 1, "restricted": False},
     TARGETS.name: {"benchmark_id": "B1", "security_id": "A", "weight": Decimal(1)},
-    COVARIANCE.name: {"security_id_a": "A", "security_id_b": "A", "covariance": 0.04},
     ORDERS.name: {
         "portfolio_id": "P1",
         "security_id": "A",
@@ -80,7 +80,7 @@ _DEFAULTS: dict[str, Row] = {
         "as_of": AS_OF,
     },
 }
-_SCHEMAS: dict[str, FrameSchema] = {schema.name: schema for schema in (PORTFOLIOS, DETAILS, HOLDINGS, UNIVERSE, TARGETS, COVARIANCE, ORDERS)}
+_SCHEMAS: dict[str, FrameSchema] = {schema.name: schema for schema in (PORTFOLIOS, DETAILS, HOLDINGS, UNIVERSE, TARGETS, ORDERS)}
 
 
 def build(schema: FrameSchema, *rows: Row) -> pd.DataFrame:
@@ -115,10 +115,6 @@ class Frames:
     def targets(self, *rows: Row) -> pd.DataFrame:
         """Build a ``targets`` frame."""
         return build(TARGETS, *rows)
-
-    def covariance(self, *rows: Row) -> pd.DataFrame:
-        """Build a long-form ``covariance`` frame."""
-        return build(COVARIANCE, *rows)
 
     def orders(self, *rows: Row) -> pd.DataFrame:
         """Build an ``orders`` frame."""
@@ -162,9 +158,9 @@ def make_portfolio_data(
     holdings: pd.DataFrame | None = None,
     universe: pd.DataFrame | None = None,
     targets: pd.DataFrame | None = None,
-    covariance: pd.DataFrame | None = None,
     style: StyleConstraints | None = None,
     as_of: datetime = AS_OF,
+    extras: Mapping[str, pd.DataFrame] | None = None,
 ) -> PortfolioData:
     """The canonical small bundle: P1 holds A 5000 and B 10000 against the three-security universe."""
     frames = Frames()
@@ -173,9 +169,9 @@ def make_portfolio_data(
         holdings=holdings if holdings is not None else frames.holdings({"security_id": "A", "quantity": 5000}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(60)}),
         universe=universe if universe is not None else frames.three_security_universe(),
         targets=targets if targets is not None else frames.equal_weight_targets(),
-        covariance=covariance,
         style=style if style is not None else make_style(),
         as_of=as_of,
+        extras=extras if extras is not None else {},
     )
 
 
@@ -262,6 +258,26 @@ def lying_loader(request: LoadRequest) -> pd.DataFrame:
 def lying_rule(data: PortfolioData) -> PortfolioData:
     """Annotated correctly but returns a frame; the pipeline must catch it."""
     return data.universe  # ty: ignore[invalid-return-type]  # the lie is the case under test
+
+
+def lying_assembly_step(frames: DatasetFrames) -> DatasetFrames:
+    """Annotated as an assembly step but returns a frame; the engine must catch it."""
+    return frames["universe"]  # ty: ignore[invalid-return-type]  # the lie is the case under test
+
+
+def score_by_price(frames: DatasetFrames) -> DatasetFrames:
+    """A custom assembly step: attach a ``Float64`` analytics column to both holdings and universe from the prices dataset."""
+    scores = frames["prices"].assign(score=frames["prices"]["price"].map(float).astype("Float64")).drop(columns=["price"])
+    holdings = frames["holdings"].merge(scores, on="security_id", how="left", validate="many_to_one")
+    universe = frames["universe"].merge(scores, on="security_id", how="left", validate="one_to_one")
+    return frames.with_frame("holdings", holdings).with_frame("universe", universe)
+
+
+def refuse_assembly(frames: DatasetFrames) -> DatasetFrames:
+    """An assembly step whose precondition fails."""
+    del frames
+    msg = "vendor scores are stale"
+    raise ValueError(msg)
 
 
 def _example_body(real_steps: bool) -> dict[str, object]:

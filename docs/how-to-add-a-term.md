@@ -7,10 +7,12 @@ signal column and a constraint that uses earlier portfolios' results, and keeps 
 
 - The data the term needs is in the per-portfolio spec. `ProblemSpec` carries fixed arrays aligned to
   `spec.security_ids` (`w0`, `price`, `w_target`, `tax_per_dollar`, `tcost_per_dollar`, `lb`, `ub`,
-  `adv_capacity`, sector matrix and bounds, and `sigma_factor` when a covariance dataset is present) plus
-  every extra numeric column of the universe frame, exported by name.
-- If the signal is not in the universe yet, add it with a loader join or a rule first; the term then
-  reads it with `spec.column("my_signal")`.
+  `adv_capacity`, sector matrix and bounds) plus every extra column of the universe frame, exported by
+  name: numeric ones as float64 in `spec.column(name)`, boolean ones as `np.bool_` masks in
+  `spec.flag(name)`.
+- If the signal is not in the universe yet, attach it with an assembly step or a rule first (see
+  [how to add security analytics](how-to-add-security-analytics.md)); the term then reads it with
+  `spec.column("my_signal")`.
 
 ## 1. Write the function in `src/portfolio_optimizer/terms.py` — or in your package
 

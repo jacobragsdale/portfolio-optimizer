@@ -31,14 +31,6 @@ def tracking_error(x: DecisionVars, spec: ProblemSpec, params: WeightedParams) -
     return ObjectiveTerm("tracking_error", scale(float(params.weight), sum_squares(shifted(x.w, spec.w_target))))
 
 
-def risk(x: DecisionVars, spec: ProblemSpec, params: WeightedParams) -> ObjectiveTerm:
-    """``weight · (w - w_target)^T Sigma (w - w_target)`` via the PSD factor ``F`` built from the covariance dataset."""
-    if spec.sigma_factor is None:
-        msg = "the 'risk' term needs the optional 'covariance' dataset"
-        raise ValueError(msg)
-    return ObjectiveTerm("risk", scale(float(params.weight), sum_squares(matvec(spec.sigma_factor, shifted(x.w, spec.w_target)))))
-
-
 class AlphaParams(WeightedParams):
     """Which per-security column holds the expected return."""
 

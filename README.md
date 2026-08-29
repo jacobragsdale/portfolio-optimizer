@@ -5,7 +5,8 @@ Clone it (or click **Use this template**), keep the engine, and write your own l
 terms, constraints, and sinks as ordinary Python functions.
 
 A run loads a list of portfolios, then holdings, the buy universe, portfolio details, style constraints, and
-any extra datasets; combines them; applies business-logic rules; builds one convex problem per portfolio;
+any extra datasets; assembles them — attaching security analytics to holdings and the universe — through
+named steps; applies business-logic rules; builds one convex problem per portfolio;
 solves it; independently re-verifies the solution; rounds it to whole-share orders; publishes the orders;
 and writes a manifest that lets anyone reproduce and audit the run.
 
@@ -43,7 +44,7 @@ in the environment: name it `my_firm.rules:cap_single_name` and the engine impor
 is how a firm shares loaders, rules, and sinks across desks, with the package's version recorded in every
 manifest. Before any data loads, the engine imports every named function, checks its
 signature, validates its `params` against the function's own model, and records its source hash in the
-run manifest. Loaders, objective terms, constraints, and sinks follow the same rule.
+run manifest. Loaders, assembly steps, objective terms, constraints, and sinks follow the same rule.
 
 Run configs are validated three ways: live in your editor through `"$schema": "./run-config.schema.json"`,
 by `portfolio-optimizer validate-config` (which also imports and checks every step), and by any JSON Schema
@@ -53,9 +54,9 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 
 | Path | Role |
 |---|---|
-| `src/portfolio_optimizer/{loaders,rules,terms,sinks}.py` | **Yours to edit.** Each ships worked, tested examples. Shared steps live in your own installed package instead and are named `package.module:function`. |
+| `src/portfolio_optimizer/{loaders,assembly,rules,terms,sinks}.py` | **Yours to edit.** Each ships worked, tested examples. Shared steps live in your own installed package instead and are named `package.module:function`. |
 | `src/portfolio_optimizer/engine/` | Loading and assembly, the rule pipeline, build, solve, cvxpy-free verification, orders, scheduling, manifest. Rarely edited. |
-| `src/portfolio_optimizer/domain/` | Frame schemas, the per-portfolio data bundle, the pure-data problem spec and results. |
+| `src/portfolio_optimizer/domain/` | Frame schemas, the per-portfolio data bundle and its optimizer frame, the pure-data problem spec and results. |
 | `src/portfolio_optimizer/config/` | The run-config models and the step resolver. |
 | `src/portfolio_optimizer/cvx/adapter.py` | The only module that imports cvxpy. |
 | `src/portfolio_optimizer/ratelimit.py` | Rate-limit pools loaders draw from, and `fan_out` for sources that answer one portfolio per call. |
@@ -67,8 +68,10 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 - [Tutorial: your first run](docs/tutorial-first-run.md)
 - [How to add a rule](docs/how-to-add-a-rule.md)
 - [How to add a loader or a sink](docs/how-to-add-a-loader-or-sink.md)
+- [How to add security analytics columns to holdings and the universe](docs/how-to-add-security-analytics.md)
 - [How to add an objective term or a constraint](docs/how-to-add-a-term.md)
 - [Reference: the run config](docs/reference-run-config.md)
+- [Reference: the per-portfolio bundle and the optimizer frame](docs/reference-portfolio-data.md)
 - [Reference: outputs, the manifest, and the CLI](docs/reference-manifest.md)
 - [Explanation: how the engine is built and why](docs/explanation-architecture.md)
 - [Explanation: the life of a run](docs/explanation-run-lifecycle.md)

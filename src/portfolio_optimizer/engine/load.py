@@ -1,4 +1,4 @@
-"""Run the configured loaders once, combine datasets per the assembly config, and slice per portfolio.
+"""Run the configured loaders once, apply the assembly steps, validate, and slice per portfolio.
 
 Loading is the slow part of a real run — API calls and database queries, not files — so it is
 asynchronous: the portfolio list loads first (its ids are part of every other request), and then
@@ -17,11 +17,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from portfolio_optimizer.config.models import DatasetConfig, JoinSpec, RunConfig
+from portfolio_optimizer.config.models import DatasetConfig
 from portfolio_optimizer.config.resolve import ResolvedConfig, ResolvedStep
-from portfolio_optimizer.domain.data import LoadRequest, PortfolioData, details_from_frame, style_constraints_from_mapping
+from portfolio_optimizer.domain.data import Frames, LoadRequest, PortfolioData, details_from_frame, style_constraints_from_mapping
 from portfolio_optimizer.domain.frames import FrameSchemaError, validate_frame
-from portfolio_optimizer.domain.schemas import COVARIANCE, DATASET_SCHEMAS, DETAILS, PORTFOLIOS
+from portfolio_optimizer.domain.results import AssemblyAuditRecord
+from portfolio_optimizer.domain.schemas import DATASET_SCHEMAS, PORTFOLIOS, REQUIRED_FRAMES
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.hashing import frame_sha256, json_sha256
 from portfolio_optimizer.ratelimit import RateLimiter
@@ -34,7 +35,7 @@ class LoadError(ValueError):
 
 
 class AssemblyError(ValueError):
-    """A join violated its declared cardinality or match requirement."""
+    """An assembly step refused its input or returned something other than ``Frames``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,20 +60,26 @@ class LoadedDatasets:
     frames: Mapping[str, pd.DataFrame]
     constraints: Mapping[str, Mapping[str, object]]
     audits: tuple[DatasetAudit, ...]
+    run_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class AssembledDatasets:
-    """Engine-known frames after joins and schema validation, ready to slice per portfolio."""
+    """Engine-known frames after the assembly steps and schema validation, ready to slice per portfolio.
+
+    ``extras`` are the remaining datasets — every one that is not engine-known — carried into each
+    portfolio's bundle. ``audits`` record what each assembly step did, for the manifest.
+    """
 
     portfolio_ids: tuple[PortfolioId, ...]
     holdings: pd.DataFrame
     universe: pd.DataFrame
     details: pd.DataFrame
     targets: pd.DataFrame
-    covariance: pd.DataFrame | None
+    extras: Mapping[str, pd.DataFrame]
     constraints: Mapping[str, Mapping[str, object]]
     as_of: datetime
+    audits: tuple[AssemblyAuditRecord, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +160,7 @@ async def load_datasets_async(resolved: ResolvedConfig, *, data_root: Path, run_
     frames = {outcome.name: outcome.frame for outcome in loaded if outcome.frame is not None}
     constraints: Mapping[str, Mapping[str, object]] = next((outcome.constraints for outcome in loaded if outcome.constraints is not None), {})
     audits.extend(outcome.audit for outcome in loaded)
-    return LoadedDatasets(portfolio_ids=portfolio_ids, frames=frames, constraints=constraints, audits=tuple(audits))
+    return LoadedDatasets(portfolio_ids=portfolio_ids, frames=frames, constraints=constraints, audits=tuple(audits), run_id=run_id)
 
 
 async def _load_dataset(name: str, step: ResolvedStep, request: LoadRequest) -> _Loaded | _Failed:
@@ -209,15 +216,45 @@ def _audit(name: str, step: ResolvedStep, frame: pd.DataFrame, key: tuple[str, .
     return DatasetAudit(name, step.qualname, step.source_sha256, step.params_sha256, len(frame), tuple(str(column) for column in frame.columns), frame_sha256(frame, key), load_time_s)
 
 
-def assemble(loaded: LoadedDatasets, config: RunConfig) -> AssembledDatasets:
-    """Apply the configured joins, then validate every engine-known frame against its schema."""
-    frames = dict(loaded.frames)
-    for index, join in enumerate(config.assembly.joins):
-        frames[join.into] = _apply_join(frames[join.into], frames[join.source], join, f"assembly.joins[{index}]")
+def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig) -> AssembledDatasets:
+    """Run the assembly steps in order, then validate every engine-known frame against its schema.
+
+    A step that raises ``ValueError`` or ``KeyError`` (a missing dataset, a violated cardinality, a
+    column conflict) becomes an :class:`AssemblyError` naming the step; any other exception keeps its
+    type. After the last step the four required frames must exist, each engine-known frame must
+    satisfy its schema, and ``details`` and ``constraints`` must cover every portfolio.
+    """
+    frames = Frames(loaded.frames)
+    audits: list[AssemblyAuditRecord] = []
+    for index, step in enumerate(resolved.assembly):
+        where = f"assembly[{index}] {step.qualname}"
+        before = frames
+        try:
+            result = step.invoke(frames=before)
+        except (ValueError, KeyError) as error:
+            msg = f"{where}: {_message(error)}"
+            raise AssemblyError(msg) from error
+        if not isinstance(result, Frames):
+            msg = f"{where}: returned {type(result).__name__}, expected Frames"
+            raise AssemblyError(msg)
+        frames = result
+        audits.append(
+            AssemblyAuditRecord(
+                qualname=step.qualname,
+                source_sha256=step.source_sha256,
+                params_sha256=step.params_sha256,
+                rows_in=before.row_counts(),
+                rows_out=frames.row_counts(),
+                columns_added=_columns_added(before, frames),
+            )
+        )
+        log.info("assembly step %r applied: %s", step.qualname, ", ".join(f"{name}={rows}" for name, rows in frames.row_counts().items()), extra={"run_id": loaded.run_id, "stage": "assembly"})
+    missing_frames = [name for name in REQUIRED_FRAMES if name not in frames]
+    if missing_frames:
+        msg = f"after assembly, required datasets are missing {missing_frames}; declare a loader for each or produce it in an assembly step"
+        raise LoadError(msg)
     failures: list[str] = []
     for name, schema in DATASET_SCHEMAS.items():
-        if name not in frames:
-            continue
         try:
             validate_frame(frames[name], schema)
         except FrameSchemaError as error:
@@ -237,53 +274,51 @@ def assemble(loaded: LoadedDatasets, config: RunConfig) -> AssembledDatasets:
         portfolio_ids=loaded.portfolio_ids,
         holdings=frames["holdings"],
         universe=frames["universe"],
-        details=validate_frame(details, DETAILS),
+        details=details,
         targets=frames["targets"],
-        covariance=validate_frame(frames["covariance"], COVARIANCE) if "covariance" in frames else None,
+        extras={name: frame for name, frame in frames.items() if name not in DATASET_SCHEMAS},
         constraints=loaded.constraints,
-        as_of=config.run.as_of,
+        as_of=resolved.config.run.as_of,
+        audits=tuple(audits),
     )
 
 
-def _apply_join(into: pd.DataFrame, source: pd.DataFrame, join: JoinSpec, where: str) -> pd.DataFrame:
-    on = list(join.on)
-    missing_left = [column for column in on if column not in into.columns]
-    missing_right = [column for column in on if column not in source.columns]
-    if missing_left or missing_right:
-        msg = f"{where}: join columns missing — {join.into} lacks {missing_left}, {join.source} lacks {missing_right}"
-        raise AssemblyError(msg)
-    overlapping = sorted((set(into.columns) & set(source.columns)) - set(on))
-    if overlapping:
-        msg = f"{where}: {join.source} would overwrite columns {overlapping} already present in {join.into}"
-        raise AssemblyError(msg)
-    aligned = source.astype({column: into[column].dtype for column in on})  # a `str` key joined to a `string` key would silently become `object`
-    how = "left" if join.require_all_matched else join.how  # an inner join drops unmatched rows before they can be counted
-    try:
-        merged = into.merge(aligned, on=on, how=how, validate=join.cardinality, indicator=join.require_all_matched)
-    except pd.errors.MergeError as error:
-        msg = f"{where}: cardinality {join.cardinality!r} violated joining {join.source} into {join.into} on {on}: {error}"
-        raise AssemblyError(msg) from error
-    if join.require_all_matched:
-        unmatched = merged[merged["_merge"] != "both"]
-        if len(unmatched):
-            keys = unmatched[on].astype(str).agg("|".join, axis=1).tolist()[:10]
-            msg = f"{where}: {len(unmatched)} row(s) of {join.into} had no match in {join.source}, e.g. {keys}"
-            raise AssemblyError(msg)
-        merged = merged.drop(columns=["_merge"])
-    return merged
+def _message(error: Exception) -> str:
+    """``KeyError`` quotes its message on ``str()``; take the message itself."""
+    if isinstance(error, KeyError) and error.args:
+        return str(error.args[0])
+    return str(error)
+
+
+def _columns_added(before: Frames, after: Frames) -> dict[str, tuple[str, ...]]:
+    added: dict[str, tuple[str, ...]] = {}
+    for name, frame in after.items():
+        previous = {str(column) for column in before[name].columns} if name in before else set()
+        new = tuple(str(column) for column in frame.columns if str(column) not in previous)
+        if new:
+            added[name] = new
+    return added
 
 
 def slice_portfolio(assembled: AssembledDatasets, portfolio_id: PortfolioId) -> PortfolioData:
-    """Build the validated per-portfolio bundle: its own holdings and constraints, its benchmark's targets."""
+    """Build the validated per-portfolio bundle: its own holdings, constraints, and extras rows; its benchmark's targets; the whole universe."""
     details = details_from_frame(assembled.details, portfolio_id)
     holdings = assembled.holdings[assembled.holdings["portfolio_id"] == portfolio_id].reset_index(drop=True)
     targets = assembled.targets[assembled.targets["benchmark_id"] == details.benchmark_id].reset_index(drop=True)
+    extras = {name: _rows_for(frame, portfolio_id) for name, frame in assembled.extras.items()}
     return PortfolioData(
         details=details,
         holdings=holdings,
         universe=assembled.universe.reset_index(drop=True),
         targets=targets,
-        covariance=None if assembled.covariance is None else assembled.covariance.reset_index(drop=True),
         style=style_constraints_from_mapping(assembled.constraints[portfolio_id]),
         as_of=assembled.as_of,
+        extras=extras,
     )
+
+
+def _rows_for(frame: pd.DataFrame, portfolio_id: PortfolioId) -> pd.DataFrame:
+    """A per-portfolio dataset (one with a ``portfolio_id`` column) reduced to this portfolio; a global one passed whole."""
+    if "portfolio_id" in frame.columns:
+        return frame[frame["portfolio_id"] == portfolio_id].reset_index(drop=True)
+    return frame.reset_index(drop=True)

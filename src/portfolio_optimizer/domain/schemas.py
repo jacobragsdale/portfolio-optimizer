@@ -1,7 +1,7 @@
 """The concrete frame schemas every dataset and output must satisfy.
 
 Column conventions: identifiers are ``string``; share counts are ``Int64``; money, prices, and
-weights are ``decimal``; statistical estimates (alpha, covariance) are ``Float64``.
+weights are ``decimal``; statistical estimates (alpha, scores, loadings) are ``Float64``.
 """
 
 from decimal import Decimal
@@ -13,7 +13,6 @@ from portfolio_optimizer.domain.frames import ColumnSpec, FrameCheck, FrameSchem
 ZERO = Decimal(0)
 ONE = Decimal(1)
 TARGET_WEIGHT_SUM_TOLERANCE = Decimal("1e-8")
-COVARIANCE_SYMMETRY_TOLERANCE = 1e-12
 
 
 def _targets_sum_to_one(frame: pd.DataFrame) -> str | None:
@@ -21,25 +20,6 @@ def _targets_sum_to_one(frame: pd.DataFrame) -> str | None:
     off = {str(benchmark): total for benchmark, total in sums.items() if abs(total - ONE) > TARGET_WEIGHT_SUM_TOLERANCE}
     if off:
         return f"weights do not sum to 1 for benchmark(s) {off}"
-    return None
-
-
-def _covariance_is_symmetric(frame: pd.DataFrame) -> str | None:
-    values = {(str(a), str(b)): float(v) for a, b, v in zip(frame["security_id_a"], frame["security_id_b"], frame["covariance"], strict=True)}
-    for (a, b), value in values.items():
-        mirrored = values.get((b, a))
-        if mirrored is None:
-            return f"({a}, {b}) has no mirrored entry ({b}, {a})"
-        if abs(value - mirrored) > COVARIANCE_SYMMETRY_TOLERANCE * max(1.0, abs(value)):
-            return f"({a}, {b})={value} differs from ({b}, {a})={mirrored}"
-    return None
-
-
-def _covariance_diagonal_non_negative(frame: pd.DataFrame) -> str | None:
-    diagonal = frame[frame["security_id_a"] == frame["security_id_b"]]
-    negative = diagonal[diagonal["covariance"] < 0.0]
-    if len(negative):
-        return f"negative variance for {sorted(str(v) for v in negative['security_id_a'])}"
     return None
 
 
@@ -86,6 +66,7 @@ HOLDINGS = FrameSchema(
         ColumnSpec("acquired_on", "datetime_utc"),
     ),
     key=("portfolio_id", "security_id"),
+    allow_extra=True,  # analytics columns joined or computed per position ride along; the shipped build ignores them
 )
 
 UNIVERSE = FrameSchema(
@@ -103,7 +84,7 @@ UNIVERSE = FrameSchema(
         ColumnSpec("max_weight", "decimal", required=False, nullable=True, ge=ZERO, le=ONE),
     ),
     key=("security_id",),
-    allow_extra=True,  # rules may add signal columns; build exports every numeric extra by name
+    allow_extra=True,  # analytics columns joined or computed per security; build exports every numeric extra by name
 )
 
 TARGETS = FrameSchema(
@@ -111,13 +92,6 @@ TARGETS = FrameSchema(
     columns=(ColumnSpec("benchmark_id", "string"), ColumnSpec("security_id", "string"), ColumnSpec("weight", "decimal", ge=ZERO, le=ONE)),
     key=("benchmark_id", "security_id"),
     checks=(FrameCheck("weights_sum_to_one", _targets_sum_to_one),),
-)
-
-COVARIANCE = FrameSchema(
-    name="covariance",
-    columns=(ColumnSpec("security_id_a", "string"), ColumnSpec("security_id_b", "string"), ColumnSpec("covariance", "Float64")),
-    key=("security_id_a", "security_id_b"),
-    checks=(FrameCheck("symmetric", _covariance_is_symmetric), FrameCheck("diagonal_non_negative", _covariance_diagonal_non_negative)),
 )
 
 ORDER_SIDES = frozenset({"BUY", "SELL"})
@@ -141,10 +115,14 @@ ORDERS = FrameSchema(
     checks=(FrameCheck("notional_matches", _orders_notional_matches),),
 )
 
-DATASET_SCHEMAS: dict[str, FrameSchema] = {"holdings": HOLDINGS, "universe": UNIVERSE, "details": DETAILS, "targets": TARGETS, "covariance": COVARIANCE}
-"""Engine-known datasets and the schema each must satisfy after assembly."""
+DATASET_SCHEMAS: dict[str, FrameSchema] = {"holdings": HOLDINGS, "universe": UNIVERSE, "details": DETAILS, "targets": TARGETS}
+"""Engine-known frames and the schema each must satisfy after assembly. Any other dataset name is an extra."""
 
-REQUIRED_DATASETS: tuple[str, ...] = ("holdings", "universe", "details", "constraints", "targets")
-"""Datasets every run config must declare. ``constraints`` is a dict, not a frame."""
+REQUIRED_FRAMES: tuple[str, ...] = ("holdings", "universe", "details", "targets")
+"""Frames that must exist after assembly, loaded directly or produced by an assembly step."""
 
-OPTIONAL_DATASETS: tuple[str, ...] = ("covariance",)
+REQUIRED_DATASETS: tuple[str, ...] = (*REQUIRED_FRAMES, "constraints")
+"""Datasets a run cannot do without. ``constraints`` is a dict, not a frame, and must always be declared."""
+
+RESERVED_DATASET_NAMES: frozenset[str] = frozenset({*DATASET_SCHEMAS, "constraints", "portfolios"})
+"""Names an extra dataset may not use."""

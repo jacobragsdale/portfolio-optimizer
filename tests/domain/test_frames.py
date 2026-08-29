@@ -7,10 +7,10 @@ import pandas as pd
 import pytest
 
 from portfolio_optimizer.domain.frames import ColumnSpec, FrameSchema, FrameSchemaError, coerce_frame, validate_frame
-from portfolio_optimizer.domain.schemas import COVARIANCE, DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
+from portfolio_optimizer.domain.schemas import DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
 from tests.conftest import Frames, empty_frame
 
-ALL_SCHEMAS = [PORTFOLIOS, DETAILS, HOLDINGS, UNIVERSE, TARGETS, COVARIANCE, ORDERS]
+ALL_SCHEMAS = [PORTFOLIOS, DETAILS, HOLDINGS, UNIVERSE, TARGETS, ORDERS]
 
 
 @pytest.mark.parametrize("schema", ALL_SCHEMAS, ids=[schema.name for schema in ALL_SCHEMAS])
@@ -38,7 +38,6 @@ REJECT_CASES: list[tuple[str, FrameSchema, Mapping[str, object], str]] = [
     ("order side unknown", ORDERS, {"side": "HOLD"}, "side"),
     ("order quantity zero", ORDERS, {"quantity": 0}, "quantity"),
     ("order notional mismatch", ORDERS, {"notional": Decimal(999)}, "notional"),
-    ("negative variance", COVARIANCE, {"covariance": -0.01}, "negative variance"),
 ]
 
 
@@ -61,11 +60,11 @@ def test_wrong_dtype_is_rejected_before_value_checks(frames: Frames) -> None:
 
 
 def test_missing_and_unexpected_columns_are_both_reported(frames: Frames) -> None:
-    frame = frames.holdings().drop(columns=["avg_cost"]).assign(extra=1)
+    frame = frames.details().drop(columns=["cash"]).assign(extra=1)
     with pytest.raises(FrameSchemaError) as info:
-        validate_frame(frame, HOLDINGS)
+        validate_frame(frame, DETAILS)
     assert len(info.value.failures) == 2
-    assert "missing columns ['avg_cost']" in info.value.failures[0]
+    assert "missing columns ['cash']" in info.value.failures[0]
     assert "unexpected columns ['extra']" in info.value.failures[1]
 
 
@@ -87,10 +86,15 @@ def test_target_weights_must_sum_to_one_per_benchmark(frames: Frames) -> None:
         validate_frame(frame, TARGETS)
 
 
-def test_covariance_must_be_symmetric(frames: Frames) -> None:
-    frame = frames.covariance({"security_id_a": "A", "security_id_b": "B", "covariance": 0.01}, {"security_id_a": "B", "security_id_b": "A", "covariance": 0.02})
-    with pytest.raises(FrameSchemaError, match="differs"):
-        validate_frame(frame, COVARIANCE)
+@pytest.mark.parametrize("schema", [HOLDINGS, UNIVERSE], ids=["holdings", "universe"])
+def test_analytics_tables_accept_columns_beyond_their_schema(frames: Frames, schema: FrameSchema) -> None:
+    validate_frame(frames.for_schema(schema)().assign(score=pd.Series([0.5], dtype="Float64")), schema)
+
+
+@pytest.mark.parametrize("schema", [DETAILS, TARGETS], ids=["details", "targets"])
+def test_other_engine_frames_reject_unexpected_columns(frames: Frames, schema: FrameSchema) -> None:
+    with pytest.raises(FrameSchemaError, match="unexpected columns \\['score'\\]"):
+        validate_frame(frames.for_schema(schema)().assign(score=pd.Series([0.5], dtype="Float64")), schema)
 
 
 def test_solve_order_must_be_unique(frames: Frames) -> None:

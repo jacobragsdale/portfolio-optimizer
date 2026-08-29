@@ -37,8 +37,9 @@ def test_spec_arrays_are_read_only_float64(make: Factories) -> None:
         ({"security_ids": ("S1", "S0", "S2")}, "not sorted"),
         ({"security_ids": ("S0", "S0", "S2")}, "not unique"),
         ({"cash_lb": 0.5, "cash_ub": 0.1}, "cash_lb > cash_ub"),
-        ({"sigma_factor": np.ones((2, 4))}, "sigma_factor has shape"),
         ({"columns": {"alpha": np.ones(2)}}, "column 'alpha' has shape"),
+        ({"flags": {"esg": np.ones(2, dtype=bool)}}, "flag 'esg' has shape"),
+        ({"columns": {"esg": np.ones(3)}, "flags": {"esg": np.ones(3, dtype=bool)}}, "both a column and a flag"),
         ({"nav": float("inf")}, "nav is not finite"),
     ],
 )
@@ -67,21 +68,28 @@ def test_hash_covers_metadata_and_extra_columns(make: Factories) -> None:
     spec = make.spec()
     assert make.spec(portfolio_id="P2").content_hash() != spec.content_hash()
     assert make.spec(columns={"alpha": np.zeros(3)}).content_hash() != spec.content_hash()
+    flagged = make.spec(flags={"esg": np.array([True, False, True])})
+    assert flagged.content_hash() != spec.content_hash()
+    assert flagged.content_hash() != make.spec(flags={"esg": np.array([True, True, True])}).content_hash()
 
 
 def test_npz_round_trip_preserves_hash(make: Factories, tmp_path: Path) -> None:
-    spec = make.spec(sigma_factor=np.eye(3) * 0.2, columns={"alpha": np.array([0.1, 0.2, 0.3])}, psd_shift=1e-10)
+    spec = make.spec(columns={"alpha": np.array([0.1, 0.2, 0.3])}, flags={"esg": np.array([True, False, True])}, cash_ub=0.05)
     path = tmp_path / "spec.npz"
     spec.to_npz(path)
     loaded = spec.from_npz(path)
     assert loaded.content_hash() == spec.content_hash()
+    assert loaded.flag("esg").dtype == np.bool_
+    assert not loaded.flag("esg").flags.writeable
     assert loaded.security_ids == spec.security_ids
     assert loaded.as_of == spec.as_of
 
 
 def test_missing_column_names_what_is_available(make: Factories) -> None:
-    spec = make.spec(columns={"alpha": np.zeros(3)})
+    spec = make.spec(columns={"alpha": np.zeros(3)}, flags={"esg": np.ones(3, dtype=bool)})
     np.testing.assert_array_equal(spec.column("alpha"), np.zeros(3))
+    with pytest.raises(MissingSpecColumnError, match="spec has no flag 'liquid'; available: \\['esg'\\]"):
+        spec.flag("liquid")
     with pytest.raises(MissingSpecColumnError, match="available: \\['alpha'\\]"):
         spec.column("momentum")
 

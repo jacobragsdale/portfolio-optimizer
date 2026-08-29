@@ -19,8 +19,9 @@ import pandas as pd
 from numpy.typing import NDArray
 
 type F64 = NDArray[np.float64]
+type Flags = NDArray[np.bool_]
 
-_SCALAR_FIELDS: tuple[str, ...] = ("nav", "max_turnover", "cash_lb", "cash_ub", "min_trade_notional", "psd_shift")
+_SCALAR_FIELDS: tuple[str, ...] = ("nav", "max_turnover", "cash_lb", "cash_ub", "min_trade_notional")
 _VECTOR_FIELDS: tuple[str, ...] = ("w0", "price", "shares_held", "lot_size", "w_target", "tax_per_dollar", "tcost_per_dollar", "lb", "ub", "adv_capacity")
 
 
@@ -29,16 +30,24 @@ class ProblemSpecError(ValueError):
 
 
 class MissingSpecColumnError(KeyError):
-    """A term asked for a per-security column the spec does not carry."""
+    """A term asked for a per-security column or flag the spec does not carry."""
 
-    def __init__(self, name: str, available: tuple[str, ...]) -> None:
+    def __init__(self, name: str, available: tuple[str, ...], kind: str = "column") -> None:
         self.name = name
         self.available = available
-        super().__init__(f"spec has no column {name!r}; available: {list(available)}")
+        super().__init__(f"spec has no {kind} {name!r}; available: {list(available)}")
 
 
 def _readonly(array: F64) -> F64:
     result = np.ascontiguousarray(array, dtype=np.float64)
+    if result is array:
+        result = result.copy()
+    result.flags.writeable = False
+    return result
+
+
+def _readonly_flags(array: Flags) -> Flags:
+    result = np.ascontiguousarray(array, dtype=np.bool_)
     if result is array:
         result = result.copy()
     result.flags.writeable = False
@@ -51,7 +60,8 @@ class ProblemSpec:
 
     Every vector is aligned to ``security_ids`` and expressed as a fraction of NAV. The spec is
     independent of prior portfolios; chain-aware constraints combine it with a
-    :class:`ChainState` at solve time.
+    :class:`ChainState` at solve time. ``columns`` are the numeric per-security columns the build
+    exported from the universe, ``flags`` the boolean ones; the two namespaces do not overlap.
     """
 
     portfolio_id: str
@@ -76,9 +86,8 @@ class ProblemSpec:
     cash_lb: float
     cash_ub: float
     min_trade_notional: float
-    sigma_factor: F64 | None = None
-    psd_shift: float = 0.0
     columns: Mapping[str, F64] = field(default_factory=dict)
+    flags: Mapping[str, Flags] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for name in _VECTOR_FIELDS:
@@ -86,9 +95,8 @@ class ProblemSpec:
         object.__setattr__(self, "sector_matrix", _readonly(self.sector_matrix))
         object.__setattr__(self, "sector_lb", _readonly(self.sector_lb))
         object.__setattr__(self, "sector_ub", _readonly(self.sector_ub))
-        if self.sigma_factor is not None:
-            object.__setattr__(self, "sigma_factor", _readonly(self.sigma_factor))
         object.__setattr__(self, "columns", {name: _readonly(array) for name, array in sorted(self.columns.items())})
+        object.__setattr__(self, "flags", {name: _readonly_flags(array) for name, array in sorted(self.flags.items())})
         failures = list(self._failures())
         if failures:
             raise ProblemSpecError(f"portfolio {self.portfolio_id!r}: " + "; ".join(failures))
@@ -131,12 +139,16 @@ class ProblemSpec:
         for name, array in self.columns.items():
             if array.shape != (n,):
                 yield f"column {name!r} has shape {array.shape}, expected {(n,)}"
+        for name, array in self.flags.items():
+            if array.shape != (n,):
+                yield f"flag {name!r} has shape {array.shape}, expected {(n,)}"
+        shared = sorted(set(self.columns) & set(self.flags))
+        if shared:
+            yield f"names {shared} are both a column and a flag"
         if self.sector_matrix.shape != (k, n):
             yield f"sector_matrix has shape {self.sector_matrix.shape}, expected {(k, n)}"
         if self.sector_lb.shape != (k,) or self.sector_ub.shape != (k,):
             yield f"sector bounds have shapes {self.sector_lb.shape}, {self.sector_ub.shape}, expected {(k,)}"
-        if self.sigma_factor is not None and (self.sigma_factor.ndim != 2 or self.sigma_factor.shape[1] != n):
-            yield f"sigma_factor has shape {self.sigma_factor.shape}, expected (*, {n})"
 
     def _arrays(self) -> Iterator[tuple[str, F64]]:
         for name in _VECTOR_FIELDS:
@@ -144,8 +156,6 @@ class ProblemSpec:
         yield "sector_matrix", self.sector_matrix
         yield "sector_lb", self.sector_lb
         yield "sector_ub", self.sector_ub
-        if self.sigma_factor is not None:
-            yield "sigma_factor", self.sigma_factor
         for name, array in self.columns.items():
             yield f"columns.{name}", array
 
@@ -155,11 +165,18 @@ class ProblemSpec:
         return len(self.security_ids)
 
     def column(self, name: str) -> F64:
-        """Return an extra per-security column exported from the universe frame."""
+        """Return a numeric per-security column exported from the universe frame."""
         try:
             return self.columns[name]
         except KeyError as error:
             raise MissingSpecColumnError(name, tuple(self.columns)) from error
+
+    def flag(self, name: str) -> Flags:
+        """Return a boolean per-security column exported from the universe frame, as a real boolean mask."""
+        try:
+            return self.flags[name]
+        except KeyError as error:
+            raise MissingSpecColumnError(name, tuple(self.flags), kind="flag") from error
 
     def content_hash(self) -> str:
         """Deterministic sha256 of every input the solver will see."""
@@ -170,6 +187,11 @@ class ProblemSpec:
             digest.update(str(array.shape).encode())
             digest.update(array.dtype.str.encode())
             digest.update(np.ascontiguousarray(array + 0.0).tobytes())  # `+ 0.0` maps -0.0 to 0.0 so equal specs hash equal
+        for name, array in self.flags.items():
+            digest.update(f"flags.{name}".encode())
+            digest.update(str(array.shape).encode())
+            digest.update(array.dtype.str.encode())
+            digest.update(np.ascontiguousarray(array).tobytes())
         return digest.hexdigest()
 
     def _metadata(self) -> dict[str, object]:
@@ -178,14 +200,15 @@ class ProblemSpec:
             "as_of": self.as_of.isoformat(),
             "security_ids": list(self.security_ids),
             "sector_names": list(self.sector_names),
-            "has_sigma_factor": self.sigma_factor is not None,
             "column_names": list(self.columns),
+            "flag_names": list(self.flags),
             **{name: repr(float(getattr(self, name))) for name in _SCALAR_FIELDS},
         }
 
     def to_npz(self, path: Path) -> None:
         """Persist the spec as a single ``.npz`` file readable without pickle."""
-        arrays = {name.replace("columns.", "col__"): np.ascontiguousarray(array) for name, array in self._arrays()}
+        arrays: dict[str, F64 | Flags] = {name.replace("columns.", "col__"): np.ascontiguousarray(array) for name, array in self._arrays()}
+        arrays.update({f"flag__{name}": np.ascontiguousarray(array) for name, array in self.flags.items()})
         np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(self._metadata(), sort_keys=True)), **arrays)
 
     @classmethod
@@ -193,7 +216,8 @@ class ProblemSpec:
         """Load a spec written by :meth:`to_npz`."""
         with np.load(path, allow_pickle=False) as data:
             meta = json.loads(str(data["__meta__"]))
-            loaded: dict[str, F64] = {key: np.asarray(data[key], dtype=np.float64) for key in data.files if key != "__meta__"}
+            loaded: dict[str, F64] = {key: np.asarray(data[key], dtype=np.float64) for key in data.files if key != "__meta__" and not key.startswith("flag__")}
+            flags: dict[str, Flags] = {key.removeprefix("flag__"): np.asarray(data[key], dtype=np.bool_) for key in data.files if key.startswith("flag__")}
         vectors = {name: loaded[name] for name in _VECTOR_FIELDS}
         columns = {key.removeprefix("col__"): array for key, array in loaded.items() if key.startswith("col__")}
         return cls(
@@ -206,12 +230,11 @@ class ProblemSpec:
             cash_lb=float(meta["cash_lb"]),
             cash_ub=float(meta["cash_ub"]),
             min_trade_notional=float(meta["min_trade_notional"]),
-            psd_shift=float(meta["psd_shift"]),
             sector_matrix=loaded["sector_matrix"],
             sector_lb=loaded["sector_lb"],
             sector_ub=loaded["sector_ub"],
-            sigma_factor=loaded.get("sigma_factor"),
             columns=columns,
+            flags=flags,
             **vectors,
         )
 
@@ -371,6 +394,18 @@ class ConstraintReport:
     def violated(self) -> tuple[str, ...]:
         """Names of the checks that failed."""
         return tuple(check.name for check in self.checks if not check.passed)
+
+
+@dataclass(frozen=True, slots=True)
+class AssemblyAuditRecord:
+    """What one assembly step did to the run's datasets."""
+
+    qualname: str
+    source_sha256: str
+    params_sha256: str
+    rows_in: Mapping[str, int]
+    rows_out: Mapping[str, int]
+    columns_added: Mapping[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True, slots=True)

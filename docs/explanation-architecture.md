@@ -34,6 +34,28 @@ async code and threads, so a sync loader and an async loader on the same API can
 between them. The manifest records each input's load time and the log each limiter's wait, so "why was
 this run slow" has an answer.
 
+## Assembly is a step kind, and the bundle is two tables
+
+Combining datasets is business logic — which vendor's price wins, how two custodians' files become one
+holdings table, what a z-score is normalized against — so it follows the same convention as everything
+else: an ordinary function, `(frames: Frames[, params]) -> Frames`, named in the config's `assembly`
+list, run once per run over every loaded dataset, and recorded in the manifest with its source hash,
+its parameters, the row count of every dataset before and after, and the columns it added. The
+shipped `join`, `union`, `select`, and `drop` cover the recurring shapes; anything else is a function
+of the same shape in the desk's package. Making assembly a step kind rather than a fixed join
+vocabulary is what lets a run's data preparation be audited the same way its rules are, and it is why
+a dataset the engine does not know can still be used: it stays visible to every step by name and is
+carried into each portfolio's bundle as an extra for a rule to read.
+
+The bundle itself is deliberately two tables, not one: `holdings` (owned, with cost basis) and
+`universe` (buyable, with price and liquidity). Both accept any analytics columns beyond their schemas,
+a held name need not be buyable, and `PortfolioData.optimizer_frame()` stacks them into the single
+frame an optimizer wants — holdings rows then universe rows, over the union of columns, with typed
+nulls where one side lacks a column. The one invariant this needs is that a column present on both
+tables has the same dtype on both, so the bundle checks it on every construction and names the column
+when it fails. That check is what makes "attach a score to both tables" safe to do in a loader, a step,
+or a rule: whichever produced a mismatch is the one that fails.
+
 ## Two conversions, in two places
 
 Money enters the engine as `Decimal` and stays that way through loading, assembly, and rules; frame
@@ -102,7 +124,7 @@ with an arithmetic diagnosis of why.
 
 ## What was left out on purpose
 
-Tax lots (holdings are security-level with an average cost), shorting, fractional shares, and automatic
-solver fallback. Each is a real extension, and each would have made the template harder to read without
-changing the shape of the engine. The manifest, the hashes, and the verifier are designed so that adding
-them leaves the audit story intact.
+Tax lots (holdings are security-level with an average cost), shorting, fractional shares, a covariance
+risk term, and automatic solver fallback. Each is a real extension, and each would have made the
+template harder to read without changing the shape of the engine. The manifest, the hashes, and the
+verifier are designed so that adding them leaves the audit story intact.

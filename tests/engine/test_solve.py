@@ -101,12 +101,6 @@ def test_tax_and_transaction_costs_discourage_selling_gains(make: Factories, fra
     assert taxed.sell[0] < untaxed.sell[0]
 
 
-def test_risk_term_needs_a_covariance(make: Factories) -> None:
-    spec = make.spec()
-    with pytest.raises(ValueError, match="needs the optional 'covariance' dataset"):
-        solve(spec, ChainState.empty(spec.security_ids), resolved_with(["risk"], CORE_CONSTRAINTS))
-
-
 def test_a_term_that_returns_the_wrong_type_is_rejected(make: Factories) -> None:
     spec = make.spec()
     with pytest.raises(SolveSetupError, match="returned ConstraintSet, expected ObjectiveTerm"):

@@ -8,13 +8,12 @@
     "details": {"loader": {"name": "csv", "params": {"path": "details.csv"}}},
     "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
     "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
-    "prices": {"loader": {"name": "csv", "params": {"path": "prices.csv", "decimal_columns": ["price"]}}}
+    "prices": {"loader": {"name": "csv", "params": {"path": "prices.csv", "dtypes": {"security_id": "string"}, "decimal_columns": ["price"]}}}
   },
-  "assembly": {
-    "portfolio_key": "portfolio_id",
-    "security_key": "security_id",
-    "joins": [{"into": "universe", "source": "prices", "on": ["security_id"], "how": "inner", "cardinality": "one_to_one", "require_all_matched": true}]
-  },
+  "assembly": [
+    {"name": "join", "params": {"into": "universe", "source": "prices", "on": ["security_id"], "cardinality": "one_to_one", "require_all_matched": true}},
+    {"name": "drop", "params": {"datasets": ["prices"]}}
+  ],
   "rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}, "add_zero_alpha"],
   "objective": {
     "sense": "minimize",

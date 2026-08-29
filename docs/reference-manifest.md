@@ -66,6 +66,7 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `settings` | Non-secret settings the run used. |
 | `terms`, `constraints` | Qualified name and params of every configured step, in order; `verify` uses these. |
 | `datasets[]` | `name`, `loader_qualname`, `loader_source_sha256`, `params_sha256`, `rows`, `columns`, `content_sha256`, `load_time_s` (wall-clock seconds the loader took). |
+| `assembly[]` | Per assembly step, in order: `qualname`, `source_sha256`, `params_sha256`, `rows_in` and `rows_out` (rows per dataset before and after), `columns_added` (per dataset, the columns the step introduced). |
 | `portfolios[]` | See below. A `sink` failure appears as an extra record with `portfolio_id: "*"`. |
 | `artifacts[]` | `path`, `sha256`, `size_bytes` of every file written. |
 | `exit_code` | The code the run returned. |
@@ -75,7 +76,7 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | Field | Description |
 |---|---|
 | `portfolio_id`, `status` | `solved` or `failed`. |
-| `rules[]` | `qualname`, `source_sha256`, `params_sha256`, `rows_in`, `rows_out` per rule. |
+| `rules[]` | `qualname`, `source_sha256`, `params_sha256`, `rows_in`, `rows_out` per rule; the row counts cover `holdings`, `universe`, `targets`, and every extra dataset in the bundle by name. |
 | `problem_spec_sha256` | Hash of every array and scalar the solver saw. |
 | `chain_inputs_sha256` | Hash of the chain state. |
 | `solve` | `solver`, `solver_version`, `cvxpy_version`, `status`, `iterations`, `objective_value`, `solve_time_s`. |
@@ -93,6 +94,6 @@ metadata. Source hashes are of the function's source text.
 
 ### `diff-manifests` stages
 
-Checked in order: `config`, `code` (git sha), `versions` (libraries, solver, and step packages), `datasets` (per dataset), then per portfolio
+Checked in order: `config`, `code` (git sha), `versions` (libraries, solver, and step packages), `datasets` (per dataset), `assembly` (the steps, their source and params hashes, and their `rows_out` and `columns_added`), then per portfolio
 `status`, `rules`, `spec`, `solve` (objective value), `orders`. Only the first divergence per portfolio
 is reported.

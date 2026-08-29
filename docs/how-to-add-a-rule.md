@@ -7,8 +7,9 @@ and tests it.
 ## Prerequisites
 
 - The environment is installed (`uv sync --locked`) and you can run the example.
-- You know which frame the rule changes: `holdings`, `universe`, `targets`, `covariance`, or the
-  `style` constraints.
+- You know which part of the bundle the rule changes: `holdings`, `universe`, `targets`, `extras`, or
+  the `style` constraints. A rule that attaches a column to `holdings` or `universe` must give it the
+  same dtype on both tables when both carry it; see [the bundle reference](reference-portfolio-data.md).
 
 ## 1. Write the function in `src/portfolio_optimizer/rules.py` — or in your package
 

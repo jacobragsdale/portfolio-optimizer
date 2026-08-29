@@ -1,7 +1,7 @@
 """Resolve step names in the run config to functions, and check them before any data loads.
 
 The convention: a step is an ordinary function whose signature carries engine-provided
-arguments by fixed names (``data``, ``request``, ``x``, ``spec``, ``orders``, ``io``), an optional
+arguments by fixed names (``request``, ``frames``, ``data``, ``x``, ``spec``, ``orders``, ``io``), an optional
 ``params`` argument annotated with a :class:`~portfolio_optimizer.domain.types.Params` subclass,
 and an optional context argument (``ctx`` for rules, ``chain`` for terms and constraints). The
 engine calls steps with keyword arguments, so the order does not matter. Loaders may be
@@ -22,16 +22,17 @@ from pydantic import ValidationError
 
 from portfolio_optimizer.config.models import RunConfig, StepSpec
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm
-from portfolio_optimizer.domain.data import IoContext, LoadRequest, PortfolioData
+from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec, SolveContext
 from portfolio_optimizer.domain.types import Params
 
-type StepKind = Literal["portfolios", "loader", "constraints_loader", "rule", "term", "constraint", "sink"]
+type StepKind = Literal["portfolios", "loader", "constraints_loader", "assembly", "rule", "term", "constraint", "sink"]
 
 TEMPLATE_MODULES: Mapping[StepKind, str] = {
     "portfolios": "portfolio_optimizer.loaders",
     "loader": "portfolio_optimizer.loaders",
     "constraints_loader": "portfolio_optimizer.loaders",
+    "assembly": "portfolio_optimizer.assembly",
     "rule": "portfolio_optimizer.rules",
     "term": "portfolio_optimizer.terms",
     "constraint": "portfolio_optimizer.terms",
@@ -55,6 +56,7 @@ CONTRACTS: Mapping[StepKind, Contract] = {
     "portfolios": Contract({"request": LoadRequest}, None, (pd.DataFrame,), allows_async=True),
     "loader": Contract({"request": LoadRequest}, None, (pd.DataFrame,), allows_async=True),
     "constraints_loader": Contract({"request": LoadRequest}, None, (ConstraintsMapping.__value__, dict[str, dict[str, object]]), allows_async=True),
+    "assembly": Contract({"frames": Frames}, None, (Frames,)),
     "rule": Contract({"data": PortfolioData}, ("ctx", SolveContext), (PortfolioData,)),
     "term": Contract({"x": DecisionVars, "spec": ProblemSpec}, ("chain", ChainState), (ObjectiveTerm,)),
     "constraint": Contract({"x": DecisionVars, "spec": ProblemSpec}, ("chain", ChainState), (ConstraintSet,)),
@@ -124,6 +126,7 @@ class ResolvedConfig:
     config_sha256: str
     portfolios: ResolvedStep
     loaders: Mapping[str, ResolvedStep]
+    assembly: tuple[ResolvedStep, ...]
     rules: tuple[ResolvedStep, ...]
     terms: tuple[ResolvedStep, ...]
     constraints: tuple[ResolvedStep, ...]
@@ -137,7 +140,7 @@ class ResolvedConfig:
     @property
     def all_steps(self) -> tuple[ResolvedStep, ...]:
         """Every resolved step, in pipeline order."""
-        return (self.portfolios, *self.loaders.values(), *self.rules, *self.terms, *self.constraints, self.sink)
+        return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *self.terms, *self.constraints, self.sink)
 
 
 def resolve_config(config: RunConfig, config_sha256: str) -> ResolvedConfig:
@@ -153,6 +156,7 @@ def resolve_config(config: RunConfig, config_sha256: str) -> ResolvedConfig:
 
     portfolios = resolve(config.portfolios.loader, "portfolios", "portfolios")
     loaders = {name: resolve(dataset.loader, "constraints_loader" if name == "constraints" else "loader", f"datasets.{name}") for name, dataset in config.datasets.items()}
+    assembly = [resolve(spec, "assembly", f"assembly[{i}]") for i, spec in enumerate(config.assembly)]
     rules = [resolve(spec, "rule", f"rules[{i}]") for i, spec in enumerate(config.rules)]
     terms = [resolve(spec, "term", f"objective.terms[{i}]") for i, spec in enumerate(config.objective.terms)]
     constraints = [resolve(spec, "constraint", f"constraints[{i}]") for i, spec in enumerate(config.constraints)]
@@ -165,6 +169,7 @@ def resolve_config(config: RunConfig, config_sha256: str) -> ResolvedConfig:
         config_sha256=config_sha256,
         portfolios=portfolios,
         loaders=resolved_loaders,
+        assembly=tuple(step for step in assembly if step is not None),
         rules=tuple(step for step in rules if step is not None),
         terms=tuple(step for step in terms if step is not None),
         constraints=tuple(step for step in constraints if step is not None),

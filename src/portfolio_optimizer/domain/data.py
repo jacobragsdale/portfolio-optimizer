@@ -1,20 +1,75 @@
-"""The per-portfolio data bundle and the typed forms of the non-frame inputs."""
+"""The named datasets between loading and slicing, the per-portfolio bundle, and the typed non-frame inputs."""
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal, Self
+from typing import Literal, Self, override
 
 import pandas as pd
 from pydantic import Field, model_validator
 
 from portfolio_optimizer.domain.frames import FrameSchemaError, validate_frame
-from portfolio_optimizer.domain.schemas import COVARIANCE, HOLDINGS, TARGETS, UNIVERSE
+from portfolio_optimizer.domain.optimizer_frame import column_dtype_conflicts, stack_frames
+from portfolio_optimizer.domain.schemas import HOLDINGS, RESERVED_DATASET_NAMES, TARGETS, UNIVERSE
 from portfolio_optimizer.domain.types import Clock, PortfolioId, StrictModel
 from portfolio_optimizer.ratelimit import RateLimiter
+
+
+class Frames(Mapping[str, pd.DataFrame]):
+    """Every loaded dataset by name, as assembly steps see them: an immutable mapping of name to frame.
+
+    An assembly step receives one and returns a new one built with :meth:`with_frame` and
+    :meth:`without`; the engine validates the engine-known frames after the last step. Looking up a
+    name that is not present raises ``KeyError`` naming what is.
+    """
+
+    __slots__ = ("_frames",)
+
+    def __init__(self, frames: Mapping[str, pd.DataFrame] | None = None) -> None:
+        self._frames: dict[str, pd.DataFrame] = dict(frames or {})
+        for name, frame in self._frames.items():
+            if not isinstance(frame, pd.DataFrame):
+                msg = f"dataset {name!r} is a {type(frame).__name__}, expected DataFrame"
+                raise TypeError(msg)
+
+    @override
+    def __getitem__(self, name: str) -> pd.DataFrame:
+        try:
+            return self._frames[name]
+        except KeyError:
+            msg = f"no dataset {name!r}; available: {sorted(self._frames)}"
+            raise KeyError(msg) from None
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._frames)
+
+    @override
+    def __len__(self) -> int:
+        return len(self._frames)
+
+    @override
+    def __repr__(self) -> str:
+        return f"Frames({', '.join(f'{name}={len(frame)} rows' for name, frame in self._frames.items())})"
+
+    def with_frame(self, name: str, frame: pd.DataFrame) -> "Frames":
+        """Return a copy in which ``name`` is ``frame``, added or replaced."""
+        return Frames({**self._frames, name: frame})
+
+    def without(self, *names: str) -> "Frames":
+        """Return a copy without ``names``; every name must be present."""
+        missing = [name for name in names if name not in self._frames]
+        if missing:
+            msg = f"no dataset(s) {missing}; available: {sorted(self._frames)}"
+            raise KeyError(msg)
+        return Frames({name: frame for name, frame in self._frames.items() if name not in names})
+
+    def row_counts(self) -> dict[str, int]:
+        """Rows per dataset, for audit records."""
+        return {name: len(frame) for name, frame in self._frames.items()}
 
 
 class PortfolioDetails(StrictModel):
@@ -96,9 +151,15 @@ class PortfolioDataError(ValueError):
 class PortfolioData:
     """Everything the engine knows about one portfolio, validated on construction.
 
-    Rules return a new instance via :meth:`with_frames`; every construction re-validates each
-    frame against its schema and the cross-frame invariants, so a rule cannot hand the
-    optimizer an inconsistent bundle.
+    ``holdings`` is what the portfolio owns and ``universe`` what it may buy; a held name need not be
+    buyable. Both may carry any analytics columns beyond their schemas, and :meth:`optimizer_frame`
+    stacks them into the single frame an optimizer consumes — so every construction checks that
+    the columns the two share agree on dtype. ``extras`` are the other datasets the run carried
+    through assembly, already reduced to this portfolio's rows where they have a ``portfolio_id``.
+
+    Rules return a new instance via :meth:`with_changes`; every construction re-validates each frame
+    against its schema and the cross-frame invariants, so a rule cannot hand the optimizer an
+    inconsistent bundle.
     """
 
     details: PortfolioDetails
@@ -107,53 +168,58 @@ class PortfolioData:
     targets: pd.DataFrame
     style: StyleConstraints
     as_of: datetime
-    covariance: pd.DataFrame | None = None
+    extras: Mapping[str, pd.DataFrame] = field(default_factory=dict)
     applied_rules: tuple[str, ...] = field(default=())
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "extras", dict(self.extras))
         failures: list[str] = []
         for name, frame, schema in (("holdings", self.holdings, HOLDINGS), ("universe", self.universe, UNIVERSE), ("targets", self.targets, TARGETS)):
             try:
                 validate_frame(frame, schema)
             except FrameSchemaError as error:
                 failures.extend(f"{name}: {failure}" for failure in error.failures)
-        if self.covariance is not None:
-            try:
-                validate_frame(self.covariance, COVARIANCE)
-            except FrameSchemaError as error:
-                failures.extend(f"covariance: {failure}" for failure in error.failures)
+        failures.extend(self._extras_failures())
         if failures:
             raise PortfolioDataError(self.details.portfolio_id, failures)
         failures.extend(self._cross_frame_failures())
         if failures:
             raise PortfolioDataError(self.details.portfolio_id, failures)
 
+    def _extras_failures(self) -> list[str]:
+        failures: list[str] = []
+        for name, frame in self.extras.items():
+            if name in RESERVED_DATASET_NAMES:
+                failures.append(f"extras: {name!r} is an engine-known dataset name")
+            if not isinstance(frame, pd.DataFrame):
+                failures.append(f"extras: {name!r} is a {type(frame).__name__}, expected DataFrame")
+        return failures
+
     def _cross_frame_failures(self) -> list[str]:
         failures: list[str] = []
         if self.as_of.tzinfo is None or self.as_of.utcoffset() != UTC.utcoffset(self.as_of):
             failures.append(f"as_of must be timezone-aware UTC, got {self.as_of!r}")
-        foreign = sorted({str(p) for p in self.holdings["portfolio_id"]} - {self.details.portfolio_id})
+        own = {self.details.portfolio_id}
+        foreign = sorted({str(p) for p in self.holdings["portfolio_id"]} - own)
         if foreign:
             failures.append(f"holdings contain other portfolios {foreign}")
-        universe_ids = {str(s) for s in self.universe["security_id"]}
-        missing_held = sorted({str(s) for s in self.holdings["security_id"]} - universe_ids)
-        if missing_held:
-            failures.append(f"held securities missing from universe {missing_held}")
         foreign_benchmarks = sorted({str(b) for b in self.targets["benchmark_id"]} - {self.details.benchmark_id})
         if foreign_benchmarks:
             failures.append(f"targets contain other benchmarks {foreign_benchmarks}")
-        missing_targets = sorted({str(s) for s in self.targets["security_id"]} - universe_ids)
+        known = {str(s) for s in self.universe["security_id"]} | {str(s) for s in self.holdings["security_id"]}
+        missing_targets = sorted({str(s) for s in self.targets["security_id"]} - known)
         if missing_targets:
-            failures.append(f"target securities missing from universe {missing_targets}")
-        if self.covariance is not None:
-            covered = {str(s) for s in self.covariance["security_id_a"]} & {str(s) for s in self.covariance["security_id_b"]}
-            uncovered = sorted(universe_ids - covered)
-            if uncovered:
-                failures.append(f"covariance does not cover universe securities {uncovered}")
+            failures.append(f"target securities in neither holdings nor universe {missing_targets}")
         sectors = {str(s) for s in self.universe["sector"]}
         unknown_sectors = sorted(set(self.style.sector_bounds) - sectors)
         if unknown_sectors:
             failures.append(f"sector_bounds reference sectors absent from universe {unknown_sectors}")
+        failures.extend(f"holdings and universe disagree on {conflict}" for conflict in column_dtype_conflicts({"holdings": self.holdings, "universe": self.universe}))
+        for name, frame in self.extras.items():
+            if "portfolio_id" in frame.columns:
+                foreign_rows = sorted({str(p) for p in frame["portfolio_id"]} - own)
+                if foreign_rows:
+                    failures.append(f"extras[{name!r}] contain other portfolios {foreign_rows}")
         return failures
 
     @property
@@ -161,23 +227,35 @@ class PortfolioData:
         """Identifier of this portfolio."""
         return PortfolioId(self.details.portfolio_id)
 
+    def optimizer_frame(self, *, source_column: str | None = "source") -> pd.DataFrame:
+        """Holdings and universe stacked into the one frame an optimizer consumes.
+
+        Rows are the holdings followed by the universe; a name that is both held and buyable appears
+        twice, told apart by ``source_column`` (``"holdings"`` or ``"universe"``; pass ``None`` to
+        omit it). Columns are the union of both frames' columns, holdings' first. A column one side
+        lacks is null on that side, promoted to its nullable dtype where needed (``bool`` to
+        ``boolean``, ``int64`` to ``Int64``); shared columns keep their common dtype, which the
+        bundle's own validation has already checked.
+        """
+        return stack_frames({"holdings": self.holdings, "universe": self.universe}, source_column=source_column)
+
     def with_changes(
         self,
         *,
         holdings: pd.DataFrame | None = None,
         universe: pd.DataFrame | None = None,
         targets: pd.DataFrame | None = None,
-        covariance: pd.DataFrame | None = None,
         style: StyleConstraints | None = None,
+        extras: Mapping[str, pd.DataFrame] | None = None,
     ) -> "PortfolioData":
-        """Return a re-validated copy with the given frames or style replaced."""
+        """Return a re-validated copy with the given frames, style, or extras replaced."""
         return replace(
             self,
             holdings=self.holdings if holdings is None else holdings,
             universe=self.universe if universe is None else universe,
             targets=self.targets if targets is None else targets,
-            covariance=self.covariance if covariance is None else covariance,
             style=self.style if style is None else style,
+            extras=self.extras if extras is None else extras,
         )
 
     def with_rule_applied(self, qualname: str) -> "PortfolioData":

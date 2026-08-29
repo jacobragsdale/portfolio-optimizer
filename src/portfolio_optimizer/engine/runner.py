@@ -20,6 +20,7 @@ from portfolio_optimizer.cvx.adapter import solver_version
 from portfolio_optimizer.domain.data import IoContext, PortfolioData, PortfolioDataError
 from portfolio_optimizer.domain.results import (
     Artifact,
+    AssemblyAuditRecord,
     ConstraintReport,
     DriftReport,
     OrderInputs,
@@ -42,6 +43,7 @@ from portfolio_optimizer.engine.manifest import (
     GitInfo,
     RunManifest,
     artifact_records,
+    assembly_records,
     created_at,
     dataset_records,
     failed_record,
@@ -201,7 +203,7 @@ def run(resolved: ResolvedConfig, io: IoContext, *, git: GitInfo, config_path: s
     log.info("run starting", extra={"run_id": io.run_id, "mode": config.execution.mode, "stage": "load"})
     try:
         loaded = load_datasets(resolved, data_root=io.data_root, run_id=io.run_id)
-        assembled = assemble(loaded, config)
+        assembled = assemble(loaded, resolved)
     except (ValueError, KeyError) as error:
         msg = f"inputs rejected: {error}"
         raise InputRejectedError(msg) from error
@@ -210,7 +212,7 @@ def run(resolved: ResolvedConfig, io: IoContext, *, git: GitInfo, config_path: s
     ordered = tuple(outcomes[portfolio_id] for portfolio_id in assembled.portfolio_ids)
     artifacts, publish_error = _persist_and_publish(ordered, resolved, io)
     exit_code = _exit_code(ordered, publish_error)
-    manifest = _manifest(resolved, io, git, config_path, settings, loaded.audits, ordered, artifacts, exit_code, publish_error)
+    manifest = _manifest(resolved, io, git, config_path, settings, loaded.audits, assembled.audits, ordered, artifacts, exit_code, publish_error)
     manifest_path = write_manifest(manifest, io.output_dir / io.run_id)
     log.info("run finished", extra={"run_id": io.run_id, "stage": "manifest", "exit_code": exit_code})
     return RunReport(run_id=io.run_id, outcomes=ordered, manifest=manifest, manifest_path=manifest_path, artifacts=artifacts, exit_code=exit_code)
@@ -370,6 +372,7 @@ def _manifest(
     config_path: str,
     settings: Mapping[str, str],
     audits: Sequence[DatasetAudit],
+    assembly_audits: Sequence[AssemblyAuditRecord],
     outcomes: Sequence[Outcome],
     artifacts: Sequence[Artifact],
     exit_code: int,
@@ -396,6 +399,7 @@ def _manifest(
         terms=step_records(step_refs(resolved.terms)),
         constraints=step_records(step_refs(resolved.constraints)),
         datasets=dataset_records(audits),
+        assembly=assembly_records(assembly_audits),
         portfolios=tuple(records),
         artifacts=artifact_records(artifacts),
         exit_code=exit_code,
