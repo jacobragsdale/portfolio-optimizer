@@ -57,10 +57,14 @@ objective. Things to measure, in the order they are cheap:
    `solver.options` — no engine change, one config key. Workers run with `--nthreads 1` and
    `OMP_NUM_THREADS=1`, which is right for many small portfolios and wrong for a few enormous ones;
    the worker thread count may want to be a setting rather than a constant.
-2. **Other solvers, same problem.** OSQP at its defaults hits its iteration limit (`user_limit`) on this
-   book and the engine correctly refuses the answer; a first-order method on 400k variables needs its
-   tolerances and `max_iter` set deliberately, and the answer it then gives is a looser optimum the
-   verifier still has to accept at `violation_tol`. HiGHS and SCS: measure with the same script.
+2. **Other solvers, same problem — measured, and Clarabel is the only one that works at defaults.**
+   OSQP stops at its iteration limit (`user_limit`) and the engine refuses the answer. HiGHS fails
+   outright (its QP method is not built for 400k variables). SCS reports `optimal` after 260 s and
+   12,750 iterations, and the verifier rejects it: max violation 6e-7 is inside `violation_tol`, but
+   the objective gap is 1.05e-5 against a 1e-5 relative tolerance — the first-order optimum is looser
+   than the verifier's definition of agreement. Any of the three would need its tolerances and
+   iteration cap set deliberately, and the verifier's tolerances loosened to match, before it could
+   even be compared on time. Clarabel stays the default; the thread is making *it* faster.
 3. **Warm starts** move from "pointless" to worth trying, but only for the solvers that use them
    (OSQP, SCS); Clarabel does not. See the thread under *Other threads*.
 4. **The formulation.** Three variables per name (`w`, `buy`, `sell`) plus the slack every inequality
