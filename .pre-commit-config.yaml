@@ -9,6 +9,7 @@ repos:
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: detect-private-key
+      - id: check-json
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.5
@@ -26,3 +27,13 @@ repos:
     rev: v0.0.75   # keep in sync with the pinned ty dev dependency
     hooks:
       - id: ty
+
+  - repo: local
+    hooks:
+      - id: prettier-json
+        name: prettier (json)
+        entry: prettier --write
+        language: node
+        additional_dependencies: ["prettier@3.9.6"]
+        types: [json]
+        # Prettier 3.5+ `objectWrap: collapse` puts every object that fits in printWidth (200, matching Ruff) on one line.

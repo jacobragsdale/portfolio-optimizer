@@ -72,7 +72,7 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 
 ```bash
 uv sync --locked
-uv run pre-commit run --all-files   # ruff format, ruff check --fix, ty, uv lock
+uv run pre-commit run --all-files   # ruff format, ruff check --fix, ty, uv lock, prettier for JSON
 uv run pytest                       # unit, property, and smoke tests; warnings are errors
 ```
 
