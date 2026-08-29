@@ -251,32 +251,9 @@ objective and pay 7.5 s of Clarabel at 100k names for an answer a numpy function
 milliseconds. The engine around the solve is the valuable part: the build, the chain, the derived
 graph, the verifier, the rounding, the manifest. None of it cares where `w` came from.
 
-So `solver` becomes a step like the others: the shipped `cvxpy` step, or a qualified function with the
-contract `(spec: ProblemSpec, chain: ChainState[, params]) -> F64` — the weights, aligned to the spec.
-The side profile derives the trade from `w`, the verifier checks the configured constraints against the
-result exactly as it does for the solver's answer, rounding and drift run unchanged, and the manifest
-records the step and its hashes where it records the solver and its version today. What is *different*
-for a pure-function solve, and has to be said plainly:
-
-- **Terms do not apply.** There is no objective to minimize; the objective terms in the config are
-  either forbidden with this step or evaluated after the fact as a report line ("this fill scores
-  0.0042 on the configured objective"), which is the more useful of the two — it is how a heuristic is
-  compared with the optimizer on the same book.
-- **Verification is the whole contract.** A heuristic that violates a constraint is refused, with the
-  same `ConstraintReport`, so a pure-function step is exactly as auditable as a solve — and a
-  constraint that step cannot verify (a custom Python one) is reported `unverified`, as now. This is
-  the argument for the design: the engine's guarantees are the verifier's, not the solver's.
-- **The chain is unchanged.** The function receives the same `ChainState` a constraint would, so a
-  buy-only pro-rata fill respects predecessors' ADV usage by reading `adv_remaining` — the closed set of
-  chain quantities the declarative-constraints thread names is what a pure function should read too.
-- **Infeasibility has no diagnosis.** A solver says *infeasible*; a function either returns a `w` or
-  raises. The step raising is a portfolio failure at stage `solve` with its message; the engine does not
-  try to explain it.
-
-Leaning: do it, after the side profiles exist, since a pure function for one side is the case that
-motivates it and the profile is what turns a `w` into a trade. The `Solution` record gains a way to say
-"no solver" (`solver = "function:<qualname>"`, no iterations, no solver objective), the verifier's
-objective comparison is skipped for it, and `solve_task` picks the step the way it picks a term.
+Folded into *Constraints: one contract, three ways to author it* — the solve step is the engine's
+interpreter seam, and a pure function is its third implementation beside the shipped cvxpy step and a
+firm's own library. The contract, what a step must not do, and how its answer is verified are there.
 
 ## Acceptance scenarios the business writes, and a harness that runs them
 
@@ -408,59 +385,78 @@ function for what no grammar says; and other optimizer types, which want a *cons
 function that turns loaded tables into the whole constraint set. The design that serves all three is not
 three features. It is one contract with three authoring surfaces.
 
-### The contract is a data structure, not a function signature
+### The contract is behavioural, not structural
 
-A **row block**: a `label`; the decision vector it constrains — `w`, `buy`, `sell`, or `trade`
-(`buy + sell`); a sparse matrix, or none for elementwise; a lower and/or upper bound as numpy vectors; a
-start policy, `accept` or `infeasible`; and, when a bound came from the chain, which chain quantity.
-Every shipped constraint is one or two of these: `long_only` is elementwise on `w` with a lower bound,
-`cash_bounds` a ones-row on `w`, `sector_bounds` the group matrix, `turnover_cap` a ones-row on `trade`,
-the ADV cap two elementwise blocks of which one, on `buy`, has a chain right-hand side. All affine, so
-convex by construction.
+The first draft of this thread (2026-08-29) fixed a *shape* — an affine row block with a sparse matrix
+and bounds — as the contract, so that one cvxpy interpreter and one numpy verifier could share it.
+That over-commits the engine to affine constraints at the moment they are becoming pydantic objects
+consumed by libraries the engine does not own (the desk has a class that takes constraints as a
+dictionary and builds the cvxpy problem itself), and it makes an optimization with no constraints a
+special case. So the contract is what the *engine* — build, schedule, dispatch, verify, manifest — has
+to know about a constraint, and nothing a solver does with it:
 
-Then the engine has **one** cvxpy interpreter — `A @ v` between its bounds — and **one** numpy verifier —
-`A @ v − b` — and every way of authoring a constraint compiles to rows:
+1. **It is a strict pydantic model.** Serializable, hashed into the config, JSON-schema-able: all the
+   GUI and the manifest need. `constraints` becomes `tuple[ConstraintSpec, ...]`, a discriminated union
+   on `kind`; today's `StepSpec` — a name and params — is its first member.
+2. **It declares whether it reads the chain, and which quantities.** The dependency graph is derived
+   from that declaration alone; the engine never looks inside for a matrix. This is the one clause
+   that cannot be relaxed: the graph is the engine's, and it cannot be inferred from an opaque object.
+3. **It has a unique label**, checked at resolve; the report, the manifest, and the acceptance
+   harness key on it. `params_sha256` tells two instances apart for provenance; the label, for people.
+4. **It *may* offer `residual(spec, solution, chain) -> F64`.** If it does, the verifier checks it; if
+   not, it is `unverified` — today's posture for custom constraints, made uniform. Agreement between the
+   residual and what the solver was told is the author's responsibility, as it is for the shipped
+   twins today.
 
-| Surface | Who | Rows come from |
+Nothing about vectors, matrices, or affineness. `constraints: []` is a valid run whose verifier has only
+the side profile's identity checks to make, not a special case.
+
+### The solve step is the interpreter
+
+Everything shape-specific belongs to the *consumer*. The solve step receives
+`(spec, chain, constraints, terms, params)` and returns `w`, aligned to the spec; the side profile turns
+`w` into the trade; the verifier is what makes the answer trustworthy; the manifest records the step
+and its hashes where it records the solver and its version today. Three interpreters, and the engine
+treats them identically:
+
+| Solve step | Consumes constraints how | Verification |
 |---|---|---|
-| Declarative JSON in the template | PMs, through the GUI | a validated grammar, compiled with the spec, the style, and the chain |
-| A Python constraint function | quants | `(spec, chain?, params?) -> rows`, through a small typed API (`bound_on`, `group_sum`, ...) |
-| A constraints builder | other optimizer types | the same function contract, returning many labelled blocks from tables it reads out of params, the style, or spec columns |
-| cvxpy atoms | the rare non-affine case (a risk cone) | today's `x` signature, kept as the escape hatch; `unverified` unless twinned |
+| The shipped cvxpy step (today's adapter) | a registry of `to_cvxpy` per model kind; an unknown kind is a resolve-time error *for this step* | each model's `residual`, plus the objective against the terms' twins |
+| The desk's library, `solver: {"name": "firm.optim:solve"}` | as dicts (`model_dump`), building cvxpy itself | each model's `residual`; no objective comparison unless the step reports one |
+| A pure function — a pro-rata fill, a cash raise | reads them or ignores them | each model's `residual`; the configured terms evaluated after the fact as a report line, which is how a heuristic is compared with the optimizer on one book |
 
-The builder is not a step kind. It is a constraint function that returns fifty blocks instead of one; a
-table the spec does not carry is attached as columns by a *rule* first, so that "what the solver saw"
-stays entirely inside the spec.
+Side compatibility (a model naming `sell` in a buy-only run), the start policy (`accept` or
+`infeasible` is a *field* on the model; the logic that applies it lives in whichever step consumes the
+model), DCP: all the interpreter's business. What is *not* the interpreter's business, and has to be
+said plainly: the step returns `w` and nothing else — it writes no files, reads no clock, sees no other
+portfolio; infeasibility is an exception with a message, which the engine records as a failure at stage
+`solve` without trying to explain. The `Solution` record gains a way to say "no solver" (`solver =
+"function:<qualname>"`, no iterations, no solver objective), and the verifier skips the objective
+comparison for it.
 
-### Seven properties, which together are the "ironclad" part
+That makes the solve step the engine's principal extension seam, and its contract wants the same care
+the term and constraint contracts got — signature checked at resolve, engine arguments by fixed name,
+params validated — and the same dry construction under the run's side profile, so a step that cannot
+run here fails at `validate-config`.
 
-1. **The solver sees rows, and the rows are persisted.** They are numpy, so they go in the `.npz` beside
-   the spec and hash into the manifest. The problem the solver saw becomes a file.
-2. **Verification needs no code.** `verify` checks persisted rows against the persisted solution by
-   matrix arithmetic — no cvxpy, no custom package, no twin. Every row-based constraint is verified and
-   the twin table in `check.py` is deleted; only the atom escape hatch can be `unverified`. Two
-   interpreters over one datum is a stronger guarantee than two implementations by one author.
-3. **A row names its vector, and the side profile refuses what it does not have** — at resolve, from the
-   config alone for declarative rows, by the dry construction under *Sides* for Python ones.
-4. **Start policy is declared per block and applied by the engine, once.** For `a·w ≤ b` violated at
-   `w0`, `accept` relaxes the bound to `max(b, a·w0)` (`min` for a lower bound); the `ub = max(w0, cap)`
-   rule under *Sides* is the elementwise case. No constraint implements it itself.
-5. **Chain quantities are a closed set** — `adv_remaining` today — that a row may *name* in its bound;
-   the graph derivation reads the declaration. Never an expression: the verifier needs a numpy twin of
-   every chain quantity, and a closed set is the only way to have one for each.
-6. **Labels are unique per run**, checked at resolve, and everything downstream keys on them: the
-   report, the manifest, the acceptance harness's `bound_by: country_caps`. `params_sha256` tells two
-   instances of one builder apart for provenance; the label tells them apart for people.
-7. **Numbers come from exactly three places** — a config literal, the per-portfolio style, a spec column
-   or chain quantity — and the row records which.
+### What this leaves of the first draft
 
-Property 7 is the genuine fork, and it wants deciding before anything is written. Today
-`StyleConstraints` is a fixed model. Under this design **the run config is the schema of the style**: a
-declarative constraint saying `"at_most": {"from_style": "country_bounds"}` is what makes
-`country_bounds` a required, typed key in every portfolio's style, validated at assembly before any
-build. A run-wide default with a per-portfolio override is the guess, because that is how desks
-describe limits — and it is the piece that makes the GUI honest: a PM adds a limit without a release,
-and a missing number is a config error, never a silent zero.
+- **The row block is demoted** from the contract to one convenient family of shipped models: a few
+  `kind`s that carry a matrix and a bound — `bound_on`, `group_bound`, a flagged subset — with
+  `residual` and `to_cvxpy` implemented once for the family. Useful, not load-bearing.
+- **The declarative JSON grammar *is* those models.** No intermediate representation to compile to: a
+  `{"kind": "group_bound", ...}` object in the config is validated as that model, rendered by the GUI
+  from that model's schema, hashed as that model, and interpreted by whichever step consumes it.
+- **"What the solver saw" is persisted as the models' JSON** beside the spec, not as matrices. Reading
+  it needs no code; verifying it needs the models' own `residual`, which is the shipped package's or
+  the firm's.
+- **Property 7 survives unchanged and is still the fork to decide.** Where the *numbers* come from —
+  a literal, the per-portfolio style, a spec column or chain quantity — is independent of shape. The
+  leaning stands: the run config is the schema of the style; a model saying
+  `"at_most": {"from_style": "country_bounds"}` makes `country_bounds` a required, typed key in every
+  portfolio's style, validated at assembly before any build, with a run-wide default and a
+  per-portfolio override. It is what lets a PM add a limit without a release, and what makes a
+  missing number a config error rather than a silent zero.
 
 ### The declarative grammar
 
@@ -475,14 +471,14 @@ and a missing number is a config error, never a silent zero.
 ]
 ```
 
-**The grammar stops at affine.** An expression is one decision vector, optionally summed, summed by a
-categorical column, or restricted to a boolean flag, compared against a literal, a style value, a spec
-column, or a named chain quantity. It compiles to rows; it never lives beside a Python spelling of the
-same limit, so the two cannot drift. `constraints` becomes a heterogeneous list — bare name, step
-object, declarative object — so the published JSON Schema grows a discriminated union, which is also
-what a GUI renders forms from. A declarative row naming a column the universe does not carry cannot be
-caught at resolve, which runs before data loads; the check moves to a gate just after assembly, with the
-same collected-failures shape, so the run still dies before it does any work.
+**The shipped grammar stops at affine.** An expression is one decision vector, optionally summed,
+summed by a categorical column, or restricted to a boolean flag, compared against a literal, a style
+value, a spec column, or a named chain quantity. Each spelling is one model kind with one `residual`
+and one `to_cvxpy`; a Python function that says the same limit is refused, so the two cannot drift.
+The published JSON Schema grows a discriminated union, which is also what a GUI renders forms from. A
+model naming a column the universe does not carry cannot be caught at resolve, which runs before data
+loads; the check moves to a gate just after assembly, with the same collected-failures shape, so the
+run still dies before it does any work.
 
 The spec generalizes `sector_matrix` / `sector_lb` / `sector_ub` to `groups`: one sparse membership
 block per categorical universe column (a megabyte each at 100k names, however many groups), built the
@@ -502,17 +498,17 @@ promise something the solver will not deliver.
 
 ### Order of work, and what it composes with
 
-1. The row block, the one interpreter, the one verifier; the shipped constraints rewritten to return
-   rows and their twins deleted; rows persisted in the `.npz`. Self-contained, and most of the value.
-2. Labels on steps, unique at resolve.
-3. `groups` on the spec and `group_bounds`, with `sector_bounds` as its instance.
-4. The declarative grammar compiling to rows, the schema union, the after-assembly gate.
-5. The style schema derived from the config.
-6. The GUI, which by then is a form renderer over the schema plus a call to `validate-config`.
+1. `constraints` as a discriminated union of pydantic models with the four-clause contract; `StepSpec`
+   as the first kind; labels unique at resolve; the shipped constraints' twins become each model's
+   `residual`. The shipped cvxpy adapter becomes the shipped solve step behind the same seam a firm's
+   library or a pure function would use.
+2. `groups` on the spec and the row-block family (`bound_on`, `group_bound`), with `sector_bounds` as
+   an instance.
+3. The style schema derived from the config (property 7).
+4. The GUI, which by then is a form renderer over the schema plus a call to `validate-config`.
 
-It composes with the pure-function solve above — rows are data, so a pro-rata fill can *read* the
-constraints it must respect — and with the acceptance harness, whose expectation vocabulary is the
-labels and the residuals the rows already carry.
+It composes with the acceptance harness, whose expectation vocabulary is the labels and residuals the
+models already carry, and it absorbs the pure-function solve: not a mode, the third interpreter.
 
 ## A GUI edits the template
 
