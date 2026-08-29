@@ -72,6 +72,7 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 - [Reference: outputs, the manifest, and the CLI](docs/reference-manifest.md)
 - [Explanation: how the engine is built and why](docs/explanation-architecture.md)
 - [Explanation: the life of a run](docs/explanation-run-lifecycle.md)
+- [Explanation: reading a run config](docs/explanation-run-config.md)
 
 ## Development
 

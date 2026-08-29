@@ -2,8 +2,10 @@
 
 This page walks through one run of the engine from the command line to the manifest, in the order the
 code executes. It is the companion to [how the engine is built and why](explanation-architecture.md):
-that page explains the design decisions; this one shows where each of them takes effect. Read it once
-end to end and the module layout under `src/portfolio_optimizer/` will feel inevitable.
+that page explains the design decisions; this one shows where each of them takes effect. For the same
+machinery seen from the config file's side — block by block, what each one tells the engine — see
+[reading a run config](explanation-run-config.md). Read this page once end to end and the module
+layout under `src/portfolio_optimizer/` will feel inevitable.
 
 The short version: **read the config → prove every named function exists and has the right shape →
 load data through loaders → join and validate → slice per portfolio → apply rules → build a

@@ -2,7 +2,8 @@
 
 A run config is one JSON document validated by `portfolio_optimizer.config.models.RunConfig`. Unknown
 keys are rejected everywhere. Money, weights, and rates are written as JSON strings (`"0.05"`) and become
-exact `Decimal` values; solver tolerances are JSON numbers.
+exact `Decimal` values; solver tolerances are JSON numbers. For what each block means to the engine and
+when it is consumed, see [reading a run config](explanation-run-config.md).
 
 ## JSON Schema
 
@@ -37,7 +38,7 @@ steps (those declaring `ctx`/`chain`) are only allowed under the sequential mode
 | `rules` | step list | no | Business-logic rules, run in order. Default `[]`. |
 | `objective` | object | yes | `sense` (only `minimize`), `terms` (step list, at least one). |
 | `constraints` | step list | no | Constraint functions. Default `[]`. |
-| `solver` | object | no | `name` (default `CLARABEL`; must be installed in cvxpy), `options` (map of solver options, default `{}`), `time_limit_s` (number > 0 or absent), `verbose` (default `false`). |
+| `solver` | object | no | `name` (default `CLARABEL`; must be installed in cvxpy), `options` (map of solver options passed verbatim to `Problem.solve`, default `{}`), `time_limit_s` (number > 0 or absent; mapped to `time_limit` for `CLARABEL`, `OSQP`, and `HIGHS` and to `time_limit_secs` for `SCS`; any other solver rejects it), `verbose` (default `false`). |
 | `post_solve` | object | no | `violation_tol` (default `1e-6`), `objective_rel_tol` (`1e-5`), `objective_abs_tol` (`1e-9`); all > 0. |
 | `sink` | step | yes | Where orders go. |
 | `execution` | object | yes | See below. |
@@ -124,8 +125,11 @@ Config-load errors: a chain-aware step under `parallel`; a `ctx` rule under
 
 ## Shipped steps
 
-Loaders: `csv` (`path`, `decimal_columns`, `utc_datetime_columns`, `dtypes`), `parquet` (`path`,
-`decimal_columns`), `json_constraints` (`path`). Rules: `cap_single_name` (`max_weight`),
+Loaders: `csv` (`path`, `decimal_columns`, `utc_datetime_columns`, `dtypes`), `csv_per_portfolio`
+(`directory`, `decimal_columns`, `utc_datetime_columns`, `dtypes`; reads `<directory>/<portfolio_id>.csv`
+per portfolio under the input's rate limit), `parquet` (`path`, `decimal_columns`), `json_constraints`
+(`path`). The column-typing params apply to extra datasets only; engine-known datasets are typed by
+their schema. Rules: `cap_single_name` (`max_weight`),
 `add_zero_alpha`, `restrict_low_liquidity` (`min_adv_shares`), `avoid_cross_portfolio_wash_sales`
 (`ctx`). Terms: `tracking_error`, `risk`, `alpha` (`column`), `tax_cost`, `transaction_cost` (`cost_bps`),
 each with `weight` (default `"1"`). Constraints: `trade_balance`, `long_only`, `max_weight`,
