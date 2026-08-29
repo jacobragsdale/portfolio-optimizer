@@ -1,0 +1,199 @@
+"""Generate the JSON Schema (draft 2020-12) for the run config.
+
+The schema is derived from the Pydantic models, so it cannot disagree with what the engine accepts,
+and then tightened with what the models alone cannot say: a separate definition per kind of step
+with the parameter schema of every shipped function, the required dataset names, and the execution
+rule that `parallel` needs a process executor. The checked-in ``configs/run-config.schema.json`` is
+this function's output; a test fails when the two drift apart.
+"""
+
+import inspect
+import json
+from collections.abc import Mapping
+from types import ModuleType
+from typing import get_type_hints
+
+import pandas as pd
+
+from portfolio_optimizer import loaders, rules, sinks, terms
+from portfolio_optimizer.config.models import STEP_NAME_DESCRIPTION, STEP_NAME_PATTERN, RunConfig
+from portfolio_optimizer.config.resolve import StepKind
+from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm
+from portfolio_optimizer.domain.schemas import OPTIONAL_DATASETS, REQUIRED_DATASETS
+from portfolio_optimizer.domain.types import Params
+
+SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+SCHEMA_ID = "https://raw.githubusercontent.com/jacobragsdale/portfolio-optimizer/main/configs/run-config.schema.json"
+
+type JsonObject = dict[str, object]
+
+_ENUM_DESCRIPTIONS: Mapping[str, str] = {
+    "ExecutionMode": "Where build and solve happen; see `execution.mode`.",
+    "ExecutorKind": "Worker pool type: spawned processes or threads.",
+    "JoinCardinality": "Expected key cardinality of a join, enforced by pandas.",
+    "JoinHow": "Join type: keep every left row, or only matched rows.",
+    "OnError": "What happens after a portfolio fails.",
+}
+
+_STEP_DEFINITIONS: Mapping[StepKind, tuple[str, str, ModuleType]] = {
+    "loader": ("LoaderStep", "A dataset loader from `loaders.py`: `(request: LoadRequest[, params]) -> DataFrame`.", loaders),
+    "constraints_loader": ("ConstraintsLoaderStep", "The loader for the `constraints` dataset: `(request: LoadRequest[, params]) -> dict[portfolio_id, style constraints]`.", loaders),
+    "rule": ("RuleStep", "A business-logic rule from `rules.py`: `(data: PortfolioData[, params][, ctx: SolveContext]) -> PortfolioData`.", rules),
+    "term": ("TermStep", "An objective term from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ObjectiveTerm`.", terms),
+    "constraint": ("ConstraintStep", "A constraint from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ConstraintSet`.", terms),
+    "sink": ("SinkStep", "An order sink from `sinks.py`: `(orders: DataFrame, io: IoContext[, params]) -> tuple[Artifact, ...]`.", sinks),
+}
+
+
+def run_config_schema() -> JsonObject:
+    """The complete, documented JSON Schema for a run config."""
+    base = RunConfig.model_json_schema()
+    defs = _object(base["$defs"])
+    del defs["StepSpec"]
+    for kind, (title, description, module) in _STEP_DEFINITIONS.items():
+        defs[title] = _step_definition(title, description, shipped_steps(module, kind))
+    for name, description in _ENUM_DESCRIPTIONS.items():
+        defs[name] = {**_object(defs[name]), "description": description}
+    properties = _object(base["properties"])
+    properties["portfolios"] = _with_ref(properties["portfolios"], "LoaderStep")
+    properties["rules"] = _with_items(properties["rules"], "RuleStep")
+    properties["constraints"] = _with_items(properties["constraints"], "ConstraintStep")
+    properties["sink"] = _with_ref(properties["sink"], "SinkStep")
+    properties["datasets"] = _datasets_schema(properties["datasets"])
+    dataset_config = _object(defs["DatasetConfig"])
+    dataset_properties = _object(dataset_config["properties"])
+    dataset_properties["loader"] = _with_ref(dataset_properties["loader"], "LoaderStep")
+    dataset_config["properties"] = dataset_properties
+    defs["DatasetConfig"] = dataset_config
+    defs["ConstraintsDatasetConfig"] = _constraints_dataset_config(dataset_config)
+    objective = _object(defs["ObjectiveConfig"])
+    objective_properties = _object(objective["properties"])
+    objective_properties["terms"] = _with_items(objective_properties["terms"], "TermStep")
+    objective["properties"] = objective_properties
+    defs["ObjectiveConfig"] = objective
+    defs["ExecutionConfig"] = _execution_schema(_object(defs["ExecutionConfig"]))
+    return {
+        "$schema": SCHEMA_DIALECT,
+        "$id": SCHEMA_ID,
+        "title": "Portfolio optimizer run config",
+        **{key: value for key, value in base.items() if key not in ("$defs", "title", "properties")},
+        "properties": properties,
+        "$defs": dict(sorted(defs.items())),
+    }
+
+
+def schema_json(schema: JsonObject) -> str:
+    """Canonical text form of the schema: sorted keys, two-space indent, trailing newline."""
+    return json.dumps(schema, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def shipped_steps(module: ModuleType, kind: StepKind) -> dict[str, type[Params] | None]:
+    """Every public function in ``module`` that is a step of ``kind``, with its params model (or ``None``)."""
+    found: dict[str, type[Params] | None] = {}
+    for name, value in sorted(vars(module).items()):
+        if name.startswith("_") or not inspect.isfunction(value) or value.__module__ != module.__name__:
+            continue
+        hints = get_type_hints(value)
+        if _kind_of(module, hints.get("return")) != kind:
+            continue
+        params = hints.get("params")
+        found[name] = params if inspect.isclass(params) and issubclass(params, Params) else None
+    return found
+
+
+def _kind_of(module: ModuleType, returns: object) -> StepKind | None:
+    if module is loaders:
+        return "loader" if returns is pd.DataFrame else "constraints_loader"
+    if module is rules:
+        return "rule"
+    if module is sinks:
+        return "sink"
+    if returns is ObjectiveTerm:
+        return "term"
+    if returns is ConstraintSet:
+        return "constraint"
+    return None
+
+
+def _step_definition(title: str, description: str, shipped: Mapping[str, type[Params] | None]) -> JsonObject:
+    needs_params = sorted(name for name, model in shipped.items() if model is not None and any(field.is_required() for field in model.model_fields.values()))
+    string_form: JsonObject = {"type": "string", "pattern": STEP_NAME_PATTERN, "description": f"A step without parameters. {STEP_NAME_DESCRIPTION}"}
+    if needs_params:
+        string_form["not"] = {"enum": needs_params}
+        string_form["$comment"] = f"These shipped steps have required parameters and must use the object form: {needs_params}"
+    conditions: list[JsonObject] = []
+    for name, model in shipped.items():
+        params_schema: JsonObject = (
+            _params_schema(model) if model is not None else {"type": "object", "additionalProperties": False, "maxProperties": 0, "description": f"`{name}` takes no parameters."}
+        )
+        then: JsonObject = {"properties": {"params": params_schema}}
+        if name in needs_params:
+            then["required"] = ["params"]
+        conditions.append({"if": {"properties": {"name": {"const": name}}, "required": ["name"]}, "then": then})
+    object_form: JsonObject = {
+        "type": "object",
+        "description": "A step with parameters.",
+        "properties": {
+            "name": {"type": "string", "pattern": STEP_NAME_PATTERN, "description": STEP_NAME_DESCRIPTION},
+            "params": {"type": "object", "description": "Parameters validated against the function's `params` model; for shipped steps the exact shape is given below."},
+        },
+        "required": ["name"],
+        "additionalProperties": False,
+        "allOf": conditions,
+    }
+    return {"title": title, "description": description, "$comment": f"Shipped steps: {sorted(shipped)}", "anyOf": [string_form, object_form]}
+
+
+def _params_schema(model: type[Params]) -> JsonObject:
+    schema = _object(model.model_json_schema())
+    schema.pop("title", None)
+    return schema
+
+
+def _datasets_schema(datasets: object) -> JsonObject:
+    schema = _object(datasets)
+    required = list(REQUIRED_DATASETS)
+    properties: JsonObject = {name: {"$ref": "#/$defs/DatasetConfig"} for name in (*required, *OPTIONAL_DATASETS) if name != "constraints"}
+    properties["constraints"] = {"$ref": "#/$defs/ConstraintsDatasetConfig"}
+    return {
+        **schema,
+        "properties": dict(sorted(properties.items())),
+        "required": required,
+        "additionalProperties": {"$ref": "#/$defs/DatasetConfig"},
+        "$comment": f"Required: {required}; optional engine-known: {list(OPTIONAL_DATASETS)}; any other key is an extra dataset for assembly.joins.",
+    }
+
+
+def _constraints_dataset_config(dataset_config: JsonObject) -> JsonObject:
+    return {
+        **dataset_config,
+        "title": "ConstraintsDatasetConfig",
+        "description": "How the `constraints` dataset (style constraints per portfolio) is loaded.",
+        "properties": {"loader": {"$ref": "#/$defs/ConstraintsLoaderStep", "description": "A loader returning a mapping of portfolio id to style-constraint object."}},
+    }
+
+
+def _execution_schema(execution: JsonObject) -> JsonObject:
+    return {
+        **execution,
+        "if": {"properties": {"mode": {"const": "parallel"}}, "required": ["mode"]},
+        "then": {"properties": {"executor": {"const": "process"}}, "$comment": "cvxpy solves are not thread-safe"},
+    }
+
+
+def _with_ref(property_schema: object, definition: str) -> JsonObject:
+    schema = _object(property_schema)
+    schema.pop("allOf", None)
+    return {**schema, "$ref": f"#/$defs/{definition}"}
+
+
+def _with_items(property_schema: object, definition: str) -> JsonObject:
+    schema = _object(property_schema)
+    return {**schema, "items": {"$ref": f"#/$defs/{definition}"}}
+
+
+def _object(value: object) -> JsonObject:
+    if not isinstance(value, dict):
+        msg = f"expected a JSON object, got {type(value).__name__}"
+        raise TypeError(msg)
+    return {str(key): item for key, item in value.items()}

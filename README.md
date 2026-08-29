@@ -42,6 +42,10 @@ No decorators, no registries. Before any data loads, the engine imports every na
 signature, validates its `params` against the function's own model, and records its source hash in the
 run manifest. Loaders, objective terms, constraints, and sinks follow the same rule.
 
+Run configs are validated three ways: live in your editor through `"$schema": "./run-config.schema.json"`,
+by `portfolio-optimizer validate-config` (which also imports and checks every step), and by any JSON Schema
+validator against [`configs/run-config.schema.json`](configs/run-config.schema.json).
+
 ## Layout
 
 | Path | Role |
@@ -51,7 +55,7 @@ run manifest. Loaders, objective terms, constraints, and sinks follow the same r
 | `src/portfolio_optimizer/domain/` | Frame schemas, the per-portfolio data bundle, the pure-data problem spec and results. |
 | `src/portfolio_optimizer/config/` | The run-config models and the step resolver. |
 | `src/portfolio_optimizer/cvx/adapter.py` | The only module that imports cvxpy. |
-| `configs/example_run.json`, `examples/data/` | The shipped example. |
+| `configs/example_run.json`, `configs/run-config.schema.json`, `examples/data/` | The shipped example and the generated JSON Schema. |
 | `docs/` | Tutorial, how-to guides, reference, and explanation. |
 
 ## Documentation

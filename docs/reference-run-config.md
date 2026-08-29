@@ -4,6 +4,27 @@ A run config is one JSON document validated by `portfolio_optimizer.config.model
 keys are rejected everywhere. Money, weights, and rates are written as JSON strings (`"0.05"`) and become
 exact `Decimal` values; solver tolerances are JSON numbers.
 
+## JSON Schema
+
+`configs/run-config.schema.json` is a draft 2020-12 JSON Schema generated from the models
+(`uv run portfolio-optimizer schema`), so it cannot disagree with what the engine accepts; a test fails
+when the checked-in file is stale. It carries every field's description, a definition per kind of step,
+and — for every shipped loader, rule, term, constraint, and sink — the exact parameter schema, applied
+by `if`/`then` on the step's `name`. Custom (qualified) step names are allowed with any parameters,
+which the engine validates at resolution time instead.
+
+Ways to validate a config:
+
+| Method | What it checks |
+|---|---|
+| `"$schema": "./run-config.schema.json"` at the top of the file | Live validation and completion in editors that honor `$schema` (VS Code, JetBrains). The key is accepted and ignored by the engine. |
+| `uv run portfolio-optimizer validate-config CONFIG` | Everything: the models, plus importing every step, checking signatures, validating params (including custom steps), and the execution-mode rules. |
+| Any draft 2020-12 validator (`check-jsonschema`, `jsonschema`, `ajv`) against the schema file | The schema alone — suitable for CI pipelines that do not install the engine. |
+
+The schema cannot express two rules the models enforce: `as_of` must carry a time zone, and chain-aware
+steps (those declaring `ctx`/`chain`) are only allowed under the sequential modes with `fail_fast`.
+`validate-config` reports both.
+
 ## Top level
 
 | Key | Type | Required | Description |

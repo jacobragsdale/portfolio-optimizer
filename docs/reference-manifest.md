@@ -17,6 +17,7 @@
 | `validate-config CONFIG` | | Validate and resolve a config without loading data; lists every resolved step with `[external]` and `[ctx]`/`[chain]` markers. |
 | `verify` | `--manifest PATH --portfolio ID` | Reload the persisted spec, solution, and chain state and recompute every shipped constraint and term in numpy. Never imports cvxpy. |
 | `diff-manifests LEFT RIGHT` | | Print the first stage at which two runs diverge, overall and per portfolio. |
+| `schema` | | Print the JSON Schema for run configs; `> configs/run-config.schema.json` regenerates the checked-in file. |
 
 ## Output directory
 

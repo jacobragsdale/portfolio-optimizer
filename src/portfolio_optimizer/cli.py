@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from portfolio_optimizer.config.models import config_sha256, load_run_config
 from portfolio_optimizer.config.resolve import ConfigResolutionError, resolve_config
+from portfolio_optimizer.config.schema import run_config_schema, schema_json
 from portfolio_optimizer.domain.data import IoContext
 from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec, Solution, StepRef, Tolerances
 from portfolio_optimizer.domain.types import Clock, IdFactory
@@ -58,6 +59,9 @@ def run_cli(argv: Sequence[str], *, env: Mapping[str, str], clock: Clock, ids: I
         return _validate_config(args, stdout=stdout, stderr=stderr)
     if command == "verify":
         return _verify(args, stdout=stdout, stderr=stderr)
+    if command == "schema":
+        stdout.write(schema_json(run_config_schema()))
+        return EXIT_OK
     return _diff_manifests(args, stdout=stdout, stderr=stderr)
 
 
@@ -73,6 +77,7 @@ def _parser() -> argparse.ArgumentParser:
     verify_parser = commands.add_parser("verify", help="re-verify a persisted solution without cvxpy")
     verify_parser.add_argument("--manifest", type=Path, required=True)
     verify_parser.add_argument("--portfolio", required=True)
+    commands.add_parser("schema", help="print the JSON Schema for run configs (redirect to configs/run-config.schema.json)")
     diff = commands.add_parser("diff-manifests", help="name the first stage at which two runs diverge")
     diff.add_argument("left", type=Path)
     diff.add_argument("right", type=Path)
