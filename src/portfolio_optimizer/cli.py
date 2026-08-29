@@ -180,8 +180,8 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
     if chain.content_hash() != record.chain_inputs_sha256:
         stderr.write("persisted chain state does not match the manifest's chain hash\n")
         return EXIT_PORTFOLIO_FAILED
-    terms = [StepRef(t.qualname, t.params) for t in manifest.terms]
-    constraints = [StepRef(c.qualname, c.params) for c in manifest.constraints]
+    terms = [StepRef(t.qualname, t.params, t.label) for t in manifest.terms]
+    constraints = [StepRef(c.qualname, c.params, c.label) for c in manifest.constraints]
     profile = profile_for(str(manifest.config.resolved.get("sides", "both")))
     report = verify(spec, solution, chain, terms, constraints, Tolerances(eq=record.check.tolerance_eq, ineq=record.check.tolerance_ineq), profile=profile)
     stdout.writelines(

@@ -22,7 +22,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from portfolio_optimizer.config.models import RunConfig
-from portfolio_optimizer.config.resolve import ResolvedConfig, ResolvedStep, resolve_config
+from portfolio_optimizer.config.resolve import ResolvedConfig, ResolvedConstraint, ResolvedStep, resolve_config
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError
 from portfolio_optimizer.domain.results import (
     ChainState,
@@ -135,7 +135,7 @@ def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainS
         solution,
         chain,
         step_refs(resolved.terms),
-        step_refs(resolved.constraints),
+        constraint_refs(resolved.constraints),
         Tolerances(eq=post.violation_tol, ineq=post.violation_tol, obj_rel=post.objective_rel_tol, obj_abs=post.objective_abs_tol),
         profile=resolved.profile,
     )
@@ -161,8 +161,19 @@ def tradable_ids(profile: SideProfile, spec: ProblemSpec) -> tuple[str, ...]:
 
 
 def step_refs(steps: Sequence[ResolvedStep]) -> tuple[StepRef, ...]:
-    """Reduce resolved steps to the data the verifier and manifest need."""
-    return tuple(StepRef(step.qualname, step.params.model_dump(mode="json") if step.params is not None else {}) for step in steps)
+    """Reduce resolved term steps to the data the verifier and manifest need; a term's label is its bare name."""
+    return tuple(StepRef(step.qualname, _params_json(step), step.name.rpartition(":")[2]) for step in steps)
+
+
+def constraint_refs(constraints: Sequence[ResolvedConstraint]) -> tuple[StepRef, ...]:
+    """Reduce resolved constraints to the data the verifier and manifest need, under their labels."""
+    return tuple(StepRef(constraint.qualname, _params_json(constraint.step), constraint.label) for constraint in constraints)
+
+
+def _params_json(step: ResolvedStep) -> dict[str, object]:
+    if step.params is None:
+        return {}
+    return {str(key): value for key, value in step.params.model_dump(mode="json").items()}
 
 
 def failure(portfolio_id: str, stage: str, error: BaseException) -> PortfolioFailure:

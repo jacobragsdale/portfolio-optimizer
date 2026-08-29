@@ -321,10 +321,15 @@ class DriftReport:
 
 @dataclass(frozen=True, slots=True)
 class StepRef:
-    """A step's identity and parameters as data, for cvxpy-free verification and the manifest."""
+    """A step's identity, parameters, and label as data, for cvxpy-free verification and the manifest.
+
+    The label is what the report and the manifest key on; for a term it is the bare name, for a
+    constraint whatever the config gave it.
+    """
 
     qualname: str
     params: Mapping[str, object]
+    label: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -404,13 +409,14 @@ class Tolerances:
 
 @dataclass(frozen=True, slots=True)
 class ConstraintCheck:
-    """Maximum violation of one constraint group, compared with its tolerance."""
+    """Maximum violation of one residual, compared with its tolerance; ``label`` names the constraint it belongs to."""
 
     name: str
     violation: float
     tolerance: float
     passed: bool
     worst_security: str | None
+    label: str
 
 
 @dataclass(frozen=True, slots=True)

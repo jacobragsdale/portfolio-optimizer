@@ -17,6 +17,11 @@ from portfolio_optimizer.domain.sides import TWO_SIDED, SideProfile
 
 DEFAULT_TOLERANCES = Tolerances()
 
+SOLUTION_LABEL = "solution"
+"""Label of the checks on the solution itself: finiteness and the spec hash."""
+IDENTITY_LABEL = "identity"
+"""Label of the side profile's trade-identity checks."""
+
 type ConstraintTwin = Callable[[ProblemSpec, Solution, ChainState, Mapping[str, object]], list[tuple[str, F64]]]
 type TermTwin = Callable[[ProblemSpec, Solution, Mapping[str, object]], float]
 
@@ -115,15 +120,15 @@ def verify(
     """Recompute the trade identity, every verifiable constraint's violation, and the objective, and compare with the solver."""
     checks: list[ConstraintCheck] = []
     unverified: list[str] = []
-    checks.append(_check("finite", 0.0 if all(np.isfinite(a).all() for a in (solution.w, solution.buy, solution.sell)) else float("inf"), tolerances.eq, None))
-    checks.append(_check("spec_hash_matches", 0.0 if solution.spec_hash == spec.content_hash() else float("inf"), 0.0, None))
-    checks.extend(_residual_check(name, residual, spec, tolerances) for name, residual in profile.identity_residuals(spec, solution))
+    checks.append(_check("finite", 0.0 if all(np.isfinite(a).all() for a in (solution.w, solution.buy, solution.sell)) else float("inf"), tolerances.eq, None, SOLUTION_LABEL))
+    checks.append(_check("spec_hash_matches", 0.0 if solution.spec_hash == spec.content_hash() else float("inf"), 0.0, None, SOLUTION_LABEL))
+    checks.extend(_residual_check(name, residual, spec, tolerances, IDENTITY_LABEL) for name, residual in profile.identity_residuals(spec, solution))
     for ref in constraints:
         twin = CONSTRAINT_TWINS.get(ref.qualname)
         if twin is None:
             unverified.append(ref.qualname)
             continue
-        checks.extend(_residual_check(name, residual, spec, tolerances) for name, residual in twin(spec, solution, chain, ref.params))
+        checks.extend(_residual_check(name, residual, spec, tolerances, ref.label) for name, residual in twin(spec, solution, chain, ref.params))
     objective_terms: list[tuple[str, float]] = []
     for ref in terms:
         twin_term = TERM_TWINS.get(ref.qualname)
@@ -146,12 +151,12 @@ def verify(
     )
 
 
-def _residual_check(name: str, residual: F64, spec: ProblemSpec, tolerances: Tolerances) -> ConstraintCheck:
+def _residual_check(name: str, residual: F64, spec: ProblemSpec, tolerances: Tolerances, label: str) -> ConstraintCheck:
     """The worst entry of a residual vector against its tolerance; an equality residual is the identity's ``trade_balance``."""
     tolerance = tolerances.eq if name == "trade_balance" else tolerances.ineq
     worst = int(np.argmax(residual)) if residual.size and residual.size == spec.n else None
-    return _check(name, float(residual.max(initial=0.0)), tolerance, spec.security_ids[worst] if worst is not None else None)
+    return _check(name, float(residual.max(initial=0.0)), tolerance, spec.security_ids[worst] if worst is not None else None, label)
 
 
-def _check(name: str, violation: float, tolerance: float, worst: str | None) -> ConstraintCheck:
-    return ConstraintCheck(name=name, violation=violation, tolerance=tolerance, passed=violation <= tolerance, worst_security=worst)
+def _check(name: str, violation: float, tolerance: float, worst: str | None, label: str) -> ConstraintCheck:
+    return ConstraintCheck(name=name, violation=violation, tolerance=tolerance, passed=violation <= tolerance, worst_security=worst, label=label)

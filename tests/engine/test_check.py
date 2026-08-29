@@ -13,10 +13,11 @@ from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.check import CONSTRAINT_TWINS, TERM_TWINS, verify
 from portfolio_optimizer.engine.solve import solve
+from portfolio_optimizer.engine.tasks import constraint_refs, step_refs
 from tests.conftest import Factories, Frames, resolved_example
 
-CONSTRAINTS = [StepRef(f"portfolio_optimizer.terms:{name}", {}) for name in ("long_only", "max_weight", "cash_bounds", "sector_bounds", "turnover_cap", "cumulative_adv_participation")]
-TERMS = [StepRef("portfolio_optimizer.terms:tracking_error", {"weight": "1"})]
+CONSTRAINTS = [StepRef(f"portfolio_optimizer.terms:{name}", {}, name) for name in ("long_only", "max_weight", "cash_bounds", "sector_bounds", "turnover_cap", "cumulative_adv_participation")]
+TERMS = [StepRef("portfolio_optimizer.terms:tracking_error", {"weight": "1"}, "tracking_error")]
 
 
 def rest_solution(spec: ProblemSpec, **overrides: object) -> Solution:
@@ -76,7 +77,7 @@ def test_sector_bounds_use_the_configured_tolerance(make: Factories) -> None:
     spec = make.spec(sector_ub=np.array([0.5]))
     tight = verify(spec, rest_solution(spec), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS)
     assert "sector_ub" in tight.violated
-    loose = verify(spec, rest_solution(spec), ChainState.empty(spec.security_ids), TERMS, [StepRef("portfolio_optimizer.terms:sector_bounds", {"tolerance": "0.5"})])
+    loose = verify(spec, rest_solution(spec), ChainState.empty(spec.security_ids), TERMS, [StepRef("portfolio_optimizer.terms:sector_bounds", {"tolerance": "0.5"}, "sector_bounds")])
     assert loose.passed
 
 
@@ -102,7 +103,9 @@ def test_objective_gap_is_checked_and_custom_steps_are_reported_unverified(make:
     spec = make.spec()
     wrong_objective = verify(spec, rest_solution(spec, objective=0.5), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS)
     assert not wrong_objective.objective_passed
-    custom = verify(spec, rest_solution(spec, objective=0.5), ChainState.empty(spec.security_ids), [*TERMS, StepRef("my_firm.terms:esg", {})], [*CONSTRAINTS, StepRef("my_firm.terms:beta", {})])
+    custom = verify(
+        spec, rest_solution(spec, objective=0.5), ChainState.empty(spec.security_ids), [*TERMS, StepRef("my_firm.terms:esg", {}, "esg")], [*CONSTRAINTS, StepRef("my_firm.terms:beta", {}, "beta")]
+    )
     assert custom.unverified == ("my_firm.terms:beta", "my_firm.terms:esg")
     assert custom.objective_passed  # the total cannot be compared when a term is unknown
 
@@ -125,8 +128,8 @@ def test_true_optimum_verifies_including_the_objective(make: Factories, frames: 
     resolved = resolved_example(objective={"terms": terms}, constraints=[ref.qualname.split(":")[1] for ref in CONSTRAINTS])
     chain = ChainState.empty(spec.security_ids)
     solution = solve(spec, chain, resolved)
-    refs_terms = [StepRef(step.qualname, step.params.model_dump() if step.params is not None else {}) for step in resolved.terms]
-    refs_constraints = [StepRef(step.qualname, step.params.model_dump() if step.params is not None else {}) for step in resolved.constraints]
+    refs_terms = step_refs(resolved.terms)
+    refs_constraints = constraint_refs(resolved.constraints)
     report = verify(spec, solution, chain, refs_terms, refs_constraints)
     assert report.passed, (report.violated, report.objective_gap)
     assert report.objective_gap <= 1e-9 + 1e-5 * abs(report.recomputed_objective)

@@ -55,6 +55,31 @@ class StepSpec(StrictModel):
         return ":" in self.name
 
 
+LABEL_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
+
+
+class ConstraintStep(StepSpec):
+    """A constraint as configured: a function step with a label.
+
+    ``kind`` is the discriminator the list of constraint models grows on; ``function`` — a step from
+    `terms.py` or an importable module — is the only kind today. A bare string is accepted, as for any
+    step. The engine asks nothing else of a constraint than what it declares: its label, whether it
+    reads the chain, and (through the verifier's twin table) how to check it.
+    """
+
+    kind: Literal["function"] = Field(default="function", description="What kind of constraint this is; `function` names a step. Other kinds are planned.")
+    label: str | None = Field(
+        default=None,
+        pattern=LABEL_PATTERN,
+        description="A name unique among the run's constraints; the verifier's report and the manifest key on it. Defaults to the step's bare name, so it only needs setting when one function is instantiated twice.",
+    )
+
+    @property
+    def effective_label(self) -> str:
+        """The configured label, or the step's bare name."""
+        return self.label if self.label is not None else self.name.rpartition(":")[2]
+
+
 def is_step_name(value: str) -> bool:
     """True when ``value`` is a well-formed bare or qualified step name."""
     return _STEP_NAME.match(value) is not None
@@ -192,7 +217,9 @@ class RunConfig(StrictModel):
         description="Which side the run trades. `both`: buys and sells in one problem, portfolios coupling through buys only. The value selects the side profile that supplies the trade identity, the tradable set the dependency graph is built from, and the chain; one-sided runs (`buy`, `sell`) are next.",
     )
     objective: ObjectiveConfig = Field(description="What the optimizer minimizes.")
-    constraints: tuple[StepSpec, ...] = Field(default=(), description="Constraint steps from `terms.py`. The trade identity (`w = w0 + buy - sell`) is not a step; `sides` supplies it.")
+    constraints: tuple[ConstraintStep, ...] = Field(
+        default=(), description="Constraints: steps from `terms.py`, each with an optional `label`. The trade identity (`w = w0 + buy - sell`) is not a constraint; `sides` supplies it."
+    )
     solver: SolverConfig = Field(default_factory=SolverConfig, description="Solver selection and options.")
     post_solve: PostSolveConfig = Field(default_factory=PostSolveConfig, description="Verification tolerances.")
     sink: StepSpec = Field(description="Sink step from `sinks.py`, called once with every solved portfolio's orders.")

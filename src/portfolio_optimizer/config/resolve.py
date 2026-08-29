@@ -25,7 +25,7 @@ from typing import Literal, get_type_hints
 import pandas as pd
 from pydantic import ValidationError
 
-from portfolio_optimizer.config.models import RunConfig, StepSpec
+from portfolio_optimizer.config.models import ConstraintStep, RunConfig, StepSpec
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, installed_solvers, solver_failures
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec
@@ -127,6 +127,25 @@ class ResolvedStep:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedConstraint:
+    """A constraint as the engine consumes it: its label, the model as configured, and the resolved step behind it."""
+
+    label: str
+    spec: ConstraintStep
+    step: ResolvedStep
+
+    @property
+    def reads_chain(self) -> bool:
+        """True when the constraint reads what higher-priority portfolios traded; what the dependency graph is derived from."""
+        return self.step.needs_context
+
+    @property
+    def qualname(self) -> str:
+        """The step's qualified name."""
+        return self.step.qualname
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedConfig:
     """The run config with every step resolved; the only form the engine consumes."""
 
@@ -138,20 +157,20 @@ class ResolvedConfig:
     rules: tuple[ResolvedStep, ...]
     solve_order: ResolvedStep | None
     terms: tuple[ResolvedStep, ...]
-    constraints: tuple[ResolvedStep, ...]
+    constraints: tuple[ResolvedConstraint, ...]
     sink: ResolvedStep
     profile: SideProfile
 
     @property
     def chain_aware_steps(self) -> tuple[ResolvedStep, ...]:
-        """Terms and constraints that read what higher-priority portfolios bought; if there are none, no portfolio waits for another."""
-        return tuple(step for step in (*self.terms, *self.constraints) if step.needs_context)
+        """Terms and constraints that read what higher-priority portfolios traded; if there are none, no portfolio waits for another."""
+        return tuple(step for step in (*self.terms, *(constraint.step for constraint in self.constraints)) if step.needs_context)
 
     @property
     def all_steps(self) -> tuple[ResolvedStep, ...]:
         """Every resolved step, in pipeline order."""
         ordering = () if self.solve_order is None else (self.solve_order,)
-        return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *ordering, *self.terms, *self.constraints, self.sink)
+        return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *ordering, *self.terms, *(constraint.step for constraint in self.constraints), self.sink)
 
 
 def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable[[], Sequence[str]] = installed_solvers) -> ResolvedConfig:
@@ -175,12 +194,18 @@ def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable
     rules = [resolve(spec, "rule", f"rules[{i}]") for i, spec in enumerate(config.rules)]
     solve_order = resolve(config.solve_order, "solve_order", "solve_order") if config.solve_order is not None else None
     terms = [resolve(spec, "term", f"objective.terms[{i}]") for i, spec in enumerate(config.objective.terms)]
-    constraints: list[ResolvedStep | None] = []
+    constraints: list[ResolvedConstraint | None] = []
+    labels: dict[str, int] = {}
     for i, spec in enumerate(config.constraints):
         if spec.name == "trade_balance":
             failures.append(f"constraints[{i}]: 'trade_balance' is not a configurable constraint; the trade identity comes from `sides` ({config.sides!r}) — remove it")
             continue
-        constraints.append(resolve(spec, "constraint", f"constraints[{i}]"))
+        label = spec.effective_label
+        if label in labels:
+            failures.append(f"constraints[{i}]: label {label!r} is also used by constraints[{labels[label]}]; give one of them a `label`")
+        labels.setdefault(label, i)
+        step = resolve(spec, "constraint", f"constraints[{i}]")
+        constraints.append(ResolvedConstraint(label=label, spec=spec, step=step) if step is not None else None)
     sink = resolve(config.sink, "sink", "sink")
     resolved_loaders = {name: step for name, step in loaders.items() if step is not None}
     if failures or portfolios is None or sink is None or len(resolved_loaders) != len(loaders):
@@ -194,7 +219,7 @@ def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable
         rules=tuple(step for step in rules if step is not None),
         solve_order=solve_order,
         terms=tuple(step for step in terms if step is not None),
-        constraints=tuple(step for step in constraints if step is not None),
+        constraints=tuple(constraint for constraint in constraints if constraint is not None),
         sink=sink,
         profile=profile_for(config.sides),
     )

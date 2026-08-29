@@ -61,7 +61,7 @@ def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig) -> Sol
         )
     x = variables(spec.n)
     terms = [_term(step, x, spec, chain) for step in resolved.terms]
-    constraints = [identity_constraints(resolved.profile.sides, x, spec.w0), *(_constraint_set(step, x, spec, chain) for step in resolved.constraints)]
+    constraints = [identity_constraints(resolved.profile.sides, x, spec.w0), *(_constraint_set(constraint.step, x, spec, chain) for constraint in resolved.constraints)]
     raw = solve_problem(x, terms, constraints, solver=solver.name, options=solver.options, time_limit_s=solver.time_limit_s, verbose=solver.verbose)
     return _classify(raw, spec, chain, spec_hash, resolved.profile)
 

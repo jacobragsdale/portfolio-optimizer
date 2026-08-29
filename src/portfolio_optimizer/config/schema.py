@@ -54,8 +54,10 @@ def run_config_schema() -> JsonObject:
     base = RunConfig.model_json_schema()
     defs = _object(base["$defs"])
     del defs["StepSpec"]
+    constraint_model = _object(_object(defs.pop("ConstraintStep"))["properties"])
     for kind, (title, description, module) in _STEP_DEFINITIONS.items():
-        defs[title] = _step_definition(title, description, shipped_steps(module, kind), defs)
+        extra = {name: constraint_model[name] for name in ("kind", "label")} if kind == "constraint" else {}
+        defs[title] = _step_definition(title, description, shipped_steps(module, kind), defs, extra)
     for name, description in _ENUM_DESCRIPTIONS.items():
         defs[name] = {**_object(defs[name]), "description": description}
     properties = _object(base["properties"])
@@ -126,7 +128,7 @@ def _kind_of(module: ModuleType, returns: object) -> StepKind | None:
     return None
 
 
-def _step_definition(title: str, description: str, shipped: Mapping[str, type[Params] | None], defs: JsonObject) -> JsonObject:
+def _step_definition(title: str, description: str, shipped: Mapping[str, type[Params] | None], defs: JsonObject, extra_properties: JsonObject | None = None) -> JsonObject:
     needs_params = sorted(name for name, model in shipped.items() if model is not None and any(field.is_required() for field in model.model_fields.values()))
     string_form: JsonObject = {"type": "string", "pattern": STEP_NAME_PATTERN, "description": f"A step without parameters. {STEP_NAME_DESCRIPTION}"}
     if needs_params:
@@ -147,6 +149,7 @@ def _step_definition(title: str, description: str, shipped: Mapping[str, type[Pa
         "properties": {
             "name": {"type": "string", "pattern": STEP_NAME_PATTERN, "description": STEP_NAME_DESCRIPTION},
             "params": {"type": "object", "description": "Parameters validated against the function's `params` model; for shipped steps the exact shape is given below."},
+            **(extra_properties or {}),
         },
         "required": ["name"],
         "additionalProperties": False,

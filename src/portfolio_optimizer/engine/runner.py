@@ -47,7 +47,7 @@ from portfolio_optimizer.engine.manifest import (
     write_manifest,
 )
 from portfolio_optimizer.engine.schedule import Coupling, Schedule, dependency_graph, order_portfolios
-from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, contribution, probe_task, skipped, solve_task, step_refs, summarize
+from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, constraint_refs, contribution, probe_task, skipped, solve_task, step_refs, summarize
 from portfolio_optimizer.settings import ExecutionSettings
 
 log = logging.getLogger(__name__)
@@ -488,7 +488,7 @@ def _manifest(
         config=ConfigInfo(path=config_path, sha256=resolved.config_sha256, resolved=config.model_dump(mode="json")),
         settings=dict(settings),
         terms=step_records(step_refs(resolved.terms)),
-        constraints=step_records(step_refs(resolved.constraints)),
+        constraints=step_records(constraint_refs(resolved.constraints)),
         datasets=dataset_records(audits),
         assembly=assembly_records(assembly_audits),
         portfolios=tuple(records),

@@ -42,7 +42,7 @@ from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.orders import rounding_drift, solution_to_orders
 from portfolio_optimizer.engine.pipeline import apply_rules
 from portfolio_optimizer.engine.solve import solve
-from portfolio_optimizer.engine.tasks import BuildResult, step_refs
+from portfolio_optimizer.engine.tasks import BuildResult, constraint_refs, step_refs
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
@@ -202,7 +202,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     with report.stage("expression tree") as row:
         x = variables(spec.n)
         terms = [step.invoke(x=x, spec=spec, context=chain if step.needs_context else None) for step in resolved.terms]
-        sets = [step.invoke(x=x, spec=spec, context=chain if step.needs_context else None) for step in resolved.constraints]
+        sets = [constraint.step.invoke(x=x, spec=spec, context=chain if constraint.reads_chain else None) for constraint in resolved.constraints]
     constraint_sets = [item for item in sets if isinstance(item, ConstraintSet)]
     expressions = [item.expression for item in terms if isinstance(item, ObjectiveTerm)]
     flat = [constraint for group in constraint_sets for constraint in group.constraints]
@@ -230,7 +230,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     with report.stage("engine solve() end to end", "tree + canonicalization + solve + classify, the way solve_task does it"):
         solution = solve(spec, chain, resolved)
     with report.stage("verify") as row:
-        checked = verify(spec, solution, chain, step_refs(resolved.terms), step_refs(resolved.constraints))
+        checked = verify(spec, solution, chain, step_refs(resolved.terms), constraint_refs(resolved.constraints))
     row.note = f"passed {checked.passed}, max violation {checked.max_violation:.2e}, objective gap {checked.objective_gap:.2e}"
     with report.stage("orders") as row:
         orders = solution_to_orders(spec, solution, output.order_inputs, run_id="benchmark")

@@ -168,10 +168,11 @@ class OrdersRecord(StrictModel):
 
 
 class StepRecord(StrictModel):
-    """A term or constraint as configured, for cvxpy-free re-verification."""
+    """A term or constraint as configured, for cvxpy-free re-verification; ``label`` is what the report keys on."""
 
     qualname: str
     params: dict[str, object]
+    label: str
 
 
 class PortfolioRecord(StrictModel):
@@ -240,7 +241,7 @@ def versions(solver: str, solver_version: str, packages: Mapping[str, str], work
 
 def step_records(refs: Sequence[StepRef]) -> tuple[StepRecord, ...]:
     """Serialize step references with their params rendered JSON-safe."""
-    return tuple(StepRecord(qualname=ref.qualname, params={key: _json_safe(value) for key, value in ref.params.items()}) for ref in refs)
+    return tuple(StepRecord(qualname=ref.qualname, params={key: _json_safe(value) for key, value in ref.params.items()}, label=ref.label) for ref in refs)
 
 
 def _json_safe(value: object) -> object:
