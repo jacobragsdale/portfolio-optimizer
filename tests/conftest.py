@@ -234,7 +234,7 @@ def make() -> Factories:
     return Factories(details=make_details, style=make_style, portfolio_data=make_portfolio_data, spec=make_spec, schemas=_SCHEMAS)
 
 
-NO_CHAIN_CONSTRAINTS = ["trade_balance", "long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds"]
+NO_CHAIN_CONSTRAINTS = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds"]
 """The example's constraints without the chain-aware ADV cap: nothing reads the chain, so no portfolio waits for another."""
 
 

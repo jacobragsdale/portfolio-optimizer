@@ -35,7 +35,7 @@ from portfolio_optimizer.config.models import load_run_config
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
 from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm, variables
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails, StyleConstraints
-from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec
+from portfolio_optimizer.domain.results import ChainState, Contribution, PortfolioResult, ProblemSpec
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.check import verify
@@ -243,7 +243,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
         solution.to_npz(solution_path)
         row.note = f"spec {spec_path.stat().st_size / MB:.1f} MB, solution {solution_path.stat().st_size / MB:.1f} MB on disk"
     with report.stage("pickle sizes") as row:
-        built = BuildResult(portfolio_id=PortfolioId(spec.portfolio_id), spec=spec, order_inputs=output.order_inputs, rule_audit=(), solve_order=Decimal(0))
+        built = BuildResult(portfolio_id=PortfolioId(spec.portfolio_id), spec=spec, order_inputs=output.order_inputs, rule_audit=(), solve_order=Decimal(0), tradable=())
         result = PortfolioResult(
             portfolio_id=spec.portfolio_id,
             spec=spec,
@@ -253,6 +253,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
             rule_audit=(),
             chain_state=chain,
             drift=rounding_drift(spec, solution, orders, output.order_inputs),
+            contribution=Contribution.from_orders(spec.portfolio_id, orders),
         )
         row.note = f"BuildResult {len(pickle.dumps(built)) / MB:.1f} MB (stays on the worker), PortfolioResult {len(pickle.dumps(result)) / MB:.1f} MB (returns to the client)"
     return report

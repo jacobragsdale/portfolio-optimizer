@@ -303,6 +303,13 @@ def test_resolve_config_checks_the_solver_against_what_this_process_has_installe
     assert info.value.failures == (failure,)
 
 
+def test_trade_balance_is_refused_by_name_because_sides_supplies_the_identity(fake_steps: str) -> None:
+    with pytest.raises(ConfigResolutionError) as info:
+        resolve_config(fake_config(fake_steps, constraints=["trade_balance"]), config_sha256="abc")
+    assert info.value.failures == ("constraints[0]: 'trade_balance' is not a configurable constraint; the trade identity comes from `sides` ('both') — remove it",)
+    assert resolve_config(fake_config(fake_steps), config_sha256="abc").profile.sides == "both"
+
+
 def test_a_solver_failure_is_reported_together_with_the_step_failures(fake_steps: str) -> None:
     with pytest.raises(ConfigResolutionError) as info:
         resolve_config(fake_config(fake_steps, rules=["no_such_rule"], solver={"name": "OSQP"}), config_sha256="abc", installed=lambda: ("CLARABEL",))

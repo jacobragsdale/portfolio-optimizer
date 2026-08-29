@@ -12,7 +12,7 @@ from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.solve import InfeasibleError, SolveSetupError, solve
 from tests.conftest import Factories, Frames, resolved_example
 
-CORE_CONSTRAINTS = ["trade_balance", "long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation"]
+CORE_CONSTRAINTS = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation"]
 
 
 def resolved_with(terms: Sequence[object], constraints: Sequence[object], **overrides: object) -> ResolvedConfig:
@@ -48,7 +48,7 @@ def test_solving_twice_is_bitwise_identical(make: Factories, frames: Frames) -> 
 
 def test_turnover_cap_binds_with_the_known_answer(make: Factories) -> None:
     spec = make.spec(n=2, w0=np.array([1.0, 0.0]), w_target=np.array([0.5, 0.5]), shares_held=np.array([10_000.0, 0.0]), max_turnover=0.2)
-    solution = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], ["trade_balance", "long_only", "max_weight", "cash_bounds", "turnover_cap"]))
+    solution = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], ["long_only", "max_weight", "cash_bounds", "turnover_cap"]))
     np.testing.assert_allclose(solution.w, [0.9, 0.1], atol=1e-6)
     assert float((solution.buy + solution.sell).sum()) == pytest.approx(0.2, abs=1e-6)
 
@@ -65,7 +65,7 @@ def test_a_portfolio_whose_predecessors_spent_a_names_budget_cannot_buy_it(make:
 def test_infeasible_problem_raises_with_an_arithmetic_diagnosis(make: Factories) -> None:
     spec = make.spec(ub=np.array([0.3, 0.3, 0.3]))
     with pytest.raises(InfeasibleError, match=r"upper bounds sum to 0\.900000 < required investment 1\.000000"):
-        solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], ["trade_balance", "long_only", "max_weight", "cash_bounds"]))
+        solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], ["long_only", "max_weight", "cash_bounds"]))
 
 
 def test_empty_universe_solves_trivially(make: Factories) -> None:

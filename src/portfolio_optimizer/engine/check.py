@@ -13,6 +13,7 @@ from decimal import Decimal
 import numpy as np
 
 from portfolio_optimizer.domain.results import F64, ChainState, ConstraintCheck, ConstraintReport, ProblemSpec, Solution, StepRef, Tolerances
+from portfolio_optimizer.domain.sides import TWO_SIDED, SideProfile
 
 DEFAULT_TOLERANCES = Tolerances()
 
@@ -32,17 +33,6 @@ def param(params: Mapping[str, object], name: str, default: float) -> float:
         return float(Decimal(value))
     msg = f"parameter {name!r} has unsupported type {type(value).__name__}"
     raise TypeError(msg)
-
-
-def _trade_balance(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object]) -> list[tuple[str, F64]]:
-    del chain, params
-    return [
-        ("trade_balance", np.abs(sol.w - spec.w0 - sol.buy + sol.sell)),
-        ("nonneg_buy", -sol.buy),
-        ("nonneg_sell", -sol.sell),
-        ("sell_le_w0", sol.sell - spec.w0),
-        ("complementarity", np.minimum(sol.buy, sol.sell)),
-    ]
 
 
 def _long_only(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object]) -> list[tuple[str, F64]]:
@@ -101,7 +91,6 @@ def _transaction_cost(spec: ProblemSpec, sol: Solution, params: Mapping[str, obj
 
 
 CONSTRAINT_TWINS: Mapping[str, ConstraintTwin] = {
-    "portfolio_optimizer.terms:trade_balance": _trade_balance,
     "portfolio_optimizer.terms:long_only": _long_only,
     "portfolio_optimizer.terms:max_weight": _max_weight,
     "portfolio_optimizer.terms:cash_bounds": _cash_bounds,
@@ -120,21 +109,21 @@ TERM_TWINS: Mapping[str, TermTwin] = {
 """Numpy twin of every shipped objective term."""
 
 
-def verify(spec: ProblemSpec, solution: Solution, chain: ChainState, terms: Sequence[StepRef], constraints: Sequence[StepRef], tolerances: Tolerances = DEFAULT_TOLERANCES) -> ConstraintReport:
-    """Recompute every verifiable constraint's violation and the objective, and compare with the solver."""
+def verify(
+    spec: ProblemSpec, solution: Solution, chain: ChainState, terms: Sequence[StepRef], constraints: Sequence[StepRef], tolerances: Tolerances = DEFAULT_TOLERANCES, profile: SideProfile = TWO_SIDED
+) -> ConstraintReport:
+    """Recompute the trade identity, every verifiable constraint's violation, and the objective, and compare with the solver."""
     checks: list[ConstraintCheck] = []
     unverified: list[str] = []
     checks.append(_check("finite", 0.0 if all(np.isfinite(a).all() for a in (solution.w, solution.buy, solution.sell)) else float("inf"), tolerances.eq, None))
     checks.append(_check("spec_hash_matches", 0.0 if solution.spec_hash == spec.content_hash() else float("inf"), 0.0, None))
+    checks.extend(_residual_check(name, residual, spec, tolerances) for name, residual in profile.identity_residuals(spec, solution))
     for ref in constraints:
         twin = CONSTRAINT_TWINS.get(ref.qualname)
         if twin is None:
             unverified.append(ref.qualname)
             continue
-        for name, residual in twin(spec, solution, chain, ref.params):
-            tolerance = tolerances.eq if name == "trade_balance" else tolerances.ineq
-            worst = int(np.argmax(residual)) if residual.size and residual.size == spec.n else None
-            checks.append(_check(name, float(residual.max(initial=0.0)), tolerance, spec.security_ids[worst] if worst is not None else None))
+        checks.extend(_residual_check(name, residual, spec, tolerances) for name, residual in twin(spec, solution, chain, ref.params))
     objective_terms: list[tuple[str, float]] = []
     for ref in terms:
         twin_term = TERM_TWINS.get(ref.qualname)
@@ -155,6 +144,13 @@ def verify(spec: ProblemSpec, solution: Solution, chain: ChainState, terms: Sequ
         objective_passed=objective_passed,
         unverified=tuple(unverified),
     )
+
+
+def _residual_check(name: str, residual: F64, spec: ProblemSpec, tolerances: Tolerances) -> ConstraintCheck:
+    """The worst entry of a residual vector against its tolerance; an equality residual is the identity's ``trade_balance``."""
+    tolerance = tolerances.eq if name == "trade_balance" else tolerances.ineq
+    worst = int(np.argmax(residual)) if residual.size and residual.size == spec.n else None
+    return _check(name, float(residual.max(initial=0.0)), tolerance, spec.security_ids[worst] if worst is not None else None)
 
 
 def _check(name: str, violation: float, tolerance: float, worst: str | None) -> ConstraintCheck:

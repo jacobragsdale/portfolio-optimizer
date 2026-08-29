@@ -61,11 +61,11 @@ term the verifier can mirror.
 
 ```json
 "objective": {"terms": ["tracking_error", {"name": "signal_tilt", "params": {"weight": "0.5", "column": "momentum"}}]},
-"constraints": ["trade_balance", "long_only", "max_weight", "cash_bounds", {"name": "max_names_traded", "params": {"limit": "0.02"}}]
+"constraints": ["long_only", "max_weight", "cash_bounds", {"name": "max_names_traded", "params": {"limit": "0.02"}}]
 ```
 
-The engine minimizes the sum of the terms. `trade_balance` is what defines `buy` and `sell`; leave it in
-unless you replace it deliberately.
+The engine minimizes the sum of the terms. What `buy` and `sell` mean is not a constraint you list: the
+run's `sides` supplies the trade identity to every solve.
 
 ## 3. Give the verifier a twin, or accept "unverified"
 

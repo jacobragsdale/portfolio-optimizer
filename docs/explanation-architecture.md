@@ -74,6 +74,17 @@ securities, plus a content hash. cvxpy objects are created only inside `solve()`
 buys three things: the spec is built on a worker and stays there until it is solved; it can be persisted as an `.npz` file that an auditor can open without the solver stack; and the hash pins down
 exactly what was optimized, so a change in any input changes the hash and shows up in `diff-manifests`.
 
+## The side a run trades is one object
+
+A run's `sides` selects a *side profile* (`domain/sides.py`, with its cvxpy half in `cvx/sides.py`):
+the one place in the engine that knows what the side means. The profile supplies the trade identity
+to every solve, turns the solver's weights into the reported buy/sell split, names the tradable set
+the dependency graph and the chain state are built from, reduces a solved portfolio to what a
+dependent receives, and hands the verifier the identity's numpy twin. Nothing else branches on the
+side. Today there is one profile, `both` — buys and sells in one problem, coupling through buys only;
+the one-sided profiles are what make a buy-only or sell-only run a third of the problem with no wash
+trade possible, and they slot in without touching the rest of the engine.
+
 ## Verification is independent of the solver
 
 After every solve, `engine/check.py` recomputes each constraint's violation and each objective term in

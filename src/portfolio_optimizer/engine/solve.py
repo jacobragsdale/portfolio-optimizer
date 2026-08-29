@@ -6,7 +6,9 @@ import numpy as np
 
 from portfolio_optimizer.config.resolve import ResolvedConfig, ResolvedStep
 from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm, RawSolve, solve_problem, solver_version, variables
+from portfolio_optimizer.cvx.sides import identity_constraints
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus
+from portfolio_optimizer.domain.sides import SideProfile
 
 
 class SolveSetupError(ValueError):
@@ -59,9 +61,9 @@ def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig) -> Sol
         )
     x = variables(spec.n)
     terms = [_term(step, x, spec, chain) for step in resolved.terms]
-    constraints = [_constraint_set(step, x, spec, chain) for step in resolved.constraints]
+    constraints = [identity_constraints(resolved.profile.sides, x, spec.w0), *(_constraint_set(step, x, spec, chain) for step in resolved.constraints)]
     raw = solve_problem(x, terms, constraints, solver=solver.name, options=solver.options, time_limit_s=solver.time_limit_s, verbose=solver.verbose)
-    return _classify(raw, spec, chain, spec_hash)
+    return _classify(raw, spec, chain, spec_hash, resolved.profile)
 
 
 def _term(step: ResolvedStep, x: object, spec: ProblemSpec, chain: ChainState) -> ObjectiveTerm:
@@ -80,20 +82,18 @@ def _constraint_set(step: ResolvedStep, x: object, spec: ProblemSpec, chain: Cha
     return result
 
 
-def _classify(raw: RawSolve, spec: ProblemSpec, chain: ChainState, spec_hash: str) -> Solution:
+def _classify(raw: RawSolve, spec: ProblemSpec, chain: ChainState, spec_hash: str, profile: SideProfile) -> Solution:
     if raw.status in (SolveStatus.OPTIMAL, SolveStatus.OPTIMAL_INACCURATE):
         if raw.w is None or raw.buy is None or raw.sell is None or raw.objective is None:
             msg = f"solver reported {raw.status} but returned no values ({raw.detail})"
             raise SolverFailureError(msg)
-        # When no term charges for trading, an interior-point solver may return a buy/sell pair
-        # that nets to the right trade but is not minimal (a free wash trade). The minimal split
-        # satisfies every constraint the solver's did and cannot increase any shipped term;
-        # verification then re-checks the objective against it.
-        delta = raw.w - spec.w0
+        # The profile decides the split the engine reports for the solver's weights; verification
+        # then re-checks the identity and the objective against it.
+        buy, sell = profile.split(raw.w, spec.w0)
         return Solution(
             w=raw.w,
-            buy=np.maximum(delta, 0.0),
-            sell=np.maximum(-delta, 0.0),
+            buy=buy,
+            sell=sell,
             objective=raw.objective,
             status=raw.status,
             solver=raw.solver,

@@ -23,7 +23,7 @@
       {"name": "transaction_cost", "params": {"weight": "1.0"}}
     ]
   },
-  "constraints": ["trade_balance", "long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation"],
+  "constraints": ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation"],
   "solver": {"name": "CLARABEL", "options": {"max_iter": 200}, "time_limit_s": 60.0, "verbose": false},
   "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9},
   "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},

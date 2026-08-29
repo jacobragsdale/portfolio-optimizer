@@ -16,7 +16,7 @@ from decimal import Decimal
 import numpy as np
 from pydantic import Field
 
-from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, at_least, at_most, dot, equals, matvec, minus, plus, scale, shifted, sum_squares, total
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, at_least, at_most, dot, matvec, plus, scale, shifted, sum_squares, total
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec
 from portfolio_optimizer.domain.types import Params
 
@@ -65,11 +65,6 @@ def transaction_cost(x: DecisionVars, spec: ProblemSpec, params: TransactionCost
     """``weight · c^T(buy + sell)`` with ``c = tcost_per_dollar + cost_bps / 10^4``."""
     cost = spec.tcost_per_dollar + float(params.cost_bps) / 10_000.0
     return ObjectiveTerm("transaction_cost", scale(float(params.weight), dot(cost, plus(x.buy, x.sell))))
-
-
-def trade_balance(x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
-    """``w - w0 = buy - sell``, ``buy, sell ≥ 0``, ``sell ≤ w0`` — the definition of the buy/sell split."""
-    return ConstraintSet("trade_balance", (equals(shifted(x.w, spec.w0), minus(x.buy, x.sell)), at_least(x.buy, 0.0), at_least(x.sell, 0.0), at_most(x.sell, spec.w0)))
 
 
 def long_only(x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:

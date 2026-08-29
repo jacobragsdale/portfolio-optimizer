@@ -9,7 +9,7 @@ from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.solve import solve
 from tests.conftest import make_spec, resolved_example
 
-CONSTRAINT_NAMES = ["trade_balance", "long_only", "max_weight", "cash_bounds", "turnover_cap", "cumulative_adv_participation"]
+CONSTRAINT_NAMES = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "cumulative_adv_participation"]
 
 
 @st.composite

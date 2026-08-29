@@ -5,7 +5,7 @@ the config there — every step importable, the solver installed — and reports
 worker that cannot do the run's work stops the run before it does any. :func:`build_task` then runs
 for every portfolio, chain-free and in parallel: slice, rules, the
 solve-order key, and the spec. Its result stays on the worker; :func:`summarize` sends the main
-process only what it needs to derive the schedule — the key, the buyable securities, the spec hash,
+process only what it needs to derive the schedule — the key, the tradable securities, the spec hash,
 the rule audit — stamped with the build's environment. :func:`solve_task` then runs where the build
 lives, once the portfolio's predecessors have contributed: it folds their buys into a
 :class:`ChainState`, solves, verifies, and rounds. :func:`contribution` reduces a result to the BUY
@@ -36,8 +36,8 @@ from portfolio_optimizer.domain.results import (
     RuleAuditRecord,
     StepRef,
     Tolerances,
-    derive_chain_state,
 )
+from portfolio_optimizer.domain.sides import SideProfile
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.backends import SharedRunData, TaskOutput
 from portfolio_optimizer.engine.build import build_problem_spec
@@ -88,6 +88,7 @@ class BuildResult:
     order_inputs: OrderInputs
     rule_audit: tuple[RuleAuditRecord, ...]
     solve_order: Decimal
+    tradable: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +97,7 @@ class BuildSummary:
 
     portfolio_id: PortfolioId
     solve_order: Decimal
-    buyable: tuple[str, ...]
+    tradable: tuple[str, ...]
     spec_sha256: str
     rule_audit: tuple[RuleAuditRecord, ...]
 
@@ -109,7 +110,7 @@ def build_portfolio(data: PortfolioData, resolved: ResolvedConfig, fallback_solv
     ruled, audit = apply_rules(data, resolved.rules)
     key = fallback_solve_order if resolved.solve_order is None else solve_order_key(resolved.solve_order, ruled)
     output = build_problem_spec(ruled)
-    return BuildResult(portfolio_id=data.portfolio_id, spec=output.spec, order_inputs=output.order_inputs, rule_audit=audit, solve_order=key)
+    return BuildResult(portfolio_id=data.portfolio_id, spec=output.spec, order_inputs=output.order_inputs, rule_audit=audit, solve_order=key, tradable=tradable_ids(resolved.profile, output.spec))
 
 
 def solve_order_key(step: ResolvedStep, data: PortfolioData) -> Decimal:
@@ -136,23 +137,27 @@ def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainS
         step_refs(resolved.terms),
         step_refs(resolved.constraints),
         Tolerances(eq=post.violation_tol, ineq=post.violation_tol, obj_rel=post.objective_rel_tol, obj_abs=post.objective_abs_tol),
+        profile=resolved.profile,
     )
     if not report.passed:
         raise VerificationError(report)
     orders = solution_to_orders(built.spec, solution, built.order_inputs, run_id=run_id)
-    outside = sorted(set(Contribution.from_orders(built.portfolio_id, orders).security_ids) - buyable_ids(built.spec))
+    contribution = resolved.profile.contribution(built.portfolio_id, orders)
+    outside = sorted(set(contribution.security_ids) - set(built.tradable))
     if outside:
-        msg = f"bought securities outside the buyable set: {outside}"
+        msg = f"traded securities outside the tradable set: {outside}"
         raise ChainInvariantError(msg)
     drift = rounding_drift(built.spec, solution, orders, built.order_inputs, violation_tol=post.violation_tol)
     if not drift.passed:
         raise DriftError(drift)
-    return PortfolioResult(portfolio_id=built.portfolio_id, spec=built.spec, solution=solution, report=report, orders=orders, rule_audit=built.rule_audit, chain_state=chain, drift=drift)
+    return PortfolioResult(
+        portfolio_id=built.portfolio_id, spec=built.spec, solution=solution, report=report, orders=orders, rule_audit=built.rule_audit, chain_state=chain, drift=drift, contribution=contribution
+    )
 
 
-def buyable_ids(spec: ProblemSpec) -> set[str]:
-    """The securities the spec allows a positive buy in."""
-    return {security for security, allowed in zip(spec.security_ids, spec.buyable, strict=True) if allowed}
+def tradable_ids(profile: SideProfile, spec: ProblemSpec) -> tuple[str, ...]:
+    """The securities the profile lets this spec trade on the side it couples through, sorted."""
+    return tuple(sorted(security for security, allowed in zip(spec.security_ids, profile.tradable(spec), strict=True) if allowed))
 
 
 def step_refs(steps: Sequence[ResolvedStep]) -> tuple[StepRef, ...]:
@@ -240,9 +245,7 @@ def summarize(build: TaskOutput[BuildResult]) -> TaskOutput[BuildSummary]:
     if isinstance(outcome, PortfolioFailure):
         passed_on: TaskOutput[BuildSummary] = TaskOutput(outcome=outcome, environment=build.environment, host=build.host)
         return passed_on
-    summary = BuildSummary(
-        portfolio_id=outcome.portfolio_id, solve_order=outcome.solve_order, buyable=tuple(sorted(buyable_ids(outcome.spec))), spec_sha256=outcome.spec.content_hash(), rule_audit=outcome.rule_audit
-    )
+    summary = BuildSummary(portfolio_id=outcome.portfolio_id, solve_order=outcome.solve_order, tradable=outcome.tradable, spec_sha256=outcome.spec.content_hash(), rule_audit=outcome.rule_audit)
     return TaskOutput(outcome=summary, environment=build.environment, host=build.host)
 
 
@@ -257,7 +260,7 @@ def solve_task(shared: SharedRunData, build: TaskOutput[BuildResult], *contribut
         if failed is not None:
             return skipped(built.portfolio_id, f"not solved because predecessor {failed.portfolio_id!r} failed at stage {failed.stage!r}")
         folded = [contribution for contribution in contributions if isinstance(contribution, Contribution)]
-        chain = derive_chain_state(built.spec.security_ids, built.spec.buyable, folded)
+        chain = resolved.profile.chain_state(built.spec, folded)
         return finish_or_fail(built, resolved, chain, data.run_id)
 
     return _task(shared, built.portfolio_id, pipeline)
@@ -268,7 +271,7 @@ def contribution(solved: TaskOutput[PortfolioResult]) -> Contribution | Portfoli
     outcome = solved.outcome
     if isinstance(outcome, PortfolioFailure):
         return outcome
-    return Contribution.from_orders(outcome.portfolio_id, outcome.orders)
+    return outcome.contribution
 
 
 def _task[T](data: SharedRunData, portfolio_id: str, pipeline: Callable[[SharedRunData, ResolvedConfig], T | PortfolioFailure]) -> TaskOutput[T]:

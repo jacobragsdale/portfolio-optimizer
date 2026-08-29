@@ -1,7 +1,7 @@
 """Schedule portfolios through build and solve on the run's cluster, then publish and record.
 
 Every portfolio builds at once, chain-free. The builds' summaries give the main process each
-portfolio's solve-order key and buyable securities; from those it derives the schedule
+portfolio's solve-order key and tradable securities; from those it derives the schedule
 (``engine/schedule.py``) — who solves after whom — and submits every solve with its predecessors'
 contributions as dependencies, so the cluster enforces the order and each solve folds only the buys
 that could affect it. Outcomes are classified in solve order whatever finished first, so the worker
@@ -228,10 +228,10 @@ def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session,
     expected = environment_for(config, cwd=Path.cwd(), image_digest=session.execution.image_digest)
     _check_workers(backend, shared, session, expected)
     dispatch = _Dispatch(backend, backend.share(shared), shared.run_id, len(shared.assembled.portfolio_ids), session, expected)
-    builds, failed, keys, buyable = _build_all(dispatch, shared)
+    builds, failed, keys, tradable = _build_all(dispatch, shared)
     order = order_portfolios(keys)
     coupling: Coupling = "none" if not resolved.chain_aware_steps else config.execution.dependencies
-    schedule = dependency_graph(order, buyable, frozenset(failed), coupling)
+    schedule = dependency_graph(order, tradable, frozenset(failed), coupling)
     shape = schedule.summary()
     log.info(
         "schedule derived: %d portfolio(s), %d edge(s), %d component(s), critical path %d",
@@ -278,7 +278,7 @@ def _check_workers(backend: Backend, shared: SharedRunData, session: _Session, e
 def _build_all(
     dispatch: _Dispatch, shared: SharedRunData
 ) -> tuple[dict[PortfolioId, Pending[TaskOutput[BuildResult]]], dict[PortfolioId, PortfolioFailure], dict[PortfolioId, Decimal], dict[PortfolioId, tuple[str, ...]]]:
-    """Submit every build at once and gather the summaries: each portfolio's key and buyable securities, or its failure."""
+    """Submit every build at once and gather the summaries: each portfolio's key and tradable securities, or its failure."""
     ids = shared.assembled.portfolio_ids
     builds: dict[PortfolioId, Pending[TaskOutput[BuildResult]]] = {}
     summaries: dict[PortfolioId, Pending[TaskOutput[BuildSummary]]] = {}
@@ -287,7 +287,7 @@ def _build_all(
         summaries[portfolio_id] = dispatch.backend.submit(summarize, builds[portfolio_id], key=dispatch.key(portfolio_id, "summary"), priority=dispatch.total - rank + 1)
     failed: dict[PortfolioId, PortfolioFailure] = {}
     keys: dict[PortfolioId, Decimal] = {}
-    buyable: dict[PortfolioId, tuple[str, ...]] = {}
+    tradable: dict[PortfolioId, tuple[str, ...]] = {}
     for portfolio_id in ids:
         keys[portfolio_id] = Decimal(shared.assembled.solve_orders[portfolio_id])
         summary = _accept(_result_or_error(summaries[portfolio_id]), portfolio_id, dispatch.session, dispatch.expected, solved=False)
@@ -295,8 +295,8 @@ def _build_all(
             failed[portfolio_id] = summary
         else:
             keys[portfolio_id] = summary.solve_order
-            buyable[portfolio_id] = summary.buyable
-    return builds, failed, keys, buyable
+            tradable[portfolio_id] = summary.tradable
+    return builds, failed, keys, tradable
 
 
 def _submit_solves(

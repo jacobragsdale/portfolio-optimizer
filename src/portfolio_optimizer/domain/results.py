@@ -550,6 +550,7 @@ class PortfolioResult:
     rule_audit: tuple[RuleAuditRecord, ...]
     chain_state: ChainState
     drift: DriftReport
+    contribution: Contribution
 
 
 @dataclass(frozen=True, slots=True)

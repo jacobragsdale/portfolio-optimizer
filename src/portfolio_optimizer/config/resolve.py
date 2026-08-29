@@ -29,6 +29,7 @@ from portfolio_optimizer.config.models import RunConfig, StepSpec
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, installed_solvers, solver_failures
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec
+from portfolio_optimizer.domain.sides import SideProfile, profile_for
 from portfolio_optimizer.domain.types import Params
 
 type StepKind = Literal["portfolios", "loader", "constraints_loader", "assembly", "rule", "solve_order", "term", "constraint", "sink"]
@@ -139,6 +140,7 @@ class ResolvedConfig:
     terms: tuple[ResolvedStep, ...]
     constraints: tuple[ResolvedStep, ...]
     sink: ResolvedStep
+    profile: SideProfile
 
     @property
     def chain_aware_steps(self) -> tuple[ResolvedStep, ...]:
@@ -173,7 +175,12 @@ def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable
     rules = [resolve(spec, "rule", f"rules[{i}]") for i, spec in enumerate(config.rules)]
     solve_order = resolve(config.solve_order, "solve_order", "solve_order") if config.solve_order is not None else None
     terms = [resolve(spec, "term", f"objective.terms[{i}]") for i, spec in enumerate(config.objective.terms)]
-    constraints = [resolve(spec, "constraint", f"constraints[{i}]") for i, spec in enumerate(config.constraints)]
+    constraints: list[ResolvedStep | None] = []
+    for i, spec in enumerate(config.constraints):
+        if spec.name == "trade_balance":
+            failures.append(f"constraints[{i}]: 'trade_balance' is not a configurable constraint; the trade identity comes from `sides` ({config.sides!r}) — remove it")
+            continue
+        constraints.append(resolve(spec, "constraint", f"constraints[{i}]"))
     sink = resolve(config.sink, "sink", "sink")
     resolved_loaders = {name: step for name, step in loaders.items() if step is not None}
     if failures or portfolios is None or sink is None or len(resolved_loaders) != len(loaders):
@@ -189,6 +196,7 @@ def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable
         terms=tuple(step for step in terms if step is not None),
         constraints=tuple(step for step in constraints if step is not None),
         sink=sink,
+        profile=profile_for(config.sides),
     )
 
 

@@ -1,9 +1,9 @@
 """Derive the run's schedule: the order portfolios solve in, and which ones each waits for.
 
 Pure functions over what the builds reported; nothing here knows about Dask. Portfolios couple
-across a run through buys only, so portfolio *j* depends on every higher-priority *i* that can buy a
-security *j* can buy too — and on nothing else. The graph is never transitively reduced: a solve
-folds its *direct* predecessors' own buys, so every overlapping earlier portfolio must stay a direct
+across a run through one side only — the side profile's tradable set — so portfolio *j* depends on
+every higher-priority *i* that can trade a security *j* can trade too, and on nothing else. The graph is never transitively reduced: a solve
+folds its *direct* predecessors' own contributions, so every overlapping earlier portfolio must stay a direct
 dependency.
 """
 
@@ -17,7 +17,7 @@ import numpy as np
 from portfolio_optimizer.domain.types import PortfolioId
 
 type Coupling = Literal["none", "overlap", "all"]
-"""``none``: nothing reads the chain, so nothing waits. ``overlap``: wait for higher-priority portfolios with a shared buyable security. ``all``: wait for every higher-priority portfolio."""
+"""``none``: nothing reads the chain, so nothing waits. ``overlap``: wait for higher-priority portfolios with a shared tradable security. ``all``: wait for every higher-priority portfolio."""
 
 
 def order_portfolios(keys: Mapping[PortfolioId, Decimal]) -> tuple[PortfolioId, ...]:
@@ -97,11 +97,11 @@ class Schedule:
         )
 
 
-def dependency_graph(order: Sequence[PortfolioId], buyable: Mapping[PortfolioId, Iterable[str]], unknown: frozenset[PortfolioId], coupling: Coupling) -> Schedule:
+def dependency_graph(order: Sequence[PortfolioId], tradable: Mapping[PortfolioId, Iterable[str]], unknown: frozenset[PortfolioId], coupling: Coupling) -> Schedule:
     """Which higher-priority portfolios each portfolio waits for.
 
-    ``buyable`` is each built portfolio's buyable securities; ``unknown`` names portfolios whose build
-    failed, so their buyable set is unknown and they are treated as overlapping every later portfolio
+    ``tradable`` is each built portfolio's tradable securities; ``unknown`` names portfolios whose build
+    failed, so their tradable set is unknown and they are treated as overlapping every later portfolio
     (and every earlier one). Under ``all`` every earlier portfolio is a predecessor; under ``none``
     nothing is.
     """
@@ -110,15 +110,15 @@ def dependency_graph(order: Sequence[PortfolioId], buyable: Mapping[PortfolioId,
         return Schedule(ordered, dict.fromkeys(ordered, ()), coupling)
     if coupling == "all":
         return Schedule(ordered, {portfolio_id: tuple(ordered[:position]) for position, portfolio_id in enumerate(ordered)}, coupling)
-    return Schedule(ordered, _overlap_predecessors(ordered, buyable, unknown), coupling)
+    return Schedule(ordered, _overlap_predecessors(ordered, tradable, unknown), coupling)
 
 
-def _overlap_predecessors(order: tuple[PortfolioId, ...], buyable: Mapping[PortfolioId, Iterable[str]], unknown: frozenset[PortfolioId]) -> dict[PortfolioId, tuple[PortfolioId, ...]]:
+def _overlap_predecessors(order: tuple[PortfolioId, ...], tradable: Mapping[PortfolioId, Iterable[str]], unknown: frozenset[PortfolioId]) -> dict[PortfolioId, tuple[PortfolioId, ...]]:
     """Packed-bit incidence over a sorted security index; one AND per portfolio against every earlier row."""
-    code = {security: index for index, security in enumerate(sorted({security for portfolio_id in order for security in buyable.get(portfolio_id, ())}))}
+    code = {security: index for index, security in enumerate(sorted({security for portfolio_id in order for security in tradable.get(portfolio_id, ())}))}
     incidence = np.zeros((len(order), max(len(code), 1)), dtype=np.bool_)
     for row, portfolio_id in enumerate(order):
-        for security in buyable.get(portfolio_id, ()):
+        for security in tradable.get(portfolio_id, ()):
             incidence[row, code[security]] = True
     packed = np.packbits(incidence, axis=1)
     is_unknown = np.array([portfolio_id in unknown for portfolio_id in order], dtype=np.bool_)

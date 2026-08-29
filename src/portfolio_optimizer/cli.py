@@ -17,6 +17,7 @@ from portfolio_optimizer.config.resolve import ConfigResolutionError, resolve_co
 from portfolio_optimizer.config.schema import run_config_schema, schema_json
 from portfolio_optimizer.domain.data import IoContext
 from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec, Solution, StepRef, Tolerances
+from portfolio_optimizer.domain.sides import profile_for
 from portfolio_optimizer.domain.types import Clock, IdFactory
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.environment import read_git_info
@@ -181,7 +182,8 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
         return EXIT_PORTFOLIO_FAILED
     terms = [StepRef(t.qualname, t.params) for t in manifest.terms]
     constraints = [StepRef(c.qualname, c.params) for c in manifest.constraints]
-    report = verify(spec, solution, chain, terms, constraints, Tolerances(eq=record.check.tolerance_eq, ineq=record.check.tolerance_ineq))
+    profile = profile_for(str(manifest.config.resolved.get("sides", "both")))
+    report = verify(spec, solution, chain, terms, constraints, Tolerances(eq=record.check.tolerance_eq, ineq=record.check.tolerance_ineq), profile=profile)
     stdout.writelines(
         f"  {'ok  ' if check.passed else 'FAIL'} {check.name:32} violation {check.violation:.3e} (tol {check.tolerance:.1e}){' worst ' + check.worst_security if check.worst_security else ''}\n"
         for check in report.checks

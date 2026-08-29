@@ -222,9 +222,10 @@ decision generalizes to *a run couples through its one side*.
 
 ### Order of work
 
-1. Extract today's engine into the `both` profile with zero behaviour change — tests stay green. This
-   is the step that gathers the branch points (`variables`, `trade_balance`, `_classify`, the
-   complementarity check, `buyable`, `derive_chain_state`, `Contribution.from_orders`) into one place.
+1. ~~Extract today's engine into the `both` profile with zero behaviour change.~~ Done 2026-08-29:
+   `domain/sides.py` (the numpy half: tradable set, split, identity residuals, contribution, chain
+   fold) and `cvx/sides.py` (the identity as atoms); `sides: "both"` in the config; `trade_balance`
+   refused by name; the hand-checked orders and the schedule-equivalence tests unchanged.
 2. Add `buy`. Re-run `benchmarks/profile_portfolio.py`; the KKT system is a third the size, so a
    2–4× faster Clarabel solve is the expectation to check against.
 3. Add `sell` as the mirror, with a symmetry test: a sell-only run over a book equals a buy-only run

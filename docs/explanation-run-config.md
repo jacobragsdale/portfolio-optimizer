@@ -259,6 +259,21 @@ answers "who gets first pick of a shared budget" from the data — the shipped s
 furthest from its target first — instead of from a hand-maintained column, and it is part of the
 config hash, so two runs with different priorities are visibly different runs.
 
+## `sides`
+
+```json
+"sides": "both"
+```
+
+Which side the run trades. `both` — the default and, today, the only value — is the two-sided problem:
+one solve decides buys and sells together, and portfolios couple through buys only. The value selects a
+*side profile*, the one object in the engine that knows what a side means: how the solver's weights
+become a trade, the trade identity (for `both`, `w = w0 + buy − sell` with both non-negative and
+`sell ≤ w0`), the tradable set the dependency graph and the chain are built from, what a dependent
+portfolio receives, and the invariants the verifier adds. Nothing else in the engine asks. One-sided
+runs — `buy`, `sell` — are decided and next; a buy-only run is a third of the problem and cannot
+contain a wash trade, which is why the side is a config value rather than a pair of bounds.
+
 ## `objective`
 
 ```json
@@ -293,7 +308,7 @@ rebuy a name for free.
 ## `constraints`
 
 ```json
-"constraints": ["trade_balance", "long_only", "max_weight", "cash_bounds", "turnover_cap",
+"constraints": ["long_only", "max_weight", "cash_bounds", "turnover_cap",
                 "sector_bounds", "cumulative_adv_participation"]
 ```
 
@@ -305,10 +320,11 @@ per-security `min_weight`/`max_weight` columns or a restricted flag. That split 
 config almost never changes between daily runs while the numbers inside the data do: the config is
 wiring, the data is policy.
 
-`trade_balance` is the constraint you should not remove. It defines what `buy` and `sell` *mean* —
-`w − w0 = buy − sell`, both non-negative, `sell ≤ w0` — and every cost term, the turnover cap, the ADV
-constraint, and the verifier's complementarity check rely on that definition. Without it the solver
-could return arbitrary buy/sell pairs that net to the right weights.
+The trade identity is not on this list, and cannot be. What `buy` and `sell` *mean* — for a two-sided
+run, `w − w0 = buy − sell`, both non-negative, `sell ≤ w0` — is what every cost term, the turnover cap,
+the ADV constraint, and the verifier's complementarity check rely on, so it comes from `sides` and is
+added to every solve; a config that still names `trade_balance` is refused at resolve with a message
+saying so.
 
 Most constraints take no parameters, and the JSON Schema enforces that: `{"name": "long_only",
 "params": {"x": 1}}` is rejected by your editor. `sector_bounds` is the exception with a `tolerance`

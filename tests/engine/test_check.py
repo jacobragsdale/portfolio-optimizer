@@ -15,9 +15,7 @@ from portfolio_optimizer.engine.check import CONSTRAINT_TWINS, TERM_TWINS, verif
 from portfolio_optimizer.engine.solve import solve
 from tests.conftest import Factories, Frames, resolved_example
 
-CONSTRAINTS = [
-    StepRef(f"portfolio_optimizer.terms:{name}", {}) for name in ("trade_balance", "long_only", "max_weight", "cash_bounds", "sector_bounds", "turnover_cap", "cumulative_adv_participation")
-]
+CONSTRAINTS = [StepRef(f"portfolio_optimizer.terms:{name}", {}) for name in ("long_only", "max_weight", "cash_bounds", "sector_bounds", "turnover_cap", "cumulative_adv_participation")]
 TERMS = [StepRef("portfolio_optimizer.terms:tracking_error", {"weight": "1"})]
 
 
@@ -113,7 +111,7 @@ def test_every_shipped_term_and_constraint_has_a_twin() -> None:
     from portfolio_optimizer import terms  # imported here so this module's header stays cvxpy-free
 
     shipped_terms = {f"portfolio_optimizer.terms:{name}" for name in ("tracking_error", "alpha", "tax_cost", "transaction_cost")}
-    shipped_constraints = {f"portfolio_optimizer.terms:{name}" for name in ("trade_balance", "long_only", "max_weight", "cash_bounds", "sector_bounds", "turnover_cap", "cumulative_adv_participation")}
+    shipped_constraints = {f"portfolio_optimizer.terms:{name}" for name in ("long_only", "max_weight", "cash_bounds", "sector_bounds", "turnover_cap", "cumulative_adv_participation")}
     assert shipped_terms == set(TERM_TWINS)
     assert shipped_constraints == set(CONSTRAINT_TWINS)
     for qualname in shipped_terms | shipped_constraints:

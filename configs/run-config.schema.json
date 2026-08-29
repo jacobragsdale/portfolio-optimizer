@@ -311,7 +311,7 @@
       "title": "AssemblyStep"
     },
     "ConstraintStep": {
-      "$comment": "Shipped steps: ['cash_bounds', 'cumulative_adv_participation', 'long_only', 'max_weight', 'sector_bounds', 'trade_balance', 'turnover_cap']",
+      "$comment": "Shipped steps: ['cash_bounds', 'cumulative_adv_participation', 'long_only', 'max_weight', 'sector_bounds', 'turnover_cap']",
       "anyOf": [
         {
           "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
@@ -441,28 +441,6 @@
                         "title": "Tolerance"
                       }
                     },
-                    "type": "object"
-                  }
-                }
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "name": {
-                    "const": "trade_balance"
-                  }
-                },
-                "required": [
-                  "name"
-                ]
-              },
-              "then": {
-                "properties": {
-                  "params": {
-                    "additionalProperties": false,
-                    "description": "`trade_balance` takes no parameters.",
-                    "maxProperties": 0,
                     "type": "object"
                   }
                 }
@@ -1628,7 +1606,7 @@
     },
     "constraints": {
       "default": [],
-      "description": "Constraint steps from `terms.py`. Keep `trade_balance`; it defines the buy/sell split the other steps rely on.",
+      "description": "Constraint steps from `terms.py`. The trade identity (`w = w0 + buy - sell`) is not a step; `sides` supplies it.",
       "items": {
         "$ref": "#/$defs/ConstraintStep"
       },
@@ -1708,6 +1686,13 @@
     "run": {
       "$ref": "#/$defs/RunMeta",
       "description": "Run identity."
+    },
+    "sides": {
+      "const": "both",
+      "default": "both",
+      "description": "Which side the run trades. `both`: buys and sells in one problem, portfolios coupling through buys only. The value selects the side profile that supplies the trade identity, the tradable set the dependency graph is built from, and the chain; one-sided runs (`buy`, `sell`) are next.",
+      "title": "Sides",
+      "type": "string"
     },
     "sink": {
       "$ref": "#/$defs/SinkStep",
