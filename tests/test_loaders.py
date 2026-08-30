@@ -27,10 +27,23 @@ def test_csv_loads_an_engine_dataset_with_schema_dtypes() -> None:
     assert str(holdings["acquired_on"].dtype) == "datetime64[ns, UTC]"
 
 
-def test_csv_loads_an_extra_dataset_with_declared_decimal_columns() -> None:
-    prices = csv(request("prices"), CsvParams(path="prices.csv", decimal_columns=("price",)))
+def test_csv_loads_an_extra_dataset_with_the_kinds_its_dtypes_declare() -> None:
+    prices = csv(request("prices"), CsvParams(path="prices.csv", dtypes={"security_id": "string", "price": "decimal"}))
     assert prices["price"].tolist() == [Decimal(100), Decimal(50), Decimal(10)]
     assert str(prices["security_id"].dtype) in ("str", "string", "object")
+
+
+def test_csv_types_an_extra_dataset_timestamp_from_its_declared_kind(tmp_path: Path) -> None:
+    (tmp_path / "signals.csv").write_text("security_id,published_at,live\nA,2026-08-28T00:00:00Z,true\n")
+    signals = csv(request("signals", tmp_path), CsvParams(path="signals.csv", dtypes={"security_id": "string", "published_at": "datetime_utc", "live": "bool"}))
+    assert str(signals["published_at"].dtype) == "datetime64[ns, UTC]"
+    assert str(signals["live"].dtype) == "bool"
+
+
+def test_csv_leaves_a_column_no_kind_is_declared_for_to_pandas(tmp_path: Path) -> None:
+    (tmp_path / "signals.csv").write_text("security_id,rank\nA,3\n")
+    signals = csv(request("signals", tmp_path), CsvParams(path="signals.csv", dtypes={"security_id": "string"}))
+    assert signals["rank"].iloc[0] == 3
 
 
 def test_csv_reads_booleans_strictly(tmp_path: Path) -> None:
@@ -49,7 +62,7 @@ def test_parquet_round_trips_decimal_columns(tmp_path: Path, frames: Frames) -> 
 
 def test_parquet_extra_dataset_converts_float_columns_to_decimal(tmp_path: Path) -> None:
     pd.DataFrame({"security_id": ["A"], "price": [0.1]}).to_parquet(tmp_path / "prices.parquet", index=False)
-    loaded = parquet(request("prices", tmp_path), ParquetParams(path="prices.parquet", decimal_columns=("price",)))
+    loaded = parquet(request("prices", tmp_path), ParquetParams(path="prices.parquet", dtypes={"price": "decimal"}))
     assert loaded["price"].iloc[0] == Decimal("0.1")
 
 

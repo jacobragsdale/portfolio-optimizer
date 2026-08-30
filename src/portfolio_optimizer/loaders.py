@@ -11,10 +11,10 @@ in a worker thread. A loader that makes many calls — one per portfolio, say �
 large run stays inside the backend's limits; the pool is configured per dataset in the run config.
 
 The shipped loaders read files under ``request.data_root``. For an engine-known dataset they cast
-columns to that dataset's schema; for any other dataset the params say which columns are money
-(``decimal_columns``) or timestamps (``utc_datetime_columns``). :func:`csv_per_portfolio` is the
-fan-out pattern — one call per portfolio, concurrently, under the rate limit — with files in place
-of a network client.
+columns to that dataset's schema; for any other dataset ``dtypes`` declares each column's kind in
+the same vocabulary the schemas are written in. :func:`csv_per_portfolio` is the fan-out pattern —
+one call per portfolio, concurrently, under the rate limit — with files in place of a network
+client.
 """
 
 import asyncio
@@ -26,7 +26,7 @@ import pandas as pd
 from pydantic import Field
 
 from portfolio_optimizer.domain.data import LoadRequest
-from portfolio_optimizer.domain.frames import ColumnSpec, FrameSchema, coerce_frame
+from portfolio_optimizer.domain.frames import ColumnKind, ColumnSpec, FrameSchema, coerce_frame
 from portfolio_optimizer.domain.schemas import DATASET_SCHEMAS, PORTFOLIOS
 from portfolio_optimizer.domain.types import Params, PortfolioId
 from portfolio_optimizer.ratelimit import fan_out
@@ -34,15 +34,21 @@ from portfolio_optimizer.ratelimit import fan_out
 LOADER_SCHEMAS: Mapping[str, FrameSchema] = {**DATASET_SCHEMAS, "portfolios": PORTFOLIOS}
 
 
-class CsvColumns(Params):
-    """How to type the columns of a CSV that is not an engine-known dataset."""
+class ExtraColumns(Params):
+    """How to type the columns of a dataset the engine does not know.
 
-    decimal_columns: tuple[str, ...] = ()
-    utc_datetime_columns: tuple[str, ...] = ()
-    dtypes: dict[str, str] = Field(default_factory=dict)
+    Each column is declared as one of the kinds the engine's own schemas are written in, so an extra
+    dataset is typed in the same vocabulary as an engine-known one. A column not named here arrives as
+    pandas inferred it; for an engine-known dataset the schema types every column and this is ignored.
+    """
+
+    dtypes: dict[str, ColumnKind] = Field(
+        default_factory=dict,
+        description="Column name to kind: `string`, `Int64`, `Float64`, `bool`, `decimal` (an exact `Decimal` — money, prices, rates), or `datetime_utc` (a timezone-aware timestamp).",
+    )
 
 
-class CsvParams(CsvColumns):
+class CsvParams(ExtraColumns):
     """Parameters for :func:`csv`."""
 
     path: str = Field(min_length=1)
@@ -53,7 +59,7 @@ def csv(request: LoadRequest, params: CsvParams) -> pd.DataFrame:
     return _read_csv(request.data_root / params.path, request.dataset, params)
 
 
-class CsvPerPortfolioParams(CsvColumns):
+class CsvPerPortfolioParams(ExtraColumns):
     """Parameters for :func:`csv_per_portfolio`."""
 
     directory: str = Field(min_length=1)
@@ -77,20 +83,16 @@ async def csv_per_portfolio(request: LoadRequest, params: CsvPerPortfolioParams)
     return pd.concat(parts, ignore_index=True)
 
 
-class ParquetParams(Params):
+class ParquetParams(ExtraColumns):
     """Parameters for :func:`parquet`."""
 
     path: str = Field(min_length=1)
-    decimal_columns: tuple[str, ...] = ()
 
 
 def parquet(request: LoadRequest, params: ParquetParams) -> pd.DataFrame:
     """Read a Parquet file; Arrow decimal columns arrive as ``Decimal`` already."""
     raw = pd.read_parquet(request.data_root / params.path)
-    schema = LOADER_SCHEMAS.get(request.dataset)
-    if schema is not None:
-        return coerce_frame(raw, schema)
-    return coerce_frame(raw, FrameSchema("extra", tuple(_decimal_spec(name) for name in params.decimal_columns), ()))
+    return coerce_frame(raw, _schema_for(request.dataset, params))
 
 
 class JsonConstraintsParams(Params):
@@ -108,24 +110,20 @@ def json_constraints(request: LoadRequest, params: JsonConstraintsParams) -> dic
     return {str(portfolio_id): {str(key): value for key, value in constraints.items()} for portfolio_id, constraints in loaded.items()}
 
 
-def _read_csv(path: Path, dataset: str, columns: CsvColumns) -> pd.DataFrame:
-    schema = LOADER_SCHEMAS.get(dataset)
-    if schema is not None:
-        raw = pd.read_csv(path, dtype=_read_dtypes(schema))
-        return coerce_frame(_parse_utc(raw, [c.name for c in schema.columns if c.kind == "datetime_utc" and c.name in raw.columns]), schema)
-    read_dtypes: dict[str, str] = {**columns.dtypes, **dict.fromkeys(columns.decimal_columns, "string"), **dict.fromkeys(columns.utc_datetime_columns, "string")}
-    raw = pd.read_csv(path, dtype=read_dtypes)
-    return coerce_frame(_parse_utc(raw, list(columns.utc_datetime_columns)), _extra_schema(columns))
+def _read_csv(path: Path, dataset: str, columns: ExtraColumns) -> pd.DataFrame:
+    schema = _schema_for(dataset, columns)
+    raw = pd.read_csv(path, dtype=_read_dtypes(schema))
+    return coerce_frame(_parse_utc(raw, [c.name for c in schema.columns if c.kind == "datetime_utc" and c.name in raw.columns]), schema)
 
 
-def _empty_frame(dataset: str, columns: CsvColumns) -> pd.DataFrame:
+def _empty_frame(dataset: str, columns: ExtraColumns) -> pd.DataFrame:
     """No portfolios were requested: a zero-row frame with the columns the dataset's schema declares."""
-    schema = LOADER_SCHEMAS.get(dataset) or _extra_schema(columns)
-    return pd.DataFrame({column.name: pd.Series(dtype=column.dtype) for column in schema.columns})
+    return pd.DataFrame({column.name: pd.Series(dtype=column.dtype) for column in _schema_for(dataset, columns).columns})
 
 
-def _extra_schema(columns: CsvColumns) -> FrameSchema:
-    return FrameSchema("extra", tuple(_decimal_spec(name) for name in columns.decimal_columns), ())
+def _schema_for(dataset: str, columns: ExtraColumns) -> FrameSchema:
+    """The dataset's own schema when the engine knows it, otherwise one built from the declared kinds."""
+    return LOADER_SCHEMAS.get(dataset) or FrameSchema("extra", tuple(ColumnSpec(name, kind, nullable=kind != "bool") for name, kind in columns.dtypes.items()), ())
 
 
 def _read_dtypes(schema: FrameSchema) -> dict[str, str]:
@@ -145,7 +143,3 @@ def _parse_utc(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     for name in columns:
         result = result.assign(**{name: pd.to_datetime(result[name], utc=True).astype("datetime64[ns, UTC]")})
     return result
-
-
-def _decimal_spec(name: str) -> ColumnSpec:
-    return ColumnSpec(name, "decimal", nullable=True)

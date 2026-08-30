@@ -132,7 +132,8 @@ of reading this column.
                   "scope": "per_portfolio", "batch_size": 1},
   "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
   "targets":     {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
-  "prices":      {"loader": {"name": "csv", "params": {"path": "prices.csv", "decimal_columns": ["price"]}}}
+  "prices":      {"loader": {"name": "csv", "params": {"path": "prices.csv",
+                                                      "dtypes": {"security_id": "string", "price": "decimal"}}}}
 }
 ```
 
@@ -160,8 +161,9 @@ column, passed whole otherwise — where a rule can use it. The example's `price
 schema requires a `price` column, but the example's universe file does not carry it, so prices arrive
 as a separate file, are joined in by the first assembly step, and are dropped by the second so they are
 not carried further. Because the engine cannot type an extra frame from a schema, the loader has to be
-told: `dtypes` makes `security_id` a `string` key and `decimal_columns` makes `price` an exact
-`Decimal` rather than a float.
+told: `dtypes` names each column's kind — `security_id` a `string` key, `price` a `decimal`, so it
+arrives as an exact `Decimal` rather than a float — in the same vocabulary the engine's own schemas
+are written in.
 
 Once the portfolio list is known, **every dataset loader starts at once**, called with a `LoadRequest`
 carrying the dataset name, portfolio ids, `as_of`, the data root, the run id, and a rate limiter. An

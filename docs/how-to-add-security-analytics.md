@@ -23,8 +23,8 @@ into one optimizer frame cleanly.
 ## 1. Load the analytics dataset, typed
 
 Declare it under `datasets` with any name that is not engine-known. Type every column at the loader:
-the key as `string`, money and rates as `decimal_columns`, statistical values as `Float64`, labels as
-`string`, flags as `boolean`.
+the key as `string`, money and rates as `decimal`, statistical values as `Float64`, labels as
+`string`, flags as `bool`.
 
 ```json
 "datasets": {
@@ -34,8 +34,8 @@ the key as `string`, money and rates as `decimal_columns`, statistical values as
       "name": "csv",
       "params": {
         "path": "analytics.csv",
-        "dtypes": {"security_id": "string", "score": "Float64", "liquidity_bucket": "string"},
-        "decimal_columns": ["fair_value"]
+        "dtypes": {"security_id": "string", "score": "Float64", "liquidity_bucket": "string",
+                   "fair_value": "decimal"}
       }
     }
   }

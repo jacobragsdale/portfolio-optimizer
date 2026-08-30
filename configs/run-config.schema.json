@@ -771,18 +771,19 @@
                     "additionalProperties": false,
                     "description": "Parameters for :func:`csv`.",
                     "properties": {
-                      "decimal_columns": {
-                        "default": [],
-                        "items": {
-                          "type": "string"
-                        },
-                        "title": "Decimal Columns",
-                        "type": "array"
-                      },
                       "dtypes": {
                         "additionalProperties": {
+                          "enum": [
+                            "string",
+                            "Int64",
+                            "bool",
+                            "Float64",
+                            "decimal",
+                            "datetime_utc"
+                          ],
                           "type": "string"
                         },
+                        "description": "Column name to kind: `string`, `Int64`, `Float64`, `bool`, `decimal` (an exact `Decimal` — money, prices, rates), or `datetime_utc` (a timezone-aware timestamp).",
                         "title": "Dtypes",
                         "type": "object"
                       },
@@ -790,14 +791,6 @@
                         "minLength": 1,
                         "title": "Path",
                         "type": "string"
-                      },
-                      "utc_datetime_columns": {
-                        "default": [],
-                        "items": {
-                          "type": "string"
-                        },
-                        "title": "Utc Datetime Columns",
-                        "type": "array"
                       }
                     },
                     "required": [
@@ -828,14 +821,6 @@
                     "additionalProperties": false,
                     "description": "Parameters for :func:`csv_per_portfolio`.",
                     "properties": {
-                      "decimal_columns": {
-                        "default": [],
-                        "items": {
-                          "type": "string"
-                        },
-                        "title": "Decimal Columns",
-                        "type": "array"
-                      },
                       "directory": {
                         "minLength": 1,
                         "title": "Directory",
@@ -843,18 +828,19 @@
                       },
                       "dtypes": {
                         "additionalProperties": {
+                          "enum": [
+                            "string",
+                            "Int64",
+                            "bool",
+                            "Float64",
+                            "decimal",
+                            "datetime_utc"
+                          ],
                           "type": "string"
                         },
+                        "description": "Column name to kind: `string`, `Int64`, `Float64`, `bool`, `decimal` (an exact `Decimal` — money, prices, rates), or `datetime_utc` (a timezone-aware timestamp).",
                         "title": "Dtypes",
                         "type": "object"
-                      },
-                      "utc_datetime_columns": {
-                        "default": [],
-                        "items": {
-                          "type": "string"
-                        },
-                        "title": "Utc Datetime Columns",
-                        "type": "array"
                       }
                     },
                     "required": [
@@ -885,13 +871,21 @@
                     "additionalProperties": false,
                     "description": "Parameters for :func:`parquet`.",
                     "properties": {
-                      "decimal_columns": {
-                        "default": [],
-                        "items": {
+                      "dtypes": {
+                        "additionalProperties": {
+                          "enum": [
+                            "string",
+                            "Int64",
+                            "bool",
+                            "Float64",
+                            "decimal",
+                            "datetime_utc"
+                          ],
                           "type": "string"
                         },
-                        "title": "Decimal Columns",
-                        "type": "array"
+                        "description": "Column name to kind: `string`, `Int64`, `Float64`, `bool`, `decimal` (an exact `Decimal` — money, prices, rates), or `datetime_utc` (a timezone-aware timestamp).",
+                        "title": "Dtypes",
+                        "type": "object"
                       },
                       "path": {
                         "minLength": 1,

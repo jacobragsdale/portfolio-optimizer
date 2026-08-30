@@ -24,7 +24,7 @@ The quickest way to see what the engine does is to read the run it ships with,
     "details": {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}}, "scope": "per_portfolio", "batch_size": 1},
     "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
     "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
-    "prices": {"loader": {"name": "csv", "params": {"path": "prices.csv", "dtypes": {"security_id": "string"}, "decimal_columns": ["price"]}}}
+    "prices": {"loader": {"name": "csv", "params": {"path": "prices.csv", "dtypes": {"security_id": "string", "price": "decimal"}}}}
   },
   "assembly": [
     {"name": "join", "params": {"into": "universe", "source": "prices", "on": ["security_id"], "cardinality": "one_to_one", "require_all_matched": true}},

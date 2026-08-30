@@ -180,11 +180,12 @@ a scheduler someone else runs — sized by the settings below; they are recorded
 
 ## Shipped steps
 
-Loaders: `csv` (`path`, `decimal_columns`, `utc_datetime_columns`, `dtypes`), `csv_per_portfolio`
-(`directory`, `decimal_columns`, `utc_datetime_columns`, `dtypes`; reads `<directory>/<portfolio_id>.csv`
-per portfolio under the input's rate limit), `parquet` (`path`, `decimal_columns`), `json_constraints`
-(`path`). The column-typing params apply to extra datasets only; engine-known datasets are typed by
-their schema. Assembly steps: `join`, `union`, `select`, `drop` (parameters above). Rules:
+Loaders: `csv` (`path`, `dtypes`), `csv_per_portfolio` (`directory`, `dtypes`; reads
+`<directory>/<portfolio_id>.csv` per portfolio under the input's rate limit), `parquet` (`path`,
+`dtypes`), `json_constraints` (`path`). `dtypes` maps a column name to one kind — `string`, `Int64`,
+`Float64`, `bool`, `decimal` (an exact `Decimal`), or `datetime_utc` (a timezone-aware timestamp) —
+and applies to extra datasets only; engine-known datasets are typed by their schema, and a column no
+kind is declared for arrives as pandas inferred it. Assembly steps: `join`, `union`, `select`, `drop` (parameters above). Rules:
 `cap_single_name` (`max_weight`), `add_zero_alpha`, `restrict_low_liquidity` (`min_adv_shares`).
 Solve-order steps: `furthest_from_target_first`. Terms: `tracking_error`, `alpha` (`column`), `tax_cost`,
 `transaction_cost` (`cost_bps`), each with `weight` (default `"1"`). Constraints:

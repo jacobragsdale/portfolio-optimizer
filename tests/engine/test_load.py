@@ -269,10 +269,7 @@ def test_the_portfolio_list_input_can_be_bounded_too() -> None:
 
 def _sharded(batch_size: int | None, **overrides: object) -> dict[str, object]:
     """The example datasets with ``holdings`` loaded per portfolio by the recording loader."""
-    holdings: dict[str, object] = {
-        "loader": {"name": "tests.steps:recording_csv", "params": {"path": "holdings.csv", "decimal_columns": ["avg_cost"], "utc_datetime_columns": ["acquired_on"], **overrides}},
-        "scope": "per_portfolio",
-    }
+    holdings: dict[str, object] = {"loader": {"name": "tests.steps:recording_csv", "params": {"path": "holdings.csv", **overrides}}, "scope": "per_portfolio"}
     if batch_size is not None:
         holdings["batch_size"] = batch_size
     return _datasets(holdings=holdings)
