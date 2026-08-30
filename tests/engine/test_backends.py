@@ -1,5 +1,6 @@
 """Tier 1/2: the backend seam — workers probed before data is shared, builds first, solves along the schedule with dependencies, fail-fast cancellation, dead and stale workers, and a cluster that never comes up."""
 
+import re
 from pathlib import Path
 
 from pandas.testing import assert_frame_equal
@@ -173,7 +174,7 @@ def test_a_worker_whose_environment_differs_fails_its_portfolios_at_stage_worker
     for outcome in report.outcomes:
         assert isinstance(outcome, PortfolioFailure)
         assert (outcome.stage, outcome.error_type) == ("worker", "EnvironmentMismatch")
-        assert "git_sha: '0" not in outcome.message and "'stale' there" in outcome.message
+        assert re.search(r"git_sha: '[0-9a-f]{40}' here, 'stale' there", outcome.message), outcome.message
     by_hosts = {worker.hosts: worker for worker in report.manifest.versions.workers}
     assert by_hosts[("pod-7",)].environment.git_sha == "stale", "the tasks' environment is recorded beside the probe's"
     assert report.manifest.schedule is not None and report.manifest.schedule.edges == 1, "two failed builds are treated as overlapping"
