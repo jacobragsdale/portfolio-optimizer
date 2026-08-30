@@ -3,18 +3,44 @@
   "run": {"name": "example_rebalance", "as_of": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}},
   "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}},
   "datasets": {
-    "holdings": {"loader": {"name": "csv_per_portfolio", "params": {"directory": "holdings"}}, "scope": "per_portfolio", "batch_size": 1},
+    "holdings": {
+      "loader": {"name": "csv_per_portfolio", "params": {"directory": "holdings"}},
+      "scope": "per_portfolio",
+      "batch_size": 1
+    },
     "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
-    "details": {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}}, "scope": "per_portfolio", "batch_size": 1},
+    "details": {
+      "loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
+      "scope": "per_portfolio",
+      "batch_size": 1
+    },
     "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
     "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
-    "prices": {"loader": {"name": "csv", "params": {"path": "prices.csv", "dtypes": {"security_id": "string", "price": "decimal"}}}}
+    "prices": {
+      "loader": {
+        "name": "csv",
+        "params": {"path": "prices.csv", "dtypes": {"security_id": "string", "price": "decimal"}}
+      }
+    }
   },
   "assembly": [
-    {"name": "join", "params": {"into": "universe", "source": "prices", "on": ["security_id"], "cardinality": "one_to_one", "require_all_matched": true}},
+    {
+      "name": "join",
+      "params": {
+        "into": "universe",
+        "source": "prices",
+        "on": ["security_id"],
+        "cardinality": "one_to_one",
+        "require_all_matched": true
+      }
+    },
     {"name": "drop", "params": {"datasets": ["prices"]}}
   ],
-  "rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}, "add_zero_alpha", "attach_universe_columns"],
+  "rules": [
+    {"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}},
+    "add_zero_alpha",
+    "attach_universe_columns"
+  ],
   "objective": {
     "sense": "minimize",
     "terms": [
@@ -23,7 +49,14 @@
       {"name": "transaction_cost", "params": {"weight": "1.0"}}
     ]
   },
-  "constraints": ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation"],
+  "constraints": [
+    "long_only",
+    "max_weight",
+    "cash_bounds",
+    "turnover_cap",
+    "sector_bounds",
+    "cumulative_adv_participation"
+  ],
   "solver": {"name": "CLARABEL", "options": {"max_iter": 200}, "time_limit_s": 60.0, "verbose": false},
   "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9},
   "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},
