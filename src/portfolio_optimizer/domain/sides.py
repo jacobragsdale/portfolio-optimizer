@@ -73,7 +73,8 @@ class TwoSided:
 
     A sell reaches no other portfolio, so the tradable set is the buyable set and a contribution is the
     BUY rows. The reported split is the minimal one — the solver's own pair may carry slack on both
-    sides, or a round trip where a term rewards one (see IDEAS).
+    sides, which the split tidies; a round trip a term *rewards* is refused by the shipped cvxpy step
+    (``cvx/adapter.py``) rather than silently stripped.
     """
 
     sides: Sides = "both"

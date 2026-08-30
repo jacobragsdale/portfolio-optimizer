@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedConfig
+from portfolio_optimizer.cvx.adapter import WashTradeError
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus
 from portfolio_optimizer.domain.sides import TWO_SIDED
 from portfolio_optimizer.engine.build import build_problem_spec
@@ -231,10 +232,34 @@ def test_a_solver_this_process_cannot_run_is_refused_when_the_config_resolves_no
         resolved_with(["alpha"], SHIPPED_CONSTRAINTS, solver={"name": "NOPE"})
 
 
-def test_tax_cost_refuses_a_free_loss_harvest(make: Factories) -> None:
-    spec = make.spec(tax_per_dollar=np.array([-0.05, 0.0, 0.0]))
-    with pytest.raises(ValueError, match="loss-harvest incentive but no transaction cost"):
+def test_tax_cost_refuses_a_name_whose_loss_pays_for_its_round_trip(make: Factories) -> None:
+    spec = make.spec(tax_per_dollar=np.array([-0.05, 0.0, 0.0]), tcost_per_dollar=np.array([0.001, 0.001, 0.001]))
+    with pytest.raises(ValueError, match=r"wash trade in 1 name\(s\) held at a loss \(worst offenders \['S0'\]\)"):
         solve(spec, ChainState.empty(spec.security_ids), resolved_with(["alpha", "tax_cost"], SHIPPED_CONSTRAINTS))
+
+
+def test_tax_cost_allows_a_loss_whose_transaction_costs_exceed_the_tax_saving(make: Factories) -> None:
+    spec = make.spec(tax_per_dollar=np.array([-0.001, 0.0, 0.0]), tcost_per_dollar=np.array([0.002, 0.002, 0.002]))
+    solution = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["alpha", "tax_cost", "transaction_cost"], SHIPPED_CONSTRAINTS))
+    assert solution.status is SolveStatus.OPTIMAL
+
+
+def test_tax_cost_lets_a_sell_only_run_harvest_the_loss(make: Factories) -> None:
+    spec = make.spec(tax_per_dollar=np.array([-0.05, 0.0, 0.0]), cash_ub=1.0)
+    solution = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["alpha", "tax_cost"], SHIPPED_CONSTRAINTS, sides="sell"))
+    assert solution.sell[0] > 0.0, "selling the loss earns, and a sell-only run has no rebuy to wash against"
+
+
+def test_a_round_trip_the_objective_rewards_is_refused_and_names_the_trade(make: Factories) -> None:
+    """The tax guard reads unweighted per-security costs, so a heavily weighted tax term can still make a round trip pay; the solve step's refusal is the backstop that names it.
+
+    Alpha prefers S0 outright, so the optimum shifts the book into it — and then sells and rebuys the
+    S0 it already held, because the weighted tax saving on its loss beats the two transaction costs.
+    """
+    spec = make.spec(columns={"alpha": np.array([0.0, -0.01, -0.01])}, tax_per_dollar=np.array([-0.001, 0.0, 0.0]), tcost_per_dollar=np.array([0.00075, 0.00075, 0.00075]), max_turnover=4.0)
+    terms = ["alpha", {"name": "tax_cost", "params": {"weight": "10"}}, "transaction_cost"]
+    with pytest.raises(WashTradeError, match=r"improve the objective by .*worst \['S0'\]"):
+        solve(spec, ChainState.empty(spec.security_ids), resolved_with(terms, SHIPPED_CONSTRAINTS))
 
 
 def test_tax_and_transaction_costs_discourage_selling_gains(make: Factories, frames: Frames) -> None:

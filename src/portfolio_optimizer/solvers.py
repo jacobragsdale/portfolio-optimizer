@@ -80,7 +80,7 @@ def cvxpy(request: SolveRequest) -> SolveResult:
     terms = [_term(step, x, spec, chain) for step in request.terms]
     interpreted = interpret_constraints(request.constraints)
     constraints = [identity_constraints(request.profile.sides, x, spec.w0), *(_constraint_set(step, x, spec, chain) for step, _ in interpreted)]
-    result = solve_problem(x, terms, constraints, solver=solver.name, options=solver.options, time_limit_s=solver.time_limit_s, verbose=solver.verbose)
+    result = solve_problem(x, terms, constraints, security_ids=spec.security_ids, solver=solver.name, options=solver.options, time_limit_s=solver.time_limit_s, verbose=solver.verbose)
     return replace_constraints(result, tuple(ref for _, ref in interpreted))
 
 

@@ -45,12 +45,26 @@ def alpha(x: DecisionVars, spec: ProblemSpec, params: AlphaParams) -> ObjectiveT
 def tax_cost(x: DecisionVars, spec: ProblemSpec, params: WeightedParams) -> ObjectiveTerm:
     """``weight · tau^T sell`` — tax owed on realized gains; losses reduce the objective. Reads ``sell``, so a buy-only run refuses it.
 
-    A loss-harvest incentive with zero transaction cost would let the solver sell and rebuy a
-    name for free, so that combination is refused here rather than caught after the fact.
+    In a two-sided run a loss is a wash-trade incentive: selling and rebuying *x* dollars of a name
+    whose ``tax_per_dollar`` is ``tau < 0`` changes the objective by ``(tau + 2c)·x``, profitable
+    whenever the tax saved beats the two transaction costs of the round trip — and the round trip
+    never changes ``w``, so it would surface only as a verification failure with a bare objective
+    gap. Any name where that holds is refused here, before a solve is wasted. The check reads what
+    this term can see — the per-security ``tcost_per_dollar`` column and neither ``transaction_cost``'s
+    flat ``cost_bps`` nor the two terms' weights — so it is deliberately conservative, and the shipped
+    cvxpy step's round-trip refusal is the exact backstop. A sell-only run has no rebuy, so
+    harvesting a loss there is legitimate and nothing is refused.
     """
-    if np.any(spec.tax_per_dollar < 0.0) and not np.any(spec.tcost_per_dollar > 0.0):
-        msg = "tax_cost has a loss-harvest incentive but no transaction cost anywhere; add 'transaction_cost' with a positive cost_bps or a tcost_bps column"
-        raise ValueError(msg)
+    if x.sides == "both":
+        refused = np.flatnonzero(-spec.tax_per_dollar > 2.0 * spec.tcost_per_dollar)
+        if refused.size:
+            named = [spec.security_ids[int(index)] for index in refused[:10]]
+            msg = (
+                f"tax_cost rewards a sell-and-rebuy wash trade in {refused.size} name(s) held at a loss (worst offenders {named}): "
+                "the tax saved exceeds twice the per-security transaction cost. Give those names a tcost_bps column that covers the tax rate, "
+                "run the sells as a sell-only run, or model the wash sale explicitly; transaction_cost's flat cost_bps is not visible here and does not lift this refusal"
+            )
+            raise ValueError(msg)
     return ObjectiveTerm("tax_cost", scale(float(params.weight), dot(spec.tax_per_dollar, x.sell)))
 
 
