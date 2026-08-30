@@ -17,8 +17,6 @@ The quickest way to see what the engine does is to read the run it ships with,
 // The run that ships with the template, annotated. The real file is strict JSON with no comments —
 // these lines are stripped and the rest is compared against it by a test, so this copy cannot drift.
 {
-  // For your editor only: live validation and completion of key and step names. The engine ignores it,
-  // and the config hash excludes it, so adding or removing it never makes two runs look different.
   "$schema": "./run-config.schema.json",
 
   // Identity. `name` and `tags` are recorded in the manifest and used for nothing else. `as_of_date`
