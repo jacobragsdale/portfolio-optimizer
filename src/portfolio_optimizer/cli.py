@@ -16,7 +16,7 @@ from portfolio_optimizer.config.models import load_run_config
 from portfolio_optimizer.config.resolve import ConfigResolutionError, resolve_config
 from portfolio_optimizer.config.schema import run_config_schema, schema_json
 from portfolio_optimizer.domain.data import IoContext
-from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec, Solution, Tolerances
+from portfolio_optimizer.domain.results import ChainState, ConstraintCheck, PortfolioResult, ProblemSpec, Solution, Tolerances
 from portfolio_optimizer.domain.sides import profile_for
 from portfolio_optimizer.domain.types import Clock, IdFactory
 from portfolio_optimizer.engine.check import verify
@@ -151,6 +151,11 @@ def _validate_config(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO
     return EXIT_OK
 
 
+def _check_name(check: ConstraintCheck) -> str:
+    """The residual's name, qualified by the constraint's label where the two differ — two rows of one constraint produce residuals of the same name."""
+    return check.name if check.label in (check.name, "identity", "solution") else f"{check.label}/{check.name}"
+
+
 def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
     manifest_path = Path(args.manifest)
     try:
@@ -183,7 +188,7 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
     profile = profile_for(str(manifest.config.resolved.get("sides", "both")))
     report = verify(spec, solution, chain, manifest.terms, record.constraints, profile=profile, tolerances=Tolerances(violation=record.check.tolerance))
     stdout.writelines(
-        f"  {'ok  ' if check.passed else 'FAIL'} {check.name:32} violation {check.violation:.3e} (tol {check.tolerance:.1e}){' worst ' + check.worst_security if check.worst_security else ''}\n"
+        f"  {'ok  ' if check.passed else 'FAIL'} {_check_name(check):32} violation {check.violation:.3e} (tol {check.tolerance:.1e}){' worst ' + check.worst_security if check.worst_security else ''}\n"
         for check in report.checks
     )
     solver_objective = "none (the solve step minimized nothing)" if report.solver_objective is None else f"{report.solver_objective:.9g}"

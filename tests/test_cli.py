@@ -57,6 +57,7 @@ def test_rerun_diffs_clean_and_verify_passes_without_cvxpy_objects(tmp_path: Pat
     assert code == 0, err
     assert "VERIFIED P1" in out
     assert "ok   trade_balance" in out
+    assert "ok   tech/sector_lb" in out and "ok   health/sector_lb" in out, "two rows of one constraint produce residuals of the same name; the label tells them apart"
     code, _, err = cli(["verify", "--manifest", str(left), "--portfolio", "P9"])
     assert code == 2
     assert "was not solved" in err
