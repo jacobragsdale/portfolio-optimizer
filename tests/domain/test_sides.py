@@ -54,7 +54,7 @@ def test_two_sided_couples_through_buys_only(make: Factories, frames: Frames) ->
     orders = frames.orders({"security_id": "S1", "side": "SELL", "quantity": 10, "notional": Decimal(1000)}, {"security_id": "S2", "side": "BUY", "quantity": 7, "notional": Decimal(700)})
     contribution = TWO_SIDED.contribution("P1", orders)
     assert (contribution.security_ids, contribution.traded_shares.tolist()) == (("S2",), [7.0])
-    state = TWO_SIDED.chain_state(spec, [Contribution("P0", ("S0", "S2"), np.array([5.0, 3.0]))])
+    state = TWO_SIDED.chain_state(spec, [Contribution("P0", ("S0", "S2"), np.array([5.0, 3.0]))], np.ones(3, dtype=np.bool_))
     assert isinstance(state, ChainState) and state.traded_shares.tolist() == [0.0, 0.0, 3.0], "a predecessor's buy of a name this portfolio cannot buy is masked out"
     assert TWO_SIDED.order_sides == {"BUY", "SELL"}
     assert TWO_SIDED.coupled(make.solution(spec, buy=np.array([0.0, 0.1, 0.2]), sell=np.array([0.3, 0.0, 0.0]))).tolist() == [0.0, 0.1, 0.2]
@@ -94,7 +94,7 @@ def test_buy_only_couples_through_buys_and_reports_only_buys(make: Factories, fr
     orders = frames.orders({"security_id": "S1", "side": "BUY", "quantity": 10, "notional": Decimal(1000)}, {"security_id": "S2", "side": "BUY", "quantity": 7, "notional": Decimal(700)})
     contribution = BUY_ONLY.contribution("P1", orders)
     assert (contribution.security_ids, contribution.traded_shares.tolist()) == (("S1", "S2"), [10.0, 7.0])
-    state = BUY_ONLY.chain_state(spec, [Contribution("P0", ("S0", "S2"), np.array([5.0, 3.0]))])
+    state = BUY_ONLY.chain_state(spec, [Contribution("P0", ("S0", "S2"), np.array([5.0, 3.0]))], np.ones(3, dtype=np.bool_))
     assert state.traded_shares.tolist() == [0.0, 0.0, 3.0]
     assert BUY_ONLY.order_sides == {"BUY"}
     assert BUY_ONLY.coupled(make.solution(spec, buy=np.array([0.0, 0.1, 0.2]))).tolist() == [0.0, 0.1, 0.2]
@@ -142,7 +142,7 @@ def test_sell_only_couples_through_sells_and_reports_only_sells(make: Factories,
     orders = frames.orders({"security_id": "S0", "side": "SELL", "quantity": 10, "notional": Decimal(1000)}, {"security_id": "S1", "side": "SELL", "quantity": 7, "notional": Decimal(700)})
     contribution = SELL_ONLY.contribution("P1", orders)
     assert (contribution.security_ids, contribution.traded_shares.tolist()) == (("S0", "S1"), [10.0, 7.0])
-    state = SELL_ONLY.chain_state(spec, [Contribution("P0", ("S0", "S1"), np.array([5.0, 3.0]))])
+    state = SELL_ONLY.chain_state(spec, [Contribution("P0", ("S0", "S1"), np.array([5.0, 3.0]))], np.ones(3, dtype=np.bool_))
     assert state.traded_shares.tolist() == [0.0, 3.0, 0.0], "a predecessor's sell of a name this portfolio cannot sell is masked out"
     assert SELL_ONLY.order_sides == {"SELL"}
     assert SELL_ONLY.coupled(make.solution(spec, sell=np.array([0.0, 0.1, 0.2]))).tolist() == [0.0, 0.1, 0.2]
@@ -155,3 +155,13 @@ def test_sell_only_names_the_starts_it_cannot_trade_out_of(make: Factories) -> N
     assert SELL_ONLY.infeasible_starts(high_cash) == ["the book starts with cash 0.100000 above cash_ub 0.050000, and a sell-only run can only raise cash"]
     under_floor = make.spec(w0=np.array([0.1, 0.3, 0.6]), lb=np.array([0.2, 0.3, 0.0]))
     assert SELL_ONLY.infeasible_starts(under_floor) == ["names whose floor is above their holding, which this side cannot trade out of: ['S0']"], "S1 sits exactly on its floor, which is allowed"
+
+
+def test_chain_state_masks_to_the_consume_set_as_well_as_the_tradable_set(make: Factories) -> None:
+    """A predecessor's trade in a name this portfolio *could* buy but whose chain readers never consult is zeroed — which is what keeps the chain hash identical however many predecessors were folded."""
+    spec = make.spec(w0=np.array([0.5, 0.5, 0.0]), ub=np.array([0.5, 1.0, 1.0]))
+    contributions = [Contribution("P0", ("S1", "S2"), np.array([5.0, 3.0]))]
+    narrowed = TWO_SIDED.chain_state(spec, contributions, np.array([False, False, True]))
+    assert narrowed.traded_shares.tolist() == [0.0, 0.0, 3.0], "S1 is buyable but outside the consume set"
+    everything = TWO_SIDED.chain_state(spec, contributions, np.ones(3, dtype=np.bool_))
+    assert everything.traded_shares.tolist() == [0.0, 5.0, 3.0]

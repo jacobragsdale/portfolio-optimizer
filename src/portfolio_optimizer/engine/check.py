@@ -7,11 +7,13 @@ Custom steps are reported as unverified rather than silently trusted.
 This module must never import cvxpy; a test enforces it.
 """
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from decimal import Decimal
 
 import numpy as np
 
+from portfolio_optimizer.domain.constraints import TYPED_CONSTRAINT
 from portfolio_optimizer.domain.results import F64, ChainState, ConstraintCheck, ConstraintReport, ProblemSpec, Solution, StepRef, Tolerances
 from portfolio_optimizer.domain.sides import SideProfile
 
@@ -94,6 +96,11 @@ def _transaction_cost(spec: ProblemSpec, sol: Solution, params: Mapping[str, obj
     return param(params, "weight", 1.0) * float((cost * (sol.buy + sol.sell)).sum())
 
 
+def _typed_constraint(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object], profile: SideProfile) -> list[tuple[str, F64]]:
+    """A typed constraint's residual is its own: the recorded params re-validate into the model, and the model checks itself — one twin for every kind, so the two can never drift."""
+    return TYPED_CONSTRAINT.validate_json(json.dumps(dict(params))).residual(spec, sol, chain, profile)
+
+
 CONSTRAINT_TWINS: Mapping[str, ConstraintTwin] = {
     "portfolio_optimizer.terms:long_only": _long_only,
     "portfolio_optimizer.terms:max_weight": _max_weight,
@@ -101,8 +108,9 @@ CONSTRAINT_TWINS: Mapping[str, ConstraintTwin] = {
     "portfolio_optimizer.terms:sector_bound": _sector_bound,
     "portfolio_optimizer.terms:turnover_cap": _turnover_cap,
     "portfolio_optimizer.terms:cumulative_adv_participation": _adv_participation,
+    **{f"portfolio_optimizer.domain.constraints:{kind}": _typed_constraint for kind in ("group_limit", "exposure_limit", "weight_limit", "participation_limit")},
 }
-"""Numpy twin of every shipped constraint, keyed by the qualified name the manifest records."""
+"""Numpy twin of every shipped constraint, keyed by the qualified name the manifest records; the typed kinds all share one twin, the model's own residual."""
 
 TERM_TWINS: Mapping[str, TermTwin] = {"portfolio_optimizer.terms:alpha": _alpha, "portfolio_optimizer.terms:tax_cost": _tax_cost, "portfolio_optimizer.terms:transaction_cost": _transaction_cost}
 """Numpy twin of every shipped objective term."""

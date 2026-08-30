@@ -21,17 +21,20 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from portfolio_optimizer.config.models import RunConfig
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
 from portfolio_optimizer.config.steps import ResolvedStep
+from portfolio_optimizer.domain.constraints import ConstraintSpecError, check_against_spec, consumed_securities, parse_constraints
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError
 from portfolio_optimizer.domain.results import (
     ChainState,
     ConstraintReport,
     Contribution,
     DriftReport,
+    Flags,
     OrderInputs,
     PortfolioFailure,
     PortfolioResult,
@@ -57,6 +60,9 @@ log = logging.getLogger(__name__)
 type Outcome = PortfolioResult | PortfolioFailure
 
 SKIPPED_ERROR = "SkippedAfterFailure"
+
+SHIPPED_CVXPY_SOLVE = "portfolio_optimizer.solvers:cvxpy"
+"""The one solve step whose chain access is exactly the configured terms and constraints; any other step may read ``request.chain`` however it likes, so its runs couple conservatively."""
 
 
 class VerificationError(RuntimeError):
@@ -97,6 +103,9 @@ class BuildResult:
     rule_audit: tuple[RuleAuditRecord, ...]
     solve_order: Decimal
     tradable: tuple[str, ...]
+    consumes: tuple[str, ...]
+    """The securities predecessors' trades can reach this portfolio through — the schedule's consume side, at most ``tradable`` and empty when nothing here reads the chain."""
+
     constraints: pd.DataFrame
     """This portfolio's constraint rows as the rules left them, carried to the solve step that interprets them."""
 
@@ -111,6 +120,7 @@ class BuildSummary:
     portfolio_id: PortfolioId
     solve_order: Decimal
     tradable: tuple[str, ...]
+    consumes: tuple[str, ...]
     spec_sha256: str
     rule_audit: tuple[RuleAuditRecord, ...]
 
@@ -119,12 +129,28 @@ class BuildSummary:
 
 
 def build_portfolio(data: PortfolioData, resolved: ResolvedConfig, fallback_solve_order: Decimal, recorder: SpanRecorder) -> BuildResult:
-    """Apply rules, compute the solve-order key, and build the spec, timing each phase onto ``recorder``."""
+    """Apply rules, compute the solve-order key, build the spec, and read the constraint declarations, timing each phase onto ``recorder``.
+
+    Typed constraint rows are parsed here — a malformed one, or one naming a column the universe does
+    not carry, fails the portfolio at stage ``build``, before any solve is scheduled on it — and the
+    consume set the schedule needs is derived from them: empty when nothing reads the chain, their
+    scopes when typed chain constraints are the only readers, the whole tradable set when anything
+    opaque (a function row, a chain-aware term, a solve step that is not the shipped one) might.
+    """
     with recorder.span("build:rules"):
         ruled, audit = apply_rules(data, resolved.rules)
     key = fallback_solve_order if resolved.solve_order is None else solve_order_key(resolved.solve_order, ruled)
     with recorder.span("build:spec"):
         output = build_problem_spec(ruled)
+    parsed = parse_constraints(ruled.constraints)
+    if parsed is not None:
+        problems = list(check_against_spec(parsed.typed, output.spec))
+        if problems:
+            msg = "typed constraint(s) cannot apply to this problem: " + "; ".join(problems)
+            raise ConstraintSpecError(msg)
+    consumes = consumed_securities(
+        parsed, output.spec, resolved.profile, chain_aware_terms=bool(resolved.chain_aware_terms), opaque_solve=resolved.solve.qualname != SHIPPED_CVXPY_SOLVE, opaque_rows=len(ruled.constraints)
+    )
     return BuildResult(
         portfolio_id=data.portfolio_id,
         spec=output.spec,
@@ -132,6 +158,7 @@ def build_portfolio(data: PortfolioData, resolved: ResolvedConfig, fallback_solv
         rule_audit=audit,
         solve_order=key,
         tradable=tradable_ids(resolved.profile, output.spec),
+        consumes=consumes,
         constraints=ruled.constraints,
         extras=ruled.extras,
     )
@@ -189,6 +216,12 @@ def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainS
 def tradable_ids(profile: SideProfile, spec: ProblemSpec) -> tuple[str, ...]:
     """The securities the profile lets this spec trade on the side it couples through, sorted."""
     return tuple(sorted(security for security, allowed in zip(spec.security_ids, profile.tradable(spec), strict=True) if allowed))
+
+
+def consume_flags(spec: ProblemSpec, consumes: Sequence[str]) -> Flags:
+    """The build's consume set as a mask aligned to the spec, for the chain-state fold."""
+    wanted = frozenset(consumes)
+    return np.fromiter((security in wanted for security in spec.security_ids), dtype=np.bool_, count=spec.n)
 
 
 def step_refs(steps: Sequence[ResolvedStep]) -> tuple[StepRef, ...]:
@@ -284,7 +317,9 @@ def summarize(build: TaskOutput[BuildResult]) -> TaskOutput[BuildSummary]:
     if isinstance(outcome, PortfolioFailure):
         passed_on: TaskOutput[BuildSummary] = TaskOutput(outcome=outcome, environment=build.environment, host=build.host, spans=build.spans)
         return passed_on
-    summary = BuildSummary(portfolio_id=outcome.portfolio_id, solve_order=outcome.solve_order, tradable=outcome.tradable, spec_sha256=outcome.spec.content_hash(), rule_audit=outcome.rule_audit)
+    summary = BuildSummary(
+        portfolio_id=outcome.portfolio_id, solve_order=outcome.solve_order, tradable=outcome.tradable, consumes=outcome.consumes, spec_sha256=outcome.spec.content_hash(), rule_audit=outcome.rule_audit
+    )
     return TaskOutput(outcome=summary, environment=build.environment, host=build.host, spans=build.spans)
 
 
@@ -300,7 +335,7 @@ def solve_task(shared: SharedRunData, build: TaskOutput[BuildResult], *contribut
             return skipped(built.portfolio_id, f"not solved because predecessor {failed.portfolio_id!r} failed at stage {failed.stage!r}")
         folded = [contribution for contribution in contributions if isinstance(contribution, Contribution)]
         with recorder.span("solve:chain"):
-            chain = resolved.profile.chain_state(built.spec, folded)
+            chain = resolved.profile.chain_state(built.spec, folded, consume_flags(built.spec, built.consumes))
         return finish_or_fail(built, resolved, chain, data.run_id, recorder)
 
     return _task(shared, built.portfolio_id, "solve", pipeline)

@@ -62,8 +62,13 @@ class SideProfile(Protocol):
         """What a dependent solve receives from this portfolio's orders."""
         ...
 
-    def chain_state(self, spec: ProblemSpec, contributions: Sequence[Contribution]) -> ChainState:
-        """Predecessors' contributions folded onto this spec and masked to what it can trade."""
+    def chain_state(self, spec: ProblemSpec, contributions: Sequence[Contribution], consumes: Flags) -> ChainState:
+        """Predecessors' contributions folded onto this spec, masked to its tradable set *and* to ``consumes`` — the securities its own chain readers can see.
+
+        The build derives ``consumes`` from the portfolio's typed constraints (the whole tradable set
+        when anything opaque might read the chain); masking to it is what keeps the chain state — and
+        its hash — identical whether every earlier portfolio was folded or only the overlapping ones.
+        """
         ...
 
 
@@ -112,9 +117,9 @@ class TwoSided:
         """The BUY rows; sells never reach a later portfolio."""
         return Contribution.from_orders(portfolio_id, orders, "BUY")
 
-    def chain_state(self, spec: ProblemSpec, contributions: Sequence[Contribution]) -> ChainState:
-        """Predecessors' buys, masked to this portfolio's buyable set."""
-        return derive_chain_state(spec.security_ids, self.tradable(spec), contributions)
+    def chain_state(self, spec: ProblemSpec, contributions: Sequence[Contribution], consumes: Flags) -> ChainState:
+        """Predecessors' buys, masked to this portfolio's buyable set and to what its chain readers consume."""
+        return derive_chain_state(spec.security_ids, self.tradable(spec) & consumes, contributions)
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,9 +162,9 @@ class BuyOnly:
         """The BUY rows, which is every row."""
         return Contribution.from_orders(portfolio_id, orders, "BUY")
 
-    def chain_state(self, spec: ProblemSpec, contributions: Sequence[Contribution]) -> ChainState:
-        """Predecessors' buys, masked to this portfolio's buyable set."""
-        return derive_chain_state(spec.security_ids, self.tradable(spec), contributions)
+    def chain_state(self, spec: ProblemSpec, contributions: Sequence[Contribution], consumes: Flags) -> ChainState:
+        """Predecessors' buys, masked to this portfolio's buyable set and to what its chain readers consume."""
+        return derive_chain_state(spec.security_ids, self.tradable(spec) & consumes, contributions)
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,9 +208,9 @@ class SellOnly:
         """The SELL rows, which is every row."""
         return Contribution.from_orders(portfolio_id, orders, "SELL")
 
-    def chain_state(self, spec: ProblemSpec, contributions: Sequence[Contribution]) -> ChainState:
-        """Predecessors' sells, masked to this portfolio's sellable set."""
-        return derive_chain_state(spec.security_ids, self.tradable(spec), contributions)
+    def chain_state(self, spec: ProblemSpec, contributions: Sequence[Contribution], consumes: Flags) -> ChainState:
+        """Predecessors' sells, masked to this portfolio's sellable set and to what its chain readers consume."""
+        return derive_chain_state(spec.security_ids, self.tradable(spec) & consumes, contributions)
 
 
 def _cash_start(spec: ProblemSpec, run: str, *, floor: bool) -> list[str]:

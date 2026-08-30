@@ -420,7 +420,7 @@ def _plan_uncoupled(dispatch: _Dispatch, shared: SharedRunData, builds: _Builds)
     dispatch.backend.cancel([solves.pop(portfolio_id) for portfolio_id in outcomes if portfolio_id in solves])
     keys = {portfolio_id: builds.key(portfolio_id) for portfolio_id in ids}
     order = order_portfolios(keys)
-    return _Planned(dependency_graph(order, {}, frozenset(), "none"), keys, solves, outcomes)
+    return _Planned(dependency_graph(order, {}, {}, frozenset(), "none"), keys, solves, outcomes)
 
 
 def _stream_solves(dispatch: _Dispatch, builds: _Builds, order: tuple[PortfolioId, ...], coupling: Coupling, *, fail_fast: bool, securities: Iterable[str]) -> _Planned:
@@ -457,7 +457,7 @@ def _stream_solves(dispatch: _Dispatch, builds: _Builds, order: tuple[PortfolioI
     for position, portfolio_id in enumerate(order):
         report = builds.report(portfolio_id)
         failed = isinstance(report, PortfolioFailure)
-        earlier = overlaps.add((), unknown=builds.submitted(portfolio_id)) if failed else overlaps.add(report.tradable)
+        earlier = overlaps.add((), (), unknown=builds.submitted(portfolio_id)) if failed else overlaps.add(report.tradable, report.consumes)
         predecessors[portfolio_id] = order[:position] if coupling == "all" else tuple(order[index] for index in earlier)
         if stopped:
             outcomes[portfolio_id] = skipped(portfolio_id, SKIPPED_BY_POSITION)

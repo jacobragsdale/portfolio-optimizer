@@ -184,8 +184,12 @@ Every portfolio builds at once, chain-free: rules never see other portfolios. A 
 **tradable set** — the securities the profile lets it trade on that side: buyable (`ub > w0`) or
 sellable (held, `lb < w0`) — and its solve-order key, a priority from an optional `solve_order` step or
 the portfolios frame's column, ties broken on `portfolio_id`. From those the engine derives the
-dependency graph (`engine/schedule.py`): portfolio *j* depends on every higher-priority *i* whose
-tradable set intersects its own, and on nothing else; with no chain-aware step there are no edges. The
+dependency graph (`engine/schedule.py`), and the edge test is directional: portfolio *j* depends on
+every higher-priority *i* whose tradable set intersects what *j*'s own chain readers *consume* — the
+scopes of *j*'s typed chain constraints (`domain/constraints.py`), the whole tradable set when
+anything opaque might read the chain (a function-convention row, a chain-aware term, a solve step
+other than the shipped one), and nothing at all when nothing does, in which case *j* waits for
+nobody; with no chain-aware step anywhere there are no edges. The
 graph is never transitively reduced — a solve folds its *direct* predecessors' own trades, so every
 overlapping earlier portfolio stays a direct dependency. Every predecessor is earlier in the order, so
 the graph is grown a portfolio at a time as builds report rather than derived once they all have: a
@@ -220,9 +224,11 @@ overlap is on *any* shared tradable name, so one sector shared between neighbour
 reconnects the book and the critical path is the line again — 1,450 edges instead of 4,950, critical
 path still 100 — and the shipped example, 100 accounts over three securities, is deliberately the
 degenerate case (its manifest records `edges 4950, critical_path 100`). Two consequences worth
-stating. The win belongs to books partitioned by mandate, universe, or restriction list, and
-narrowing coupling from any shared name to the names a constraint can actually bind on is the open
-thread in `IDEAS.md`. And the graph's per-link cost — a contribution round-trip of ~40–120ms under
+stating. The win belongs to books partitioned by mandate, universe, or restriction list — and to
+books whose constraints *declare* their coupling: a typed constraint row says whether it reads the
+chain and, through its scope, which securities it couples through, so a portfolio with no chain
+reader waits for nobody and only opaque rows keep the widest reading (generalizing the grouping
+column and demonstrating the narrowing at scale are what remain open in `IDEAS.md`). And the graph's per-link cost — a contribution round-trip of ~40–120ms under
 load — means it pays once solves dominate that, which a 100,000-name book's multi-second solves do
 by two orders of magnitude; a book of many sub-second solves is bounded by the scheduler, not the
 chain, whatever the graph looks like.

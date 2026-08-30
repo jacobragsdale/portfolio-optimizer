@@ -404,7 +404,7 @@
         "dependencies": {
           "$ref": "#/$defs/Dependencies",
           "default": "overlap",
-          "description": "Whether portfolios wait for each other, and which. `overlap` (default): a portfolio waits only for higher-priority portfolios that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `sell`). `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis. `none`: nothing waits and the whole book solves at once, which is right when no constraint reads what others traded. This is declared, not inferred: constraints are loaded data the engine does not interpret, so it cannot tell whether yours read the chain."
+          "description": "Whether portfolios wait for each other, and which. `overlap` (default): a portfolio waits only for higher-priority portfolios that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `sell`). `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis. `none`: nothing waits and the whole book solves at once, which is right when no constraint reads what others traded. Under `overlap` the edge test also reads what each portfolio's constraints *declare*: a typed constraint row (a `kind` column) says whether it reads the chain and — through its `scope` — which securities it couples through, so a portfolio whose rows read no chain waits for nobody and a scoped `participation_limit` couples only through its scope. An opaque row (the function convention, or a desk's own vocabulary), a chain-aware objective term, or a solve step other than the shipped `cvxpy` one couples conservatively through the whole tradable set."
         },
         "on_error": {
           "$ref": "#/$defs/OnError",
@@ -1380,7 +1380,7 @@
       "title": "SolveOrderStep"
     },
     "SolveStep": {
-      "$comment": "Shipped steps: ['cvxpy', 'interpret_constraints', 'pro_rata_fill', 'replace_constraints']",
+      "$comment": "Shipped steps: ['cvxpy', 'interpret_constraints', 'pro_rata_fill', 'render_typed', 'replace_constraints', 'typed_ref']",
       "anyOf": [
         {
           "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
@@ -1460,6 +1460,28 @@
               "if": {
                 "properties": {
                   "name": {
+                    "const": "render_typed"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "`render_typed` takes no parameters.",
+                    "maxProperties": 0,
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
                     "const": "replace_constraints"
                   }
                 },
@@ -1472,6 +1494,28 @@
                   "params": {
                     "additionalProperties": false,
                     "description": "`replace_constraints` takes no parameters.",
+                    "maxProperties": 0,
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "const": "typed_ref"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "`typed_ref` takes no parameters.",
                     "maxProperties": 0,
                     "type": "object"
                   }

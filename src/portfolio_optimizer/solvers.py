@@ -22,12 +22,25 @@ from typing import Self
 import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
+from scipy.sparse import csr_array, vstack
 
 from portfolio_optimizer.config.models import STEP_NAME_PATTERN, StepSpec
 from portfolio_optimizer.config.resolve import resolve_step
 from portfolio_optimizer.config.steps import ResolvedStep
-from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm, solve_problem
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, Expr, ObjectiveTerm, at_least, at_most, dot, masked, matvec, solve_problem
 from portfolio_optimizer.cvx.sides import decision_variables, identity_constraints
+from portfolio_optimizer.domain.constraints import (
+    AnyTypedConstraint,
+    ExposureLimit,
+    GroupLimit,
+    ParticipationLimit,
+    Vector,
+    WeightLimit,
+    effective_bounds,
+    opaque_frame,
+    parse_constraints,
+    starting_values,
+)
 from portfolio_optimizer.domain.results import F64, ChainState, ProblemSpec, StepRef
 from portfolio_optimizer.domain.types import StrictModel
 from portfolio_optimizer.solving import SolveRequest, SolveResult, SolveSetupError
@@ -74,14 +87,97 @@ class ConstraintRow(StrictModel):
 
 
 def cvxpy(request: SolveRequest) -> SolveResult:
-    """Interpret the constraint rows, build the cvxpy problem with the terms and the profile's identity, and solve it."""
+    """Interpret the constraint rows — typed models and the function convention alike — build the cvxpy problem with the terms and the profile's identity, and solve it.
+
+    A row with a typed ``kind`` is rendered from its model here and re-checked by the verifier through
+    the model's own ``residual``; every other row stays the function convention below. The two share
+    one name space, since reports and the manifest key on it.
+    """
     spec, chain, solver = request.spec, request.chain, request.solver
     x = decision_variables(request.profile.sides, spec.w0)
     terms = [_term(step, x, spec, chain) for step in request.terms]
-    interpreted = interpret_constraints(request.constraints)
-    constraints = [identity_constraints(request.profile.sides, x, spec.w0), *(_constraint_set(step, x, spec, chain) for step, _ in interpreted)]
+    parsed = parse_constraints(request.constraints)
+    typed = parsed.typed if parsed is not None else ()
+    interpreted = interpret_constraints(opaque_frame(request.constraints))
+    clash = sorted({model.name for model in typed} & {ref.label for _, ref in interpreted})
+    if clash:
+        msg = f"constraint name(s) {clash} are used by both a typed row and a function row; every constraint needs its own name"
+        raise SolveSetupError(msg)
+    constraints = [
+        identity_constraints(request.profile.sides, x, spec.w0),
+        *(render_typed(model, x, spec, chain) for model in typed),
+        *(_constraint_set(step, x, spec, chain) for step, _ in interpreted),
+    ]
     result = solve_problem(x, terms, constraints, security_ids=spec.security_ids, solver=solver.name, options=solver.options, time_limit_s=solver.time_limit_s, verbose=solver.verbose)
-    return replace_constraints(result, tuple(ref for _, ref in interpreted))
+    return replace_constraints(result, (*(typed_ref(model) for model in typed), *(ref for _, ref in interpreted)))
+
+
+TYPED_CONSTRAINT_MODULE = "portfolio_optimizer.domain.constraints"
+
+
+def typed_ref(model: AnyTypedConstraint) -> StepRef:
+    """One typed constraint's provenance: its kind as the qualified name, its fields as params, its name as the label — what the verifier re-validates into the model and checks through its residual."""
+    return StepRef(qualname=f"{TYPED_CONSTRAINT_MODULE}:{model.kind}", params=model.model_dump(mode="json"), label=model.name)
+
+
+def render_typed(model: AnyTypedConstraint, x: DecisionVars, spec: ProblemSpec, chain: ChainState) -> ConstraintSet:
+    """One typed model as cvxpy constraints: this step's half of the behavioural contract; the model's ``residual`` is the verifier's half.
+
+    Rendered strict — ``tolerance`` is verification slack, applied by the residual alone, so the
+    solver is held to the bound and the verifier is deliberately looser, as everywhere else. The
+    start policy is applied here: ``allow_current_weight`` loosens a bound the book already breaches
+    to its current value, so the name is held rather than the portfolio failed.
+    """
+    if isinstance(model, GroupLimit):
+        return _render_group(model, x, spec)
+    if isinstance(model, ExposureLimit):
+        return _render_exposure(model, x, spec)
+    if isinstance(model, WeightLimit):
+        return _render_weight(model, x, spec)
+    return _render_participation(model, x, spec, chain)
+
+
+def _vector(x: DecisionVars, vector: Vector) -> Expr:
+    """The decision quantity a typed constraint bounds; reading a side the run lacks raises, which fails the portfolio at stage ``solve``."""
+    if vector == "w":
+        return x.w
+    if vector == "buy":
+        return x.buy
+    if vector == "sell":
+        return x.sell
+    return x.trade
+
+
+def _render_group(model: GroupLimit, x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
+    pairs = model.groups(spec)
+    mask = model.scope_mask(spec).astype(np.float64)
+    membership = csr_array(vstack([spec.sector(group) for group, _ in pairs], format="csr").multiply(mask))
+    exposure = matvec(membership, _vector(x, model.vector))
+    current = np.asarray(membership @ starting_values(spec, model.vector), dtype=np.float64)
+    bounds = effective_bounds(model.direction, model.allow_current_weight, np.array([float(bound) for _, bound in pairs]), current)
+    return ConstraintSet(model.name, (at_most(exposure, bounds) if model.direction == "le" else at_least(exposure, bounds),))
+
+
+def _render_exposure(model: ExposureLimit, x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
+    loadings = spec.column(model.column) * model.scope_mask(spec)
+    exposure = dot(loadings, _vector(x, model.vector))
+    current = float((loadings * starting_values(spec, model.vector)).sum())
+    bound = float(effective_bounds(model.direction, model.allow_current_weight, np.array([float(model.bounds)]), np.array([current]))[0])
+    return ConstraintSet(model.name, (at_most(exposure, bound) if model.direction == "le" else at_least(exposure, bound),))
+
+
+def _render_weight(model: WeightLimit, x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
+    flags = model.scope_mask(spec)
+    mask = flags.astype(np.float64)
+    values = masked(flags, _vector(x, model.vector))
+    bounds = effective_bounds(model.direction, model.allow_current_weight, np.full(spec.n, float(model.bounds)), starting_values(spec, model.vector)) * mask
+    return ConstraintSet(model.name, (at_most(values, bounds) if model.direction == "le" else at_least(values, bounds),))
+
+
+def _render_participation(model: ParticipationLimit, x: DecisionVars, spec: ProblemSpec, chain: ChainState) -> ConstraintSet:
+    flags = model.scope_mask(spec)
+    mask = flags.astype(np.float64)
+    return ConstraintSet(model.name, (at_most(masked(flags, x.trade), model.capacity(spec) * mask), at_most(masked(flags, x.coupled), model.remaining(spec, chain) * mask)))
 
 
 def interpret_constraints(frame: pd.DataFrame) -> tuple[tuple[ResolvedStep, StepRef], ...]:

@@ -1,10 +1,13 @@
 """Derive the run's schedule: the order portfolios solve in, and which ones each waits for.
 
 Pure functions over what the builds reported; nothing here knows about Dask. Portfolios couple
-across a run through one side only — the side profile's tradable set — so portfolio *j* depends on
-every higher-priority *i* that can trade a security *j* can trade too, and on nothing else. The graph is never transitively reduced: a solve
-folds its *direct* predecessors' own contributions, so every overlapping earlier portfolio must stay a direct
-dependency.
+across a run through one side only, and the edge test is directional: portfolio *j* depends on every
+higher-priority *i* whose *tradable* set (what *i* may trade there — the produce side) intersects
+*j*'s *consume* set — the securities *j*'s own chain readers can see, which its build derives from
+its typed constraints and which is the whole tradable set when anything opaque might read the chain.
+A portfolio whose consume set is empty reads nothing and waits for no one. The graph is never
+transitively reduced: a solve folds its *direct* predecessors' own contributions, so every
+overlapping earlier portfolio must stay a direct dependency.
 
 Every predecessor is earlier in the order, so the graph can be grown a portfolio at a time:
 :class:`OverlapIndex` takes one portfolio's tradable set and answers which earlier ones it overlaps,
@@ -91,28 +94,35 @@ class Schedule:
         )
 
 
-def dependency_graph(order: Sequence[PortfolioId], tradable: Mapping[PortfolioId, Iterable[str]], unknown: frozenset[PortfolioId], coupling: Coupling) -> Schedule:
+def dependency_graph(
+    order: Sequence[PortfolioId], tradable: Mapping[PortfolioId, Iterable[str]], consumes: Mapping[PortfolioId, Iterable[str]], unknown: frozenset[PortfolioId], coupling: Coupling
+) -> Schedule:
     """Which higher-priority portfolios each portfolio waits for.
 
-    ``tradable`` is each built portfolio's tradable securities; ``unknown`` names portfolios whose build
-    failed, so their tradable set is unknown and they are treated as overlapping every later portfolio
-    (and every earlier one). Under ``all`` every earlier portfolio is a predecessor; under ``none``
-    nothing is.
+    ``tradable`` is each built portfolio's tradable securities — what its trades can reach others
+    through; ``consumes`` is each portfolio's consume set — what its own chain readers can see, at
+    most its tradable set and absent (or empty) when nothing it runs reads the chain. ``unknown``
+    names portfolios whose build failed: both sets are unknown, so they are treated as overlapping
+    every other portfolio. Under ``all`` every earlier portfolio is a predecessor; under ``none``
+    nothing is, and both mappings are ignored.
     """
     ordered = tuple(order)
     if coupling == "none":
         return Schedule(ordered, dict.fromkeys(ordered, ()), coupling)
     if coupling == "all":
         return Schedule(ordered, {portfolio_id: tuple(ordered[:position]) for position, portfolio_id in enumerate(ordered)}, coupling)
-    return Schedule(ordered, _overlap_predecessors(ordered, tradable, unknown), coupling)
+    return Schedule(ordered, _overlap_predecessors(ordered, tradable, consumes, unknown), coupling)
 
 
-def _overlap_predecessors(order: tuple[PortfolioId, ...], tradable: Mapping[PortfolioId, Iterable[str]], unknown: frozenset[PortfolioId]) -> dict[PortfolioId, tuple[PortfolioId, ...]]:
+def _overlap_predecessors(
+    order: tuple[PortfolioId, ...], tradable: Mapping[PortfolioId, Iterable[str]], consumes: Mapping[PortfolioId, Iterable[str]], unknown: frozenset[PortfolioId]
+) -> dict[PortfolioId, tuple[PortfolioId, ...]]:
     """One :class:`OverlapIndex` driven over the whole order, seeded with every security it will see."""
     index = OverlapIndex(len(order), (security for portfolio_id in order for security in tradable.get(portfolio_id, ())))
     predecessors: dict[PortfolioId, tuple[PortfolioId, ...]] = {}
     for portfolio_id in order:
-        earlier = index.add(tradable.get(portfolio_id, ()), unknown=portfolio_id in unknown)
+        produced = tuple(tradable.get(portfolio_id, ()))
+        earlier = index.add(produced, tuple(consumes[portfolio_id]) if portfolio_id in consumes else produced, unknown=portfolio_id in unknown)
         predecessors[portfolio_id] = tuple(order[position] for position in earlier)
     return predecessors
 
@@ -120,11 +130,12 @@ def _overlap_predecessors(order: tuple[PortfolioId, ...], tradable: Mapping[Port
 class OverlapIndex:
     """Packed-bit incidence over a security index, one row per portfolio in solve order.
 
-    Rows are added as their builds report and each returns the earlier rows it shares a tradable
-    security with, so a caller can place a portfolio in the graph without waiting for the portfolios
-    behind it. ``securities`` seeds the index — the assembled universe covers every tradable set a rule
-    has not added to — and a security outside it is coded on arrival, which costs a repack only when it
-    widens the row.
+    Rows are added as their builds report, and each add answers which earlier portfolios' *tradable*
+    sets the newcomer's *consume* set intersects — so a caller can place a portfolio in the graph
+    without waiting for the portfolios behind it. The stored row is always the tradable set: that is
+    what later consumers test against, whatever this portfolio itself consumes. ``securities`` seeds
+    the index — the assembled universe covers every tradable set a rule has not added to — and a
+    security outside it is coded on arrival, which costs a repack only when it widens the row.
     """
 
     def __init__(self, portfolios: int, securities: Iterable[str] = ()) -> None:
@@ -133,18 +144,22 @@ class OverlapIndex:
         self._unknown = np.zeros(portfolios, dtype=np.bool_)
         self._packed = np.zeros((portfolios, self._width()), dtype=np.uint8)
 
-    def add(self, tradable: Iterable[str], *, unknown: bool = False) -> tuple[int, ...]:
-        """Append a portfolio's row and return the positions of the earlier rows it overlaps.
+    def add(self, tradable: Iterable[str], consumes: Iterable[str], *, unknown: bool = False) -> tuple[int, ...]:
+        """Append a portfolio's tradable row and return the positions of the earlier rows its ``consumes`` set overlaps.
 
-        ``unknown`` is a portfolio whose build failed or was never read: its tradable set is unknown, so
-        it overlaps every row on both sides.
+        ``consumes`` is what this portfolio's chain readers can see — at most its tradable set, and
+        empty when nothing it runs reads the chain, in which case it waits for nobody, failed builds
+        included: a portfolio that provably reads nothing cannot be affected by anyone. ``unknown`` is
+        a portfolio whose build failed or was never read: both of its sets are unknown, so it overlaps
+        every row on both sides.
         """
         members = tuple(tradable)
+        consumed = tuple(consumes)
         position = len(self._rows)
         self._rows.append(members)
         self._unknown[position] = unknown
         width = self._width()
-        for security in members:
+        for security in (*members, *consumed):
             if security not in self._code:
                 self._code[security] = len(self._code)
         if self._width() != width:
@@ -153,7 +168,9 @@ class OverlapIndex:
             self._packed[position] = self._pack(members)
         if unknown:
             return tuple(range(position))
-        overlaps = np.bitwise_and(self._packed[:position], self._packed[position]).any(axis=1) | self._unknown[:position]
+        if not consumed:
+            return ()
+        overlaps = np.bitwise_and(self._packed[:position], self._pack(consumed)).any(axis=1) | self._unknown[:position]
         return tuple(int(earlier) for earlier in np.flatnonzero(overlaps))
 
     def _width(self) -> int:

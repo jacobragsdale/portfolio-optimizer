@@ -15,7 +15,7 @@ import numpy as np
 from cvxpy.error import SolverError
 from scipy.sparse import csr_array
 
-from portfolio_optimizer.domain.results import F64, SolveStatus, Tolerances
+from portfolio_optimizer.domain.results import F64, Flags, SolveStatus, Tolerances
 from portfolio_optimizer.domain.sides import Sides
 from portfolio_optimizer.solving import SolveResult
 
@@ -167,6 +167,11 @@ def matvec(matrix: F64 | csr_array, expr: Expr) -> Expr:
 def scale(factor: float, expr: Expr) -> Expr:
     """``factor * expr``; a negative factor flips convexity, so callers keep factors non-negative."""
     return _expr(factor * expr)
+
+
+def masked(flags: Flags, expr: Expr) -> Expr:
+    """``expr`` where ``flags`` is set and zero elsewhere — how a scoped constraint touches only its scope; affine."""
+    return _expr(cp.multiply(flags.astype(np.float64), expr))
 
 
 def minus(left: Expr, right: Expr) -> Expr:

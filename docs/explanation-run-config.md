@@ -395,14 +395,17 @@ realising a gain to reach it and the cost of the trade itself. `alpha` is the on
 per-security column — `alpha` by default, any numeric universe column through its `column` parameter —
 which is how a signal a desk computes elsewhere reaches the objective without the engine knowing
 anything about it. One term carries a condition worth knowing: `tax_cost` refuses to run
-when losses could be harvested but nothing charges for trading (no `transaction_cost` term with a
-positive `cost_bps` and no `tcost_bps` column), because that combination lets the solver sell and
-rebuy a name for free.
+when, in a two-sided run, any name is held at a loss big enough that the tax saved on a sell-and-rebuy
+beats twice its per-security transaction cost — the round trip the solver would otherwise be paid to
+make. The shipped cvxpy step is the backstop: an optimum whose round trips improve the objective is
+refused with the securities named.
 
 ## Constraints are not a config block at all
 
 There is no `constraints` key. Which constraints bind an account is *data*, loaded per portfolio like
-`holdings`, and the engine never interprets it:
+`holdings`. The engine reads only what a row *declares* — a `kind` column naming a typed model in
+`domain/constraints.py` tells the schedule whether the row reads the chain and what it couples
+through — and interprets nothing else:
 
 ```json
 "constraints": {"loader": "load_constraints"}

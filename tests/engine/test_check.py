@@ -126,10 +126,12 @@ def test_every_shipped_term_and_constraint_has_a_twin() -> None:
 
     shipped_terms = {f"portfolio_optimizer.terms:{name}" for name in ("alpha", "tax_cost", "transaction_cost")}
     shipped_constraints = {f"portfolio_optimizer.terms:{name}" for name in (*SHIPPED_CONSTRAINTS, "sector_bound")}
+    typed_kinds = {f"portfolio_optimizer.domain.constraints:{kind}" for kind in ("group_limit", "exposure_limit", "weight_limit", "participation_limit")}
     assert shipped_terms == set(TERM_TWINS)
-    assert shipped_constraints == set(CONSTRAINT_TWINS)
+    assert shipped_constraints | typed_kinds == set(CONSTRAINT_TWINS)
     for qualname in shipped_terms | shipped_constraints:
         assert callable(getattr(terms, qualname.split(":")[1]))
+    assert len({CONSTRAINT_TWINS[qualname] for qualname in typed_kinds}) == 1, "every typed kind shares one twin: the model's own residual"
 
 
 def test_true_optimum_verifies_including_the_objective(make: Factories, frames: Frames) -> None:

@@ -6,26 +6,6 @@ decision it moves into the code and [the architecture explanation](docs/explanat
 and leaves this file. Numbers below are for a book of *N* = 100,000 unique securities,
 which a business unit can exceed — measured where the text says so, estimated otherwise.
 
-## Constraints couple more narrowly than tradable sets: declare what they couple through
-
-The derived solve graph is led with, measured, and honest about its degenerate case now — the README
-("The solve schedule is a derived graph"), the architecture explanation, and `benchmarks/run_book.py`
-carry the story and the 2026-08-30 numbers. What remains of the thread is the refinement that would
-make the graph bite on single-universe books.
-
-The engine couples two portfolios when their tradable sets intersect, because a constraint is opaque
-data and that is the widest safe reading. The measurements show exactly what the width costs: 100
-accounts across 10 disjoint mandates solve in 6.9s against the line's 14.9s, but a single sector
-shared between neighbouring mandates reconnects the book — 1,450 edges instead of 4,950, and the
-critical path is 100 again. A chain-aware constraint knows more than the engine does:
-`cumulative_adv_participation` couples only through names whose budget can actually bind, and on a
-100k universe rebalanced at ordinary turnover that is a small fraction of the tradable set. If the
-constraint contract — the behavioural union in the constraints thread below, which already declares
-*whether* a constraint reads the chain — also declared the securities it couples *through*,
-`OverlapIndex` would index those instead, and a single-universe book would stop being one component.
-That is the same declaration the engine already asks for, made one field more specific, and it is
-what turns the graph from a structural win into a numerical one.
-
 ## Where the time goes at 100k names: the solver, not the build
 
 Measured 2026-08-29 with `benchmarks/profile_portfolio.py` — one portfolio, the shipped rules, terms,
@@ -324,6 +304,21 @@ stubs, or imports anything from `portfolio_optimizer` has stopped being an accep
 CLI over a directory and reads the artifacts, or it is a unit test in the wrong place.
 
 ## Constraints: one contract, three ways to author it
+
+**Status 2026-08-30: the typed union shipped** (`domain/constraints.py`): four hashable pydantic
+kinds — `group_limit`, `exposure_limit`, `weight_limit`, and the chain-aware `participation_limit` —
+each with a `name`, a `direction`, scalar-or-per-group `bounds`, an optional boolean-flag `scope`, a
+verifier `tolerance`, and `allow_current_weight` (hold a breached start rather than fail it). Rows opt
+in with a `kind` column beside the function convention, which stays untyped and unchanged, and the
+whole spec is optional — a frame with no `kind` column parses to `None` and behaves exactly as before.
+The engine schedules by the declarations alone: a portfolio whose constraints read no chain waits for
+nobody, a scoped `participation_limit` couples only through `scope ∩ tradable`, and anything opaque —
+a function row, a chain-aware term, a solve step other than the shipped cvxpy one — keeps the widest
+coupling. The shipped step renders the models; the verifier re-checks each through the model's own
+`residual`, so nothing typed is ever `unverified`. What this thread still owes: the grouping column
+beyond `sector` (the `groups` block on the spec), numbers drawn from the style (property 7), more
+kinds as the desk needs them, a typed mode for `benchmarks/run_book.py` so the narrowing is
+demonstrated at scale, and the GUI. The paragraphs below predate the landing and keep their leanings.
 
 A constraint today is a `ConstraintStep` in the config (`config/models.py`): a strict model with a
 `kind` — `function`, the only kind so far — and a `label`, unique among the run's constraints and

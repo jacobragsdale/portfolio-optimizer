@@ -114,10 +114,11 @@ ORDERS = FrameSchema(
 CONSTRAINTS = FrameSchema(name="constraints", columns=(ColumnSpec("portfolio_id", "string"),), key=(), allow_extra=True)
 """One portfolio's constraints, in whatever shape the desk writes them.
 
-The engine knows exactly one thing about a constraint row: which portfolio it belongs to. Everything
-else is the desk's own vocabulary, carried opaquely from the loader, through the rules that adjust it,
-to the solve step that interprets it — which is the only thing that understands the rest of the
-columns. There is no key, because the engine does not know what identifies a row.
+The engine knows two things about a constraint row: which portfolio it belongs to, and — when a
+``kind`` column names a typed model (``domain/constraints.py``) — the declaration it schedules by:
+whether the row reads the chain, and what it couples through. Everything else is the desk's own
+vocabulary, carried from the loader, through the rules that adjust it, to the solve step that
+interprets it. There is no key, because the engine does not know what identifies a row.
 
 Optional: a run whose solve step needs no constraints declares no such dataset, and every portfolio
 gets the empty frame.

@@ -277,7 +277,15 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
         row.note = f"spec {spec_path.stat().st_size / MB:.1f} MB, solution {solution_path.stat().st_size / MB:.1f} MB on disk"
     with report.stage("pickle sizes") as row:
         built = BuildResult(
-            portfolio_id=PortfolioId(spec.portfolio_id), spec=spec, order_inputs=output.order_inputs, rule_audit=(), solve_order=Decimal(0), tradable=(), constraints=book.constraints, extras={}
+            portfolio_id=PortfolioId(spec.portfolio_id),
+            spec=spec,
+            order_inputs=output.order_inputs,
+            rule_audit=(),
+            solve_order=Decimal(0),
+            tradable=(),
+            consumes=(),
+            constraints=book.constraints,
+            extras={},
         )
         result = PortfolioResult(
             portfolio_id=spec.portfolio_id,

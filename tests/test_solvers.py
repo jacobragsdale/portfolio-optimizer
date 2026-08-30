@@ -44,7 +44,7 @@ def test_pro_rata_fill_respects_a_cap_and_gives_the_excess_to_the_rest(make: Fac
 def test_pro_rata_fill_reads_the_chain(make: Factories) -> None:
     spec = make.spec(w0=np.array([0.3, 0.3, 0.3]), adv_capacity=np.array([0.05, 1.0, 1.0]))
     consumed = Contribution("P0", ("S0",), np.array([300.0]))  # 300 shares at 100 on NAV 1e6 is 0.03 of NAV
-    chain = TWO_SIDED.chain_state(spec, [consumed])
+    chain = TWO_SIDED.chain_state(spec, [consumed], np.ones(spec.n, dtype=np.bool_))
     result = pro_rata_fill(_request(spec, chain))
     assert result.w is not None
     np.testing.assert_allclose(result.w - spec.w0, [0.02, 0.04, 0.04], atol=1e-12, err_msg="S0 has 0.05 - 0.03 of ADV budget left after its predecessor")

@@ -23,6 +23,7 @@ def test_build_task_slices_rules_and_builds_from_the_shared_data_and_reports_its
     assert isinstance(output.outcome, BuildResult)
     assert output.outcome.spec.security_ids == ("A", "B", "C")
     assert output.outcome.solve_order == 0
+    assert output.outcome.consumes == output.outcome.tradable, "function-convention rows are opaque, so the consume side is the whole tradable set"
     assert output.environment == environment_for(shared.config, cwd=Path.cwd(), image_digest=None)
     assert output.host
     assert [span.name for span in output.spans] == ["build:slice", "build:rules", "build:spec", "build"], "phases end before the stage that contains them"

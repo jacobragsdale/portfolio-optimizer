@@ -1,5 +1,6 @@
 """Tier 1: solving — a hand-checkable optimum, a binding cap with a known answer, and every failure path."""
 
+import json
 from collections.abc import Sequence
 from dataclasses import replace
 from decimal import Decimal
@@ -273,3 +274,56 @@ def test_tax_and_transaction_costs_discourage_selling_gains(make: Factories, fra
     taxed = solve(spec, ChainState.empty(spec.security_ids), resolved)
     untaxed = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["alpha"], SHIPPED_CONSTRAINTS))
     assert taxed.sell[0] < untaxed.sell[0], "A is held at a gain, so the tax on selling it holds the position where the cap allows"
+
+
+# --- typed constraints through the shipped step ---
+
+
+def _typed_rows(*records: dict[str, object]) -> pd.DataFrame:
+    """A constraints frame the way the loader delivers it: a ``kind`` column, ``params`` as JSON text; a record without ``kind`` is an opaque function row."""
+    frame = pd.DataFrame.from_records([{"portfolio_id": "P1", **record} for record in records])
+    if "params" in frame.columns:
+        frame["params"] = frame["params"].map(lambda value: json.dumps(value) if isinstance(value, dict) else value)
+    return frame
+
+
+def test_typed_constraints_solve_beside_function_rows_and_verify_through_their_own_residuals(make: Factories) -> None:
+    spec = make.spec()
+    rows = _typed_rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "le", "bounds": "0.4"}}, {"name": "long_only"}, {"name": "cash_bounds"})
+    resolved = resolved_with(["alpha"], [])
+    solution = engine_solve(spec, ChainState.empty(spec.security_ids), resolved, rows)
+    np.testing.assert_allclose(solution.w, [0.2, 0.4, 0.4], atol=1e-6, err_msg="alpha wants S2 then S1, the typed cap stops both at 0.4, S0 takes the rest")
+    assert [ref.label for ref in solution.constraints] == ["cap", "long_only", "cash_bounds"]
+    assert solution.constraints[0].qualname == "portfolio_optimizer.domain.constraints:weight_limit"
+    report = verify(spec, solution, ChainState.empty(spec.security_ids), step_refs(resolved.terms), solution.constraints, profile=TWO_SIDED)
+    assert report.passed, report.violated
+    assert report.unverified == (), "the typed model is its own twin, so nothing goes unchecked"
+
+
+def test_allow_current_weight_holds_a_breached_start_a_buy_only_run_cannot_trade_out_of(make: Factories) -> None:
+    spec = make.spec(w0=np.array([0.5, 0.3, 0.2]))
+    resolved = resolved_with(["alpha"], [], sides="buy")
+    strict = _typed_rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "le", "bounds": "0.4"}}, {"name": "cash_bounds"})
+    with pytest.raises(InfeasibleError):
+        engine_solve(spec, ChainState.empty(spec.security_ids), resolved, strict)
+    held = _typed_rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "le", "bounds": "0.4", "allow_current_weight": True}}, {"name": "cash_bounds"})
+    solution = engine_solve(spec, ChainState.empty(spec.security_ids), resolved, held)
+    np.testing.assert_allclose(solution.w, spec.w0, atol=1e-6, err_msg="the breached name is held where it is, not worsened, and the portfolio solves")
+    report = verify(spec, solution, ChainState.empty(spec.security_ids), step_refs(resolved.terms), solution.constraints, profile=resolved.profile)
+    assert report.passed, "the residual applies the same start policy, so holding the breach verifies"
+
+
+def test_a_scoped_participation_limit_binds_its_scope_and_leaves_the_rest_alone(make: Factories) -> None:
+    spec = make.spec(flags={"is_thin": np.array([False, False, True])}, adv_capacity=np.array([0.05, 0.05, 0.05]), price=np.full(3, 100.0))
+    spent = ChainState(security_ids=spec.security_ids, traded_shares=np.array([0.0, 0.0, 300.0]), predecessors=("P0",))  # 0.03 of S2's 0.05 budget
+    rows = _typed_rows({"kind": "participation_limit", "label": "adv", "params": {"direction": "le", "scope": "is_thin"}}, {"name": "long_only"}, {"name": "cash_bounds"})
+    solution = engine_solve(spec, spent, resolved_with(["alpha"], []), rows)
+    assert solution.buy[2] == pytest.approx(0.02, abs=1e-6), "S2 gets what the predecessor left of its budget"
+    assert solution.buy[1] > 0.05, "S1 is outside the scope: its trade is not participation-bound at all"
+
+
+def test_a_typed_and_a_function_constraint_may_not_share_a_name(make: Factories) -> None:
+    spec = make.spec()
+    rows = _typed_rows({"kind": "weight_limit", "label": "max_weight", "params": {"direction": "le", "bounds": "0.4"}}, {"name": "max_weight"})
+    with pytest.raises(SolveSetupError, match="used by both a typed row and a function row"):
+        engine_solve(spec, ChainState.empty(spec.security_ids), resolved_with(["alpha"], []), rows)

@@ -38,10 +38,12 @@ class SolveRequest:
     constraints: pd.DataFrame
     """This portfolio's constraint rows as loaded and as the rules left them, in the desk's own shape.
 
-    The engine does not interpret them — it knows only that they belong to this portfolio — so a step
-    reads whatever columns its desk writes. The shipped ``cvxpy`` step reads a ``name``/``label``/``params``
-    convention; a step with its own syntax reads its own, and one that needs no constraints ignores the
-    frame, which is empty when the run declares no such dataset.
+    The engine reads only the rows' *declarations*: a row whose ``kind`` column names a typed model
+    (``domain/constraints.py``) tells the schedule whether it reads the chain and what it couples
+    through, and nothing more. What a row *does* is the step's business: the shipped ``cvxpy`` step
+    renders typed rows from their models and reads the ``name``/``label``/``params`` function
+    convention for the rest; a step with its own syntax reads its own, and one that needs no
+    constraints ignores the frame, which is empty when the run declares no such dataset.
     """
 
     solver: SolverConfig
@@ -81,8 +83,8 @@ class SolveResult:
     constraints: tuple[StepRef, ...] = field(default_factory=tuple)
     """What the step applied, for the verifier and the manifest.
 
-    The step is the only thing that understands the constraint rows, so it says what it made of them:
-    a qualified name, JSON-safe params, and a label each. The verifier re-checks every ref it has a
+    The step is what decides what the constraint rows mean, so it says what it made of them: a
+    qualified name, JSON-safe params, and a label each — for a typed row, the model's kind and fields. The verifier re-checks every ref it has a
     numpy twin for and reports the rest as ``unverified``; the manifest records them under the
     portfolio. A step that interprets nothing leaves this empty and its constraints go unverified,
     which is the honest answer rather than a silent pass.

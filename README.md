@@ -62,9 +62,10 @@ The quickest way to see what the engine does is to read the run it ships with,
       "rate_limit": {"max_in_flight": 4}
     },
 
-    // Which constraints bind each account and how tight they are. The engine reads only
-    // `portfolio_id`; the solve step interprets every other column. `depends_on` hands the loader
-    // the book's ids as `request.portfolio_ids`, so compliance is asked about the book, not the firm.
+    // Which constraints bind each account and how tight they are. The engine reads `portfolio_id`
+    // and, on rows whose `kind` names a typed model, the declaration it schedules by; the solve
+    // step interprets the rest. `depends_on` hands the loader the book's ids as
+    // `request.portfolio_ids`, so compliance is asked about the book, not the firm.
     "constraints": {"loader": "load_constraints", "depends_on": ["portfolios"]},
 
     // A name the engine does not know is an extra: carried untouched to the rules and on to the
@@ -205,8 +206,10 @@ partitioned by mandate, universe, or restriction list (`restrict_to_mandate` is 
 A book whose accounts all buy from one universe is a complete DAG — the shipped example is
 deliberately that case, and its own manifest says so: `edges 4950, critical_path 100` — and a single
 sector shared between neighbouring mandates is enough to chain the book back into a line (1,450
-edges, critical path 100 again). Narrowing coupling from "any shared name" to the names a constraint
-can actually bind on is the open thread in `IDEAS.md`. How the graph is derived and why it is exact
+edges, critical path 100 again). Typed constraint rows narrow that reading: a row with a `kind`
+column declares whether it reads the chain and — through its `scope` — which names it couples
+through, so a portfolio whose constraints read no chain waits for nobody, and only opaque rows keep
+the widest coupling. How the graph is derived and why it is exact
 is in [the architecture explanation](docs/explanation-architecture.md#a-run-couples-through-its-one-side-so-the-schedule-is-a-graph);
 `portfolio-optimizer timeline` draws where any run's wall clock went.
 

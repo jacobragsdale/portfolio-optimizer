@@ -1,7 +1,9 @@
 """Tier 2: on the real cluster — the golden orders, the line equals the overlap schedule, failures skip only what depended on them (or everything under fail_fast), and nothing partial is published."""
 
+import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
@@ -182,3 +184,20 @@ def test_two_runs_over_the_same_inputs_are_identical_except_for_identity(tmp_pat
         for field in strip:
             assert getattr(left, field) == getattr(right, field), field
     assert [d.content_sha256 for d in first.datasets] == [d.content_sha256 for d in second.datasets]
+
+
+def test_a_typed_only_book_derives_an_edge_free_schedule_that_still_matches_the_line(tmp_path: Path) -> None:
+    """No typed constraint reads the chain, and the engine can see that — so nothing waits, where the same book under function rows would couple through every shared name."""
+    book = example_book(tmp_path)
+    params = json.dumps({"direction": "le", "bounds": "0.3"})  # inside both accounts' style caps: order rounding clamps a buy to the spec's ub, which a typed-only solve must therefore respect
+    typed = pd.DataFrame({"portfolio_id": ["P1", "P2"], "kind": ["weight_limit"] * 2, "label": ["cap"] * 2, "params": [params] * 2})
+    typed.to_csv(book / "constraints.csv", index=False)
+    overlap = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=book, run_id="narrow")
+    line = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=book, dependencies="all", run_id="line")
+    assert overlap.exit_code == EXIT_OK, [str(outcome) for outcome in overlap.outcomes]
+    schedule = overlap.manifest.schedule
+    assert schedule is not None and (schedule.edges, schedule.components, schedule.critical_path) == (0, 2, 1), "both accounts can buy every name, but neither reads the chain"
+    assert [record.predecessors for record in overlap.manifest.portfolios] == [0, 0]
+    for left, right in zip(overlap.solved, line.solved, strict=True):
+        assert left.orders.drop(columns=["run_id"]).equals(right.orders.drop(columns=["run_id"]))
+        assert left.chain_state.content_hash() == right.chain_state.content_hash(), "the line folded a predecessor, the graph folded none; the consume mask zeroes both to the same state"
