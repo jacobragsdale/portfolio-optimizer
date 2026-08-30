@@ -30,7 +30,17 @@ loudly to log, and the cluster the run provisions for itself — `local`, two wo
 machine, torn down when the run ends. There are no defaults: a missing variable stops the run before it
 starts.
 
-## 3. Check the config before touching any data
+## 3. Read the config, then check it before touching any data
+
+Open `configs/example_run.json`. That one file is the whole run: the data to load, the steps that
+combine it, the rules to apply, the terms to minimize, the constraints to hold, the solver, the
+verifier's tolerances, and where the orders go. Each block is named by an ordinary Python function in
+`src/portfolio_optimizer/` — the `csv` loader, the `restrict_low_liquidity` rule, the `tracking_error`
+term. The README walks through the file
+[block by block](../README.md#the-run-config-block-by-block); keep it beside you for the rest of this
+tutorial.
+
+Now ask the engine to check it:
 
 ```bash
 uv run --env-file .env portfolio-optimizer validate-config configs/example_run.json

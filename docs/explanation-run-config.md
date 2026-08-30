@@ -6,8 +6,30 @@ order the shipped `configs/example_run.json` lists them, and for each block answ
 what is it telling the engine, when does the engine consume it, and what changes if you set it
 differently. It is the companion to two other pages: the [reference](reference-run-config.md) lists
 every key with its type and default and says nothing about why, and
-[the life of a run](explanation-run-lifecycle.md) follows the engine stage by stage. Read this page
-when you have a config in front of you and want it to make sense.
+[the life of a run](explanation-run-lifecycle.md) follows the engine stage by stage. The README gives
+[a sentence or two per block](../README.md#the-run-config-block-by-block); this page is the long
+version. Read it when you have a config in front of you and want it to make sense.
+
+## The document at a glance
+
+| Block | What it tells the engine | When the engine consumes it |
+|---|---|---|
+| [`$schema`](#schema) | Nothing — it points your editor at the generated schema | Never; excluded from the config hash |
+| [`run`](#run) | The run's name and tags, and the instant it is *as of* | `as_of` at load and at build (tax-lot terms) |
+| [`portfolios`](#portfolios) | How to load the list of portfolio ids and their priorities | First, alone, before any other loader |
+| [`datasets`](#datasets) | How to load every other input, engine-known or extra | All at once, after the portfolio list |
+| [`rate_limits`](#rate_limit-on-a-dataset-and-rate_limits) | Named request budgets that inputs on one backend share | During loading |
+| [`assembly`](#assembly) | Steps that turn loaded datasets into the tables the build expects | Once, after all loaders return, before schema validation |
+| [`rules`](#rules) | Business logic applied to each portfolio's bundle, in order | Per portfolio, on a worker, before the build |
+| [`solve_order`](#solve_order) | A step that computes each portfolio's priority from its data | Per portfolio, after its rules |
+| [`sides`](#sides) | Which side the run trades, and so what a trade means | At resolve, then at every build, solve, and verification |
+| [`objective`](#objective) | The terms whose sum is minimized | Constructed once at resolve, then at every solve and verification |
+| [`constraints`](#constraints) | Which constraints apply; their limits come from the data | Constructed once at resolve, then at every solve and verification |
+| [`solve`](#solve) | The step that turns a built problem into weights | At every solve |
+| [`solver`](#solver) | Which cvxpy solver, with what options and time limit | Checked at resolve, used at every solve |
+| [`post_solve`](#post_solve) | How tightly the cvxpy-free verifier holds each solution | After every solve |
+| [`sink`](#sink) | Where the orders go | Once, at the end, if any portfolio solved |
+| [`execution`](#execution) | What one failure does to the rest, and how predecessors are chosen | When the dependency graph is derived and when a portfolio fails |
 
 ## Two passes over one document
 

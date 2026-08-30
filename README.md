@@ -4,13 +4,96 @@ A template repository for a JSON-driven, auditable portfolio-optimization engine
 Clone it (or click **Use this template**), keep the engine, and write your own loaders, rules, objective
 terms, constraints, and sinks as ordinary Python functions.
 
-A run loads a list of portfolios, then holdings, the universe, portfolio details, style constraints, and
-any extra datasets; assembles them — attaching security analytics to holdings and the universe — through
-named steps; applies business-logic rules; builds one pure-numpy problem per portfolio; hands it to a
-configured solve step (a cvxpy problem built from the configured terms and constraints by default, or a
-function of your own); independently re-verifies the answer without cvxpy; rounds it to whole-share
-orders; publishes the orders; and writes a manifest that lets anyone reproduce and audit the run. A run
-trades one side or both, and portfolios in a run couple through the side it trades on.
+A run is one JSON file. The engine loads the data it names, assembles it, applies your rules per
+portfolio, solves one problem per portfolio, re-verifies every answer without cvxpy, rounds to
+whole-share orders, publishes them, and writes a manifest that lets anyone reproduce and audit the run.
+
+## The run config, block by block
+
+The quickest way to see what the engine does is to read the run it ships with,
+[`configs/example_run.json`](configs/example_run.json):
+
+```json
+{
+  "$schema": "./run-config.schema.json",
+  "run": {"name": "example_rebalance", "as_of": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}},
+  "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}},
+  "datasets": {
+    "holdings": {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}},
+    "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
+    "details": {"loader": {"name": "csv", "params": {"path": "details.csv"}}},
+    "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
+    "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
+    "prices": {"loader": {"name": "csv", "params": {"path": "prices.csv", "dtypes": {"security_id": "string"}, "decimal_columns": ["price"]}}}
+  },
+  "assembly": [
+    {"name": "join", "params": {"into": "universe", "source": "prices", "on": ["security_id"], "cardinality": "one_to_one", "require_all_matched": true}},
+    {"name": "drop", "params": {"datasets": ["prices"]}}
+  ],
+  "rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}, "add_zero_alpha"],
+  "objective": {
+    "sense": "minimize",
+    "terms": [
+      {"name": "tracking_error", "params": {"weight": "1.0"}},
+      {"name": "tax_cost", "params": {"weight": "1.0"}},
+      {"name": "transaction_cost", "params": {"weight": "1.0"}}
+    ]
+  },
+  "constraints": ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation"],
+  "solver": {"name": "CLARABEL", "options": {"max_iter": 200}, "time_limit_s": 60.0, "verbose": false},
+  "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9},
+  "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},
+  "execution": {"on_error": "fail_fast"}
+}
+```
+
+Most values are *steps*: a function named either by a bare name, looked up in the template module for
+that kind of step, or by `package.module:function`, with optional `params` (see
+[the one convention](#the-one-convention)). Top to bottom:
+
+- **`$schema`** — for your editor, not the engine: live validation and completion of key and step names
+  from the generated schema. The engine ignores it.
+- **`run`** — the run's identity. `name` and `tags` go into the manifest; `as_of` is the timezone-aware
+  instant the run is *as of* — every loader receives it, and it decides whether each tax lot is long- or
+  short-term.
+- **`portfolios`** — the one loader that runs first and alone. It returns the portfolio ids and,
+  optionally, a `solve_order` priority; every other loader is told which ids to fetch.
+- **`datasets`** — everything else to load, all at once. Five names belong to the engine and are
+  validated against fixed schemas: `holdings`, `universe`, `details`, `targets`, and `constraints` (each
+  portfolio's style limits). Any other name — `prices` here — is an extra dataset the engine does not
+  interpret: assembly steps see it, and whatever survives assembly reaches each portfolio's rules as
+  `data.extras`. An input from a throttled source adds a `rate_limit`.
+- **`assembly`** — steps that run once over all loaded datasets to make the tables the build expects.
+  Here: join prices into the universe, checking every security matched exactly once, then drop the price
+  file. This is where per-security analytics get attached to `holdings` and `universe`.
+- **`rules`** — business logic, run per portfolio in order: each takes one portfolio's validated bundle
+  and returns a modified one, and never sees other portfolios. The example restricts illiquid names and
+  adds a zero `alpha` column.
+- **`objective`** — the sum of the listed terms, always minimized; a reward is a negative term. Each term
+  is a function returning a convex expression, and its `weight` is a string so the manifest records an
+  exact `Decimal`.
+- **`constraints`** — *which* constraints apply; *how tight* they are comes from the data (the style
+  object in the `constraints` dataset, and per-security columns in the universe). The last one is
+  chain-aware — it reads what higher-priority portfolios have already traded — and that is the only
+  reason one portfolio ever waits for another.
+- **`solver`** — the cvxpy solver and its options. Its presence is checked when the config resolves, its
+  version is recorded in the manifest, and there is no silent fallback to another solver.
+- **`post_solve`** — tolerances for the verifier that re-checks every solution in plain numpy without
+  cvxpy: each constraint's residual and the gap between the recomputed and reported objective.
+- **`sink`** — where the orders go, called once with every solved portfolio's orders.
+- **`execution`** — what one failed portfolio does to the rest: `fail_fast` or `continue`. *Where* the
+  work runs and how many workers there are is an environment setting, so a laptop run and a cluster run
+  of one config hash identically.
+
+Four keys the example leaves at their defaults: `sides` (`both`; `buy` or `sell` runs a one-sided
+problem a third the size), `solve` (`cvxpy`; a heuristic or your own library can replace it),
+`solve_order` (a step that computes each portfolio's priority from the data instead of the column), and
+`rate_limits` (named pools shared by inputs on one backend).
+
+Numbers — positions, prices, caps, bands, tax rates — are never in the config; they live in the data.
+Behavior is never in the config either; it lives in the functions the config names.
+[Reading a run config](docs/explanation-run-config.md) explains each block in depth, and
+[the reference](docs/reference-run-config.md) lists every key with its type and default.
 
 ## Quick start
 
@@ -72,6 +155,7 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 ## Documentation
 
 - [Tutorial: your first run](docs/tutorial-first-run.md)
+- [Explanation: reading a run config](docs/explanation-run-config.md) — the walkthrough above, in depth
 - [How to add a rule](docs/how-to-add-a-rule.md)
 - [How to add a loader or a sink](docs/how-to-add-a-loader-or-sink.md)
 - [How to add security analytics columns to holdings and the universe](docs/how-to-add-security-analytics.md)
@@ -85,7 +169,6 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 - [Reference: outputs, the manifest, and the CLI](docs/reference-manifest.md)
 - [Explanation: how the engine is built and why](docs/explanation-architecture.md)
 - [Explanation: the life of a run](docs/explanation-run-lifecycle.md)
-- [Explanation: reading a run config](docs/explanation-run-config.md)
 
 ## Development
 
