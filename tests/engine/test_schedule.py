@@ -3,8 +3,6 @@
 from decimal import Decimal
 
 import pytest
-from hypothesis import given, settings
-from hypothesis import strategies as st
 
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.schedule import Schedule, dependency_graph, order_portfolios
@@ -57,15 +55,3 @@ def test_a_schedule_rejects_a_dependency_on_a_later_portfolio() -> None:
         Schedule(ids("P1", "P2"), {PortfolioId("P1"): ids("P2"), PortfolioId("P2"): ()}, "overlap")
     with pytest.raises(ValueError, match="exactly the portfolios"):
         Schedule(ids("P1", "P2"), {PortfolioId("P1"): ()}, "overlap")
-
-
-@given(sets=st.lists(st.frozensets(st.sampled_from("ABCDE")), min_size=1, max_size=6))
-@settings(deadline=None, max_examples=100)
-def test_every_edge_has_a_witness_security_and_every_overlap_has_an_edge(sets: list[frozenset[str]]) -> None:
-    order = ids(*(f"P{index}" for index in range(len(sets))))
-    schedule = dependency_graph(order, {portfolio_id: tuple(sorted(members)) for portfolio_id, members in zip(order, sets, strict=True)}, frozenset(), "overlap")
-    for position, portfolio_id in enumerate(order):
-        assert schedule.predecessors[portfolio_id] == tuple(order[earlier] for earlier in range(position) if sets[earlier] & sets[position])
-    summary = schedule.summary()
-    assert summary.edges == sum(len(earlier) for earlier in schedule.predecessors.values())
-    assert 1 <= summary.critical_path <= len(sets)

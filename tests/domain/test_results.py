@@ -96,10 +96,8 @@ def test_missing_column_names_what_is_available(make: Factories) -> None:
         spec.column("momentum")
 
 
-def test_solution_round_trips_through_npz(tmp_path: Path) -> None:
-    solution = Solution(
-        w=np.array([0.5, 0.5]), buy=np.zeros(2), sell=np.zeros(2), objective=1.5, status=SolveStatus.OPTIMAL, solver="CLARABEL", solver_version="0.11", solve_time_s=0.01, iterations=7, spec_hash="ab"
-    )
+def test_solution_round_trips_through_npz(make: Factories, tmp_path: Path) -> None:
+    solution = make.solution(make.spec(n=2), objective=1.5, solver="CLARABEL", solver_version="0.11", solve_time_s=0.01, iterations=7)
     path = tmp_path / "solution.npz"
     solution.to_npz(path)
     loaded = Solution.from_npz(path)

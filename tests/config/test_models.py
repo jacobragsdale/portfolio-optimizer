@@ -1,26 +1,22 @@
 """Tier 3: what the run-config models refuse, and that the shipped example validates."""
 
 import json
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from portfolio_optimizer.config.models import RunConfig, StepSpec, config_sha256, is_step_name, load_run_config
-
-EXAMPLE = Path(__file__).resolve().parents[2] / "configs" / "example_run.json"
+from tests.conftest import EXAMPLE_CONFIG, example_body
 
 
 @pytest.fixture
 def example_text() -> str:
-    return EXAMPLE.read_text()
+    return EXAMPLE_CONFIG.read_text()
 
 
 @pytest.fixture
-def example_dict(example_text: str) -> dict[str, object]:
-    loaded = json.loads(example_text)
-    assert isinstance(loaded, dict)
-    return {str(key): value for key, value in loaded.items()}
+def example_dict() -> dict[str, object]:
+    return example_body()
 
 
 def section(config: dict[str, object], key: str) -> dict[str, object]:

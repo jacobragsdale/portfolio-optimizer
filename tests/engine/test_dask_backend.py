@@ -2,12 +2,10 @@
 
 from pathlib import Path
 
-from portfolio_optimizer.engine.environment import GitInfo
 from portfolio_optimizer.engine.runner import EXIT_OK, RunContext, run
 from portfolio_optimizer.settings import ExecutionSettings
-from tests.conftest import io_context, resolved_example_real
-
-GIT = GitInfo(sha="0123456789abcdef", dirty=False)
+from tests.conftest import resolved_example_real
+from tests.engine.support import EXAMPLE_ORDERS_P1, GIT, io_context
 
 
 def test_a_run_owned_local_cluster_solves_the_example(tmp_path: Path) -> None:
@@ -17,11 +15,7 @@ def test_a_run_owned_local_cluster_solves_the_example(tmp_path: Path) -> None:
     report = run(resolved_example_real(sink="orders_to_parquet"), context)
     assert report.exit_code == EXIT_OK, [str(o) for o in report.outcomes]
     p1, p2 = report.solved
-    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == [
-        {"security_id": "A", "side": "SELL", "quantity": 1250},
-        {"security_id": "B", "side": "SELL", "quantity": 2500},
-        {"security_id": "C", "side": "BUY", "quantity": 25000},
-    ]
+    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == EXAMPLE_ORDERS_P1
     assert len(p2.orders) == 0 and p2.chain_state.predecessors == ("P1",)
     cluster = report.manifest.cluster
     assert cluster is not None

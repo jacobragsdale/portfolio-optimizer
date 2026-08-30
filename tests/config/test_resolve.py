@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 from pydantic import Field
 
-from portfolio_optimizer.config.models import RunConfig, StepSpec, config_sha256
+from portfolio_optimizer.config.models import RunConfig, config_sha256
 from portfolio_optimizer.config.resolve import ConfigResolutionError, resolve_config, resolve_step
 from portfolio_optimizer.config.steps import ResolvedStep, StepKind
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, at_most, scale, total
@@ -20,7 +20,7 @@ from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, Port
 from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec
 from portfolio_optimizer.domain.types import Params
 from portfolio_optimizer.solving import SolveRequest, SolveResult
-from tests.conftest import AS_OF, BUY_ONLY_OBJECTIVE, resolved_example_real
+from tests.conftest import AS_OF, BUY_ONLY_OBJECTIVE, resolved_example_real, step_spec
 
 # --- functions that follow the convention (and ones that break it), registered as module "fake_steps" ---
 
@@ -145,15 +145,11 @@ def fake_steps() -> Iterator[str]:
     del sys.modules["fake_steps"]
 
 
-def spec(name: str, **params: object) -> StepSpec:
-    return StepSpec.model_validate_json(json.dumps({"name": name, "params": params}))
-
-
 # --- resolve_step ---
 
 
 def test_bare_name_resolves_in_the_template_module_and_types_its_params() -> None:
-    step = resolve_step(spec("cap_single_name", max_weight="0.05"), "rule")
+    step = resolve_step(step_spec("cap_single_name", max_weight="0.05"), "rule")
     assert step.qualname == "portfolio_optimizer.rules:cap_single_name"
     assert not step.is_external
     assert step.params is not None
@@ -163,15 +159,15 @@ def test_bare_name_resolves_in_the_template_module_and_types_its_params() -> Non
 
 
 def test_qualified_name_resolves_an_external_module(fake_steps: str) -> None:
-    step = resolve_step(spec(f"{fake_steps}:rule_with_params", strength="0.5"), "rule")
+    step = resolve_step(step_spec(f"{fake_steps}:rule_with_params", strength="0.5"), "rule")
     assert step.is_external
     assert step.qualname == "fake_steps:rule_with_params"
 
 
 def test_the_chain_parameter_is_detected_by_name_and_type(fake_steps: str) -> None:
-    assert not resolve_step(spec(f"{fake_steps}:plain_rule"), "rule").reads_chain
-    assert resolve_step(spec(f"{fake_steps}:chained_constraint"), "constraint").reads_chain
-    assert not resolve_step(spec(f"{fake_steps}:term"), "term").reads_chain
+    assert not resolve_step(step_spec(f"{fake_steps}:plain_rule"), "rule").reads_chain
+    assert resolve_step(step_spec(f"{fake_steps}:chained_constraint"), "constraint").reads_chain
+    assert not resolve_step(step_spec(f"{fake_steps}:term"), "term").reads_chain
 
 
 VIOLATIONS: list[tuple[str, str, StepKind, Mapping[str, object], str]] = [
@@ -201,7 +197,7 @@ VIOLATIONS: list[tuple[str, str, StepKind, Mapping[str, object], str]] = [
 def test_convention_violations_are_reported(fake_steps: str, name: str, kind: StepKind, params: Mapping[str, object], fragment: str) -> None:
     del fake_steps
     with pytest.raises(ConfigResolutionError) as info:
-        resolve_step(spec(name, **params), kind)
+        resolve_step(step_spec(name, **params), kind)
     assert any(fragment in failure for failure in info.value.failures), info.value.failures
 
 
@@ -215,12 +211,12 @@ def test_every_contract_kind_accepts_its_canonical_signature(fake_steps: str) ->
         ("sink", "sink"),
     ]
     for name, kind in pairs:
-        assert resolve_step(spec(f"{fake_steps}:{name}"), kind).kind == kind
+        assert resolve_step(step_spec(f"{fake_steps}:{name}"), kind).kind == kind
 
 
 def test_loaders_may_be_async_and_invoke_async_runs_both_styles(fake_steps: str) -> None:
-    asynchronous = resolve_step(spec(f"{fake_steps}:async_loader"), "loader")
-    synchronous = resolve_step(spec(f"{fake_steps}:loader"), "loader")
+    asynchronous = resolve_step(step_spec(f"{fake_steps}:async_loader"), "loader")
+    synchronous = resolve_step(step_spec(f"{fake_steps}:loader"), "loader")
     assert asynchronous.is_async
     assert not synchronous.is_async
     request = LoadRequest(dataset="holdings", portfolio_ids=(), as_of=AS_OF, data_root=Path(), run_id="r")
@@ -235,9 +231,9 @@ def test_loaders_may_be_async_and_invoke_async_runs_both_styles(fake_steps: str)
 
 
 def test_invoke_supplies_params_and_the_chain(fake_steps: str) -> None:
-    step = resolve_step(spec(f"{fake_steps}:rule_with_params", strength="0.5"), "rule")
-    chained = resolve_step(spec(f"{fake_steps}:chained_constraint"), "constraint")
-    plain_loader = resolve_step(spec(f"{fake_steps}:loader"), "loader")
+    step = resolve_step(step_spec(f"{fake_steps}:rule_with_params", strength="0.5"), "rule")
+    chained = resolve_step(step_spec(f"{fake_steps}:chained_constraint"), "constraint")
+    plain_loader = resolve_step(step_spec(f"{fake_steps}:loader"), "loader")
     from tests.conftest import make_portfolio_data  # local import keeps the header about the unit under test
 
     data = make_portfolio_data()
@@ -251,9 +247,9 @@ def test_invoke_supplies_params_and_the_chain(fake_steps: str) -> None:
 
 
 def test_source_hash_is_stable_and_function_specific(fake_steps: str) -> None:
-    first = resolve_step(spec(f"{fake_steps}:plain_rule"), "rule")
-    second = resolve_step(spec(f"{fake_steps}:plain_rule"), "rule")
-    other = resolve_step(spec(f"{fake_steps}:rule_with_params", strength="1"), "rule")
+    first = resolve_step(step_spec(f"{fake_steps}:plain_rule"), "rule")
+    second = resolve_step(step_spec(f"{fake_steps}:plain_rule"), "rule")
+    other = resolve_step(step_spec(f"{fake_steps}:rule_with_params", strength="1"), "rule")
     assert first.source_sha256 == second.source_sha256
     assert first.source_sha256 != other.source_sha256
 
@@ -354,7 +350,7 @@ def test_dry_construction_surfaces_a_step_that_raises_and_skips_one_that_needs_d
 
 def test_a_term_returning_the_wrong_type_fails_dry_construction() -> None:
     with pytest.raises(ConfigResolutionError, match=r"lying_term: returned ConstraintSet, expected ObjectiveTerm"):
-        resolved_example_real(objective={"terms": ["tests.conftest:lying_term"]})
+        resolved_example_real(objective={"terms": ["tests.steps:lying_term"]})
 
 
 def test_the_solve_step_is_resolved_against_its_contract(fake_steps: str) -> None:
@@ -395,7 +391,7 @@ def test_a_failing_solve_order_step_is_reported_under_its_own_key(fake_steps: st
 
 
 def test_resolved_step_is_a_plain_frozen_record(fake_steps: str) -> None:
-    step = resolve_step(spec(f"{fake_steps}:plain_rule"), "rule")
+    step = resolve_step(step_spec(f"{fake_steps}:plain_rule"), "rule")
     assert isinstance(step, ResolvedStep)
     with pytest.raises(AttributeError):
         step.name = "other"  # ty: ignore[invalid-assignment]  # assigning to a frozen field is the case under test

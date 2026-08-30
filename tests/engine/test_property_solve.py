@@ -8,9 +8,7 @@ from portfolio_optimizer.domain.results import ChainState, ProblemSpec, StepRef
 from portfolio_optimizer.domain.sides import TWO_SIDED
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.solve import solve
-from tests.conftest import make_spec, resolved_example
-
-CONSTRAINT_NAMES = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "cumulative_adv_participation"]
+from tests.conftest import SHIPPED_CONSTRAINTS, make_spec, resolved_example, step_refs_for
 
 
 @st.composite
@@ -25,12 +23,11 @@ def feasible_specs(draw: st.DrawFn) -> ProblemSpec:
 @given(spec=feasible_specs())
 @settings(deadline=None, max_examples=15)
 def test_solutions_verify_and_never_do_worse_than_resting(spec: ProblemSpec) -> None:
-    resolved = resolved_example(objective={"terms": [{"name": "tracking_error", "params": {"weight": "1"}}]}, constraints=CONSTRAINT_NAMES)
+    resolved = resolved_example(objective={"terms": [{"name": "tracking_error", "params": {"weight": "1"}}]}, constraints=SHIPPED_CONSTRAINTS)
     chain = ChainState.empty(spec.security_ids)
     solution = solve(spec, chain, resolved)
     terms = [StepRef(qualname="portfolio_optimizer.terms:tracking_error", params={"weight": "1"}, label="tracking_error")]
-    constraints = [StepRef(qualname=f"portfolio_optimizer.terms:{name}", params={}, label=name) for name in CONSTRAINT_NAMES]
-    report = verify(spec, solution, chain, terms, constraints, profile=TWO_SIDED)
+    report = verify(spec, solution, chain, terms, step_refs_for(SHIPPED_CONSTRAINTS), profile=TWO_SIDED)
     assert report.passed, (report.violated, report.objective_gap)
     resting = float(((spec.w0 - spec.w_target) ** 2).sum())
     assert solution.objective is not None and solution.objective <= resting + 1e-7

@@ -1,13 +1,11 @@
 """Tier 1/2: the manifest round-trips with an integrity hash, is written atomically, and localizes drift."""
 
-import importlib.metadata
 import json
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
-from portfolio_optimizer.engine.environment import WorkerEnvironment, package_versions, read_git_info
+from portfolio_optimizer.engine.environment import WorkerEnvironment
 from portfolio_optimizer.engine.manifest import ConfigInfo, OrdersRecord, PortfolioRecord, RunManifest, VersionInfo, WorkerRecord, diff_manifests, finalize, load_manifest, write_manifest
 from portfolio_optimizer.engine.schedule import ScheduleSummary
 from tests.conftest import AS_OF
@@ -112,17 +110,3 @@ def test_worker_hosts_do_not_differ_but_worker_environments_do() -> None:
     stale_worker = manifest(versions=manifest().versions.model_copy(update={"workers": (_worker("pod-1"), _worker("pod-2", git_sha="old"))}))
     assert diff_manifests(left, same_environment_elsewhere) == []
     assert "versions: library, solver, or step-package versions differ" in diff_manifests(left, stale_worker)
-
-
-def test_package_versions_name_the_distribution_behind_each_external_module() -> None:
-    found = package_versions(["pandas.core.frame", "pandas", "portfolio_optimizer.rules", "fake_steps"])
-    assert found["pandas"] == pd.__version__  # an indexed distribution, once, whatever the submodule
-    assert found["portfolio-optimizer"] == importlib.metadata.version("portfolio-optimizer")  # an editable install, found by name
-    assert found["fake_steps"] == "unknown"  # a module no distribution provides
-    assert package_versions([]) == {}
-
-
-def test_git_info_outside_a_repository_is_unknown(tmp_path: Path) -> None:
-    info = read_git_info(tmp_path)
-    assert info.sha == "unknown"
-    assert not info.dirty

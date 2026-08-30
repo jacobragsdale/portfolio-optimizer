@@ -67,7 +67,7 @@ def test_assembly_joins_prices_into_universe_drops_them_and_slices_each_portfoli
 
 
 def test_a_custom_step_attaches_analytics_to_holdings_and_universe_and_is_audited(example_loaded: LoadedDatasets) -> None:
-    assembled = assemble(example_loaded, _with_assembly(JOIN_PRICES, "tests.conftest:score_by_price", {"name": "drop", "params": {"datasets": ["prices"]}}), run_id="test")
+    assembled = assemble(example_loaded, _with_assembly(JOIN_PRICES, "tests.steps:score_by_price", {"name": "drop", "params": {"datasets": ["prices"]}}), run_id="test")
     assert assembled.audits[1].columns_added == {"holdings": ("score",), "universe": ("score",)}
     assert len(assembled.audits[1].source_sha256) == 64
     frame = slice_portfolio(assembled, PortfolioId("P1")).optimizer_frame()
@@ -116,13 +116,13 @@ def test_a_step_naming_an_unknown_dataset_is_told_what_exists(example_loaded: Lo
 
 
 def test_a_step_that_refuses_its_input_rejects_the_run_with_its_own_message(example_loaded: LoadedDatasets) -> None:
-    with pytest.raises(AssemblyError, match=r"assembly\[0\] tests.conftest:refuse_assembly: vendor scores are stale"):
-        assemble(example_loaded, _with_assembly("tests.conftest:refuse_assembly"), run_id="test")
+    with pytest.raises(AssemblyError, match=r"assembly\[0\] tests.steps:refuse_assembly: vendor scores are stale"):
+        assemble(example_loaded, _with_assembly("tests.steps:refuse_assembly"), run_id="test")
 
 
 def test_a_step_returning_the_wrong_type_is_rejected(example_loaded: LoadedDatasets) -> None:
     with pytest.raises(AssemblyError, match="returned DataFrame, expected Frames"):
-        assemble(example_loaded, _with_assembly("tests.conftest:lying_assembly_step"), run_id="test")
+        assemble(example_loaded, _with_assembly("tests.steps:lying_assembly_step"), run_id="test")
 
 
 def test_dropping_an_engine_frame_is_caught_after_the_last_step(example_loaded: LoadedDatasets) -> None:
@@ -157,7 +157,7 @@ def test_missing_constraints_for_a_portfolio_fail_loudly(example_loaded: LoadedD
 
 
 def test_loader_returning_the_wrong_type_is_rejected() -> None:
-    config = resolved_example(datasets={**resolved_example().config.model_dump(mode="json")["datasets"], "holdings": {"loader": "tests.conftest:lying_loader"}})
+    config = resolved_example(datasets={**resolved_example().config.model_dump(mode="json")["datasets"], "holdings": {"loader": "tests.steps:lying_loader"}})
     with pytest.raises(LoadError, match="returned dict, expected DataFrame"):
         load_datasets(config, data_root=EXAMPLE_DATA, run_id="test")
 
@@ -178,7 +178,7 @@ def _with_extra_datasets(**extra: object) -> ResolvedConfig:
 
 @pytest.mark.parametrize("loader", ["barrier_loader", "async_barrier_loader"], ids=["sync loaders in threads", "async loaders on the loop"])
 def test_dataset_loaders_run_at_the_same_time(loader: str) -> None:
-    resolved = _with_extra_datasets(left={"loader": f"tests.conftest:{loader}"}, right={"loader": f"tests.conftest:{loader}"})
+    resolved = _with_extra_datasets(left={"loader": f"tests.steps:{loader}"}, right={"loader": f"tests.steps:{loader}"})
     loaded = load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test")  # would deadlock or time out if left and right ran one after another
     assert loaded.frames["left"]["portfolio_id"].tolist() == ["P1", "P2"]
     assert loaded.frames["right"]["portfolio_id"].tolist() == ["P1", "P2"]
@@ -186,9 +186,9 @@ def test_dataset_loaders_run_at_the_same_time(loader: str) -> None:
 
 def test_each_dataset_receives_the_pool_its_config_names() -> None:
     resolved = _with_extra_datasets(
-        left={"loader": "tests.conftest:pool_reporting_loader", "rate_limit": "vendor"},
-        right={"loader": "tests.conftest:async_pool_reporting_loader", "rate_limit": "vendor"},
-        free={"loader": "tests.conftest:pool_reporting_loader"},
+        left={"loader": "tests.steps:pool_reporting_loader", "rate_limit": "vendor"},
+        right={"loader": "tests.steps:async_pool_reporting_loader", "rate_limit": "vendor"},
+        free={"loader": "tests.steps:pool_reporting_loader"},
     )
     loaded = load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test")
     assert loaded.frames["left"].iloc[0].tolist() == ["vendor", True]
@@ -197,13 +197,13 @@ def test_each_dataset_receives_the_pool_its_config_names() -> None:
 
 
 def test_every_failed_dataset_is_reported_together_as_rejected_input() -> None:
-    resolved = _with_extra_datasets(left={"loader": "tests.conftest:invalid_input_loader"}, right={"loader": "tests.conftest:invalid_input_loader"})
+    resolved = _with_extra_datasets(left={"loader": "tests.steps:invalid_input_loader"}, right={"loader": "tests.steps:invalid_input_loader"})
     with pytest.raises(LoadError, match=r"left: left: no rows as of 2026-08-28; right: right: no rows"):
         load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test")
 
 
 def test_an_unreachable_backend_keeps_its_exception_type_so_the_exit_code_is_infrastructure() -> None:
-    resolved = _with_extra_datasets(left={"loader": "tests.conftest:invalid_input_loader"}, right={"loader": "tests.conftest:unreachable_loader"})
+    resolved = _with_extra_datasets(left={"loader": "tests.steps:invalid_input_loader"}, right={"loader": "tests.steps:unreachable_loader"})
     with pytest.raises(ConnectionError, match="right: connection refused"):
         load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test")
 
@@ -228,10 +228,10 @@ def test_the_async_entry_point_can_be_awaited_directly() -> None:
 
 def test_an_inline_bound_is_private_to_its_input_while_a_named_pool_is_shared() -> None:
     resolved = _with_extra_datasets(
-        left={"loader": "tests.conftest:pool_reporting_loader", "rate_limit": "vendor"},
-        right={"loader": "tests.conftest:async_pool_reporting_loader", "rate_limit": "vendor"},
-        slow={"loader": "tests.conftest:pool_reporting_loader", "rate_limit": {"max_in_flight": 1}},
-        fast={"loader": "tests.conftest:async_pool_reporting_loader", "rate_limit": {"requests_per_second": 100, "max_in_flight": 32}},
+        left={"loader": "tests.steps:pool_reporting_loader", "rate_limit": "vendor"},
+        right={"loader": "tests.steps:async_pool_reporting_loader", "rate_limit": "vendor"},
+        slow={"loader": "tests.steps:pool_reporting_loader", "rate_limit": {"max_in_flight": 1}},
+        fast={"loader": "tests.steps:async_pool_reporting_loader", "rate_limit": {"requests_per_second": 100, "max_in_flight": 32}},
     )
     loaded = load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test")
     assert loaded.frames["left"].iloc[0].tolist() == ["vendor", True]
@@ -241,7 +241,7 @@ def test_an_inline_bound_is_private_to_its_input_while_a_named_pool_is_shared() 
 
 
 def test_the_portfolio_list_input_can_be_bounded_too() -> None:
-    resolved = resolved_example(portfolios={"loader": "tests.conftest:limiter_naming_portfolios_loader", "rate_limit": {"max_in_flight": 1}})
+    resolved = resolved_example(portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": {"max_in_flight": 1}})
     assert load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test").portfolio_ids == ("portfolios",)
-    resolved = resolved_example(portfolios={"loader": "tests.conftest:limiter_naming_portfolios_loader", "rate_limit": "shared"}, rate_limits={"shared": {"max_in_flight": 1}})
+    resolved = resolved_example(portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": "shared"}, rate_limits={"shared": {"max_in_flight": 1}})
     assert load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test").portfolio_ids == ("shared",)

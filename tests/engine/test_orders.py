@@ -9,29 +9,18 @@ from hypothesis import strategies as st
 from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.frames import validate_frame
-from portfolio_optimizer.domain.results import OrderInputs, ProblemSpec, Solution, SolveStatus
+from portfolio_optimizer.domain.results import OrderInputs, ProblemSpec, Solution
 from portfolio_optimizer.domain.schemas import ORDERS
 from portfolio_optimizer.engine.build import BuildOutput, build_problem_spec
 from portfolio_optimizer.engine.orders import rounding_drift, solution_to_orders
-from tests.conftest import Factories, Frames, make_portfolio_data
-
-HAND_OPTIMUM = np.array([0.375, 0.375, 0.25])
+from tests.conftest import Factories, Frames, make_portfolio_data, make_solution
+from tests.engine.support import EXAMPLE_ORDERS_P1, HAND_OPTIMUM
 
 
 def solution_at(spec: ProblemSpec, w: np.ndarray) -> Solution:
+    """A solution at ``w`` with the minimal buy/sell split of the move from ``w0``."""
     delta = w - spec.w0
-    return Solution(
-        w=w,
-        buy=np.maximum(delta, 0.0),
-        sell=np.maximum(-delta, 0.0),
-        objective=0.0,
-        status=SolveStatus.OPTIMAL,
-        solver="X",
-        solver_version="0",
-        solve_time_s=0.0,
-        iterations=1,
-        spec_hash=spec.content_hash(),
-    )
+    return make_solution(spec, w=w, buy=np.maximum(delta, 0.0), sell=np.maximum(-delta, 0.0))
 
 
 def built(make: Factories, **kwargs: object) -> BuildOutput:
@@ -41,9 +30,7 @@ def built(make: Factories, **kwargs: object) -> BuildOutput:
 def test_exact_deltas_become_exact_orders(make: Factories) -> None:
     output = built(make)
     orders = solution_to_orders(output.spec, solution_at(output.spec, HAND_OPTIMUM), output.order_inputs, run_id="r1")
-    assert orders["security_id"].tolist() == ["A", "B", "C"]
-    assert orders["side"].tolist() == ["SELL", "SELL", "BUY"]
-    assert orders["quantity"].tolist() == [1250, 2500, 25000]
+    assert orders[["security_id", "side", "quantity"]].to_dict("records") == EXAMPLE_ORDERS_P1
     assert orders["notional"].tolist() == [Decimal(125000), Decimal(125000), Decimal(250000)]
     assert orders["run_id"].tolist() == ["r1"] * 3
     assert orders["spec_hash"].iloc[0] == output.spec.content_hash()

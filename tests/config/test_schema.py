@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from portfolio_optimizer.config.models import config_sha256, load_run_config
 from portfolio_optimizer.config.resolve import ConfigResolutionError, resolve_config
 from portfolio_optimizer.config.schema import SCHEMA_DIALECT, run_config_schema, schema_json
-from tests.conftest import EXAMPLE_CONFIG, REPO_ROOT
+from tests.conftest import EXAMPLE_CONFIG, REPO_ROOT, example_body
 
 SCHEMA_PATH = REPO_ROOT / "configs" / "run-config.schema.json"
 
@@ -30,11 +30,6 @@ def validator(schema: dict[str, object]) -> Validator:
 
 def errors(validator: Validator, instance: object) -> list[str]:
     return sorted(f"{'/'.join(str(part) for part in error.absolute_path) or '<root>'}: {error.message}" for error in validator.iter_errors(instance))
-
-
-def example() -> dict[str, object]:
-    loaded = json.loads(EXAMPLE_CONFIG.read_text())
-    return {str(key): value for key, value in loaded.items()}
 
 
 def test_checked_in_schema_is_current(schema: dict[str, object]) -> None:
@@ -65,7 +60,7 @@ def _undocumented(node: object, path: str) -> Iterator[str]:
 
 
 def test_example_validates_against_the_schema_and_points_at_it(validator: Validator) -> None:
-    instance = example()
+    instance = example_body()
     assert errors(validator, instance) == []
     assert instance["$schema"] == "./run-config.schema.json"
     assert load_run_config(json.dumps(instance)).schema_ref == "./run-config.schema.json"
@@ -88,7 +83,7 @@ REJECTED: list[tuple[str, dict[str, object], str]] = [
 
 @pytest.mark.parametrize(("patch", "where"), [case[1:] for case in REJECTED], ids=[case[0] for case in REJECTED])
 def test_schema_and_models_agree_on_what_to_reject(validator: Validator, patch: dict[str, object], where: str) -> None:
-    instance = example() | patch
+    instance = example_body() | patch
     found = errors(validator, instance)
     assert any(line.startswith(where) for line in found), found
     try:
@@ -100,7 +95,7 @@ def test_schema_and_models_agree_on_what_to_reject(validator: Validator, patch: 
 
 
 def test_custom_qualified_steps_are_allowed_with_any_params(validator: Validator) -> None:
-    instance = example() | {"rules": [{"name": "my_firm.rules:tilt", "params": {"anything": [1, 2, 3]}}, "my_firm.rules:plain"]}
+    instance = example_body() | {"rules": [{"name": "my_firm.rules:tilt", "params": {"anything": [1, 2, 3]}}, "my_firm.rules:plain"]}
     assert errors(validator, instance) == []
 
 
@@ -124,7 +119,7 @@ def test_schema_file_is_valid_json_with_sorted_keys() -> None:
 
 
 def test_schema_ref_does_not_change_the_config_hash() -> None:
-    with_pointer = load_run_config(json.dumps(example()))
-    without_pointer = load_run_config(json.dumps({key: value for key, value in example().items() if key != "$schema"}))
+    with_pointer = load_run_config(json.dumps(example_body()))
+    without_pointer = load_run_config(json.dumps({key: value for key, value in example_body().items() if key != "$schema"}))
     assert config_sha256(with_pointer) == config_sha256(without_pointer)
     assert Path(EXAMPLE_CONFIG).exists()

@@ -9,7 +9,8 @@ import pandas as pd
 import pytest
 
 from portfolio_optimizer.cli import run_cli
-from tests.conftest import EXAMPLE_CONFIG, EXAMPLE_DATA, FixedClock, FixedIds
+from tests.conftest import EXAMPLE_CONFIG, EXAMPLE_DATA, example_body
+from tests.engine.support import EXAMPLE_ORDERS_P1, FixedClock, FixedIds
 
 
 def cli(argv: Sequence[str], env: dict[str, str] | None = None, run_id: str = "run-smoke") -> tuple[int, str, str]:
@@ -40,11 +41,7 @@ def test_run_produces_the_golden_orders_and_a_manifest(tmp_path: Path, env: dict
     assert "P2: solved, 0 order(s)" in out
     run_dir = tmp_path / "out" / "run-smoke"
     orders = pd.read_parquet(run_dir / "orders" / "orders.parquet")
-    assert orders[["portfolio_id", "security_id", "side", "quantity"]].to_dict("records") == [
-        {"portfolio_id": "P1", "security_id": "A", "side": "SELL", "quantity": 1250},
-        {"portfolio_id": "P1", "security_id": "B", "side": "SELL", "quantity": 2500},
-        {"portfolio_id": "P1", "security_id": "C", "side": "BUY", "quantity": 25000},
-    ]
+    assert orders[["portfolio_id", "security_id", "side", "quantity"]].to_dict("records") == [{"portfolio_id": "P1", **order} for order in EXAMPLE_ORDERS_P1]
     assert (run_dir / "manifest.json").exists()
 
 
@@ -75,17 +72,15 @@ def test_validate_config_lists_every_resolved_step() -> None:
 
 
 def test_validate_config_constructs_every_term_and_constraint_before_saying_ok(tmp_path: Path) -> None:
-    body = json.loads(EXAMPLE_CONFIG.read_text())
-    body["objective"] = {"terms": ["tests.conftest:lying_term"]}
+    body = example_body() | {"objective": {"terms": ["tests.steps:lying_term"]}}
     config = tmp_path / "lying.json"
     config.write_text(json.dumps(body))
     code, _, err = cli(["validate-config", str(config)])
-    assert code == 2 and "objective.terms[0]: tests.conftest:lying_term: returned ConstraintSet, expected ObjectiveTerm" in err
+    assert code == 2 and "objective.terms[0]: tests.steps:lying_term: returned ConstraintSet, expected ObjectiveTerm" in err
 
 
 def test_validate_config_rejects_a_solver_the_adapter_does_not_know(tmp_path: Path) -> None:
-    body = json.loads(EXAMPLE_CONFIG.read_text())
-    body["solver"] = {"name": "SCIPY"}  # cvxpy ships it; the adapter has no record for it, so its version could not be fingerprinted
+    body = example_body() | {"solver": {"name": "SCIPY"}}  # cvxpy ships it; the adapter has no record for it, so its version could not be fingerprinted
     config = tmp_path / "scipy.json"
     config.write_text(json.dumps(body))
     code, out, err = cli(["validate-config", str(config)])

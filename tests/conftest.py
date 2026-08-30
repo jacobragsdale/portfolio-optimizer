@@ -1,16 +1,13 @@
-"""Frame builders derived from the boundary schemas, and small domain-object factories.
+"""Frame builders derived from the boundary schemas, domain-object factories, and the shipped example config.
 
 Every builder takes partial rows and fills unstated fields with valid defaults, so a test
 states only what it is about. Dtypes come from the schema, so fixtures cannot drift from it.
 Builders are exposed as fixtures because ``--import-mode=importlib`` keeps ``tests/`` off
-``sys.path``.
+``sys.path``. Steps a config names live in ``tests/steps.py``; run helpers in ``tests/engine/support.py``.
 """
 
-import asyncio
 import json
 import logging
-import shutil
-import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -22,16 +19,12 @@ import pandas as pd
 import pytest
 from distributed import LocalCluster
 
-from portfolio_optimizer.config.models import RunConfig, load_run_config
+from portfolio_optimizer.config.models import RunConfig, StepSpec, load_run_config
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
-from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, scale, total
-from portfolio_optimizer.domain.data import Frames as DatasetFrames
-from portfolio_optimizer.domain.data import IoContext, LoadRequest, PortfolioData, PortfolioDetails, StyleConstraints
+from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails, StyleConstraints
 from portfolio_optimizer.domain.frames import FrameSchema
-from portfolio_optimizer.domain.results import F64, Artifact, ProblemSpec
+from portfolio_optimizer.domain.results import F64, ProblemSpec, Solution, SolveStatus, StepRef
 from portfolio_optimizer.domain.schemas import DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
-from portfolio_optimizer.settings import ExecutionSettings
-from portfolio_optimizer.solving import SolveRequest, SolveResult
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
@@ -211,6 +204,23 @@ def make_spec(n: int = 3, **overrides: object) -> ProblemSpec:
     return ProblemSpec(**(base | overrides))  # ty: ignore[invalid-argument-type]  # the merged mapping is typed `object`; the dataclass validates every field on construction
 
 
+def make_solution(spec: ProblemSpec, *, w: F64 | None = None, buy: F64 | None = None, sell: F64 | None = None, **overrides: object) -> Solution:
+    """A ``Solution`` for ``spec``: at rest with no trades unless told otherwise, hashed against the spec, with placeholder provenance."""
+    base: dict[str, object] = {
+        "w": spec.w0 if w is None else w,
+        "buy": np.zeros(spec.n) if buy is None else buy,
+        "sell": np.zeros(spec.n) if sell is None else sell,
+        "objective": 0.0,
+        "status": SolveStatus.OPTIMAL,
+        "solver": "X",
+        "solver_version": "0",
+        "solve_time_s": 0.0,
+        "iterations": 1,
+        "spec_hash": spec.content_hash(),
+    }
+    return Solution(**(base | overrides))  # ty: ignore[invalid-argument-type]  # merged mapping; Solution validates on construction
+
+
 @dataclass(frozen=True, slots=True)
 class Factories:
     """Domain-object factories handed to tests as one fixture."""
@@ -219,6 +229,7 @@ class Factories:
     style: Callable[..., StyleConstraints]
     portfolio_data: Callable[..., PortfolioData]
     spec: Callable[..., ProblemSpec]
+    solution: Callable[..., Solution]
 
 
 @pytest.fixture
@@ -230,129 +241,43 @@ def frames() -> Frames:
 @pytest.fixture
 def make() -> Factories:
     """Domain-object factories."""
-    return Factories(details=make_details, style=make_style, portfolio_data=make_portfolio_data, spec=make_spec)
+    return Factories(details=make_details, style=make_style, portfolio_data=make_portfolio_data, spec=make_spec, solution=make_solution)
 
 
-NO_CHAIN_CONSTRAINTS = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds"]
-"""The example's constraints without the chain-aware ADV cap: nothing reads the chain, so no portfolio waits for another."""
+# --- the shipped constraints, and the example config with its steps swapped for no-ops or kept real ---
+
+SHIPPED_CONSTRAINTS = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation"]
+"""Every constraint the template ships, in the example's order."""
+NO_CHAIN_CONSTRAINTS = [name for name in SHIPPED_CONSTRAINTS if name != "cumulative_adv_participation"]
+"""The shipped constraints without the chain-aware ADV cap: nothing reads the chain, so no portfolio waits for another."""
 BUY_ONLY_OBJECTIVE: dict[str, object] = {"terms": [{"name": "tracking_error", "params": {"weight": "1.0"}}, {"name": "transaction_cost", "params": {"weight": "1.0"}}]}
 """The example's objective without ``tax_cost``, which reads ``sell`` and so cannot run in a buy-only run."""
 
 
-def half_cash_book(tmp_path: Path) -> Path:
-    """The example data with each portfolio holding A 2500 @100 and B 5000 @50 and half its NAV in cash: what a buy-only run invests.
-
-    Targets are a third each and C's ADV budget is 25,000 shares, so the hand answer for P1 is buy
-    1,250 A, 2,500 B, and 25,000 C (C is capped at 0.25, the rest splits evenly), and P2 — C's budget
-    spent by P1 — buys 2,500 A and 5,000 B.
-    """
-    root = tmp_path / "half-cash"
-    shutil.copytree(EXAMPLE_DATA, root)
-    (root / "details.csv").write_text(
-        "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id\nP1,Alpha Growth,NY,0.40,0.20,500000,1000000,B1\nP2,Beta Income,CA,0.37,0.20,500000,1000000,B1\n"
-    )
-    (root / "holdings.csv").write_text(
-        "portfolio_id,security_id,quantity,avg_cost,acquired_on\n"
-        "P1,A,2500,100,2024-01-15T00:00:00Z\nP1,B,5000,50,2024-01-15T00:00:00Z\nP2,A,2500,100,2025-11-01T00:00:00Z\nP2,B,5000,50,2025-11-01T00:00:00Z\n"
-    )
-    return root
+def step_refs_for(names: list[str]) -> list[StepRef]:
+    """``StepRef``s for shipped constraints named bare, with no params and the bare name as label."""
+    return [StepRef(qualname=f"portfolio_optimizer.terms:{name}", params={}, label=name) for name in names]
 
 
-def sell_book(tmp_path: Path) -> Path:
-    """The example data allowed to raise cash (``cash_bounds`` ``[0, 1]``) with A's ADV budget cut to 1,000 shares: what a sell-only run trims.
-
-    Each portfolio holds A 0.5 and B 0.5 against a target of a third each, so the hand answer for P1 is
-    sell 1,000 A (its whole ADV budget, a 0.1 weight) and 3,333 B (to a third); P2, with A's budget spent
-    by P1, sells 3,333 B alone.
-    """
-    root = tmp_path / "sell-book"
-    shutil.copytree(EXAMPLE_DATA, root)
-    constraints = json.loads((root / "constraints.json").read_text())
-    for style in constraints.values():
-        style["cash_bounds"] = ["0", "1"]
-    (root / "constraints.json").write_text(json.dumps(constraints))
-    (root / "universe.csv").write_text("security_id,sector,adv_shares,lot_size,restricted\nA,TECH,4000,1,false\nB,TECH,1000000,1,false\nC,HEALTH,100000,1,false\n")
-    return root
+def step_spec(name: str, **params: object) -> StepSpec:
+    """A ``StepSpec`` as the config would carry it."""
+    return StepSpec.model_validate_json(json.dumps({"name": name, "params": params}))
 
 
-# --- steps that satisfy the resolver's contracts, for tests that need a resolvable config ---
-
-
-def noop_term(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:
-    """A zero objective: lets a config resolve and solve without exercising a real term."""
-    del spec
-    return ObjectiveTerm("noop", scale(0.0, total(x.w)))
-
-
-def lying_term(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:
-    """Annotated as a term but returns a constraint set; solve must catch it."""
-    del x, spec
-    return ConstraintSet("lie", ())  # ty: ignore[invalid-return-type]  # the lie is the case under test
-
-
-def hold_still(request: SolveRequest) -> SolveResult:
-    """A solve step that is not an optimizer: the resting portfolio is the answer, and the terms are never touched."""
-    return SolveResult(w=request.spec.w0)
-
-
-def wrong_shape(request: SolveRequest) -> SolveResult:
-    """A solve step whose weights are not aligned to the spec; the engine must refuse it."""
-    return SolveResult(w=np.zeros(request.spec.n + 1))
-
-
-def noop_sink(orders: pd.DataFrame, io: IoContext) -> tuple[Artifact, ...]:
-    """Publish nothing."""
-    del orders, io
-    return ()
-
-
-def lying_loader(request: LoadRequest) -> pd.DataFrame:
-    """Annotated as a frame loader but returns a dict; the engine must catch it."""
-    del request
-    return {}  # ty: ignore[invalid-return-type]  # the lie is the case under test
-
-
-def lying_rule(data: PortfolioData) -> PortfolioData:
-    """Annotated correctly but returns a frame; the pipeline must catch it."""
-    return data.universe  # ty: ignore[invalid-return-type]  # the lie is the case under test
-
-
-def lying_assembly_step(frames: DatasetFrames) -> DatasetFrames:
-    """Annotated as an assembly step but returns a frame; the engine must catch it."""
-    return frames["universe"]  # ty: ignore[invalid-return-type]  # the lie is the case under test
-
-
-def score_by_price(frames: DatasetFrames) -> DatasetFrames:
-    """A custom assembly step: attach a ``Float64`` analytics column to both holdings and universe from the prices dataset."""
-    scores = frames["prices"].assign(score=frames["prices"]["price"].map(float).astype("Float64")).drop(columns=["price"])
-    holdings = frames["holdings"].merge(scores, on="security_id", how="left", validate="many_to_one")
-    universe = frames["universe"].merge(scores, on="security_id", how="left", validate="one_to_one")
-    return frames.with_frame("holdings", holdings).with_frame("universe", universe)
-
-
-def refuse_assembly(frames: DatasetFrames) -> DatasetFrames:
-    """An assembly step whose precondition fails."""
-    del frames
-    msg = "vendor scores are stale"
-    raise ValueError(msg)
-
-
-def buy_only_listed(data: PortfolioData) -> PortfolioData:
-    """Cap every security not on the portfolio's ``buy_list`` extras dataset at its current weight: the shape of a real buy-universe filter."""
-    listed = {str(security) for security in data.extras["buy_list"]["security_id"]}
-    prices = {str(security): price for security, price in zip(data.universe["security_id"], data.universe["price"], strict=True)}
-    held = {str(security): int(quantity) for security, quantity in zip(data.holdings["security_id"], data.holdings["quantity"], strict=True)}
-    caps = [None if security in listed else Decimal(held.get(security, 0)) * prices[security] / data.details.nav for security in (str(value) for value in data.universe["security_id"])]
-    return data.with_changes(universe=data.universe.assign(max_weight=pd.Series(caps, index=data.universe.index, dtype="object")))
+def example_body() -> dict[str, object]:
+    """The shipped example config as a JSON object."""
+    loaded = json.loads(EXAMPLE_CONFIG.read_text())
+    assert isinstance(loaded, dict)
+    return {str(key): value for key, value in loaded.items()}
 
 
 def _example_body(real_steps: bool) -> dict[str, object]:
-    body = json.loads(EXAMPLE_CONFIG.read_text())
+    body = example_body()
     if not real_steps:
-        body["objective"] = {"terms": ["tests.conftest:noop_term"]}
+        body["objective"] = {"terms": ["tests.steps:noop_term"]}
         body["constraints"] = []
-    body["sink"] = "tests.conftest:noop_sink"
-    return {str(key): value for key, value in body.items()}
+    body["sink"] = "tests.steps:noop_sink"
+    return body
 
 
 def example_config(**overrides: object) -> RunConfig:
@@ -375,33 +300,6 @@ def resolved_example_real(**overrides: object) -> ResolvedConfig:
     return resolve_config(example_config_real(**overrides))
 
 
-class FixedClock:
-    """Always the same instant, so manifests are reproducible in tests."""
-
-    def __init__(self, at: datetime = AS_OF) -> None:
-        self.at = at
-
-    def now(self) -> datetime:
-        """The fixed instant."""
-        return self.at
-
-
-class FixedIds:
-    """Deterministic run ids."""
-
-    def __init__(self, run_id: str = "run-test") -> None:
-        self.run_id = run_id
-
-    def new_run_id(self) -> str:
-        """The fixed id."""
-        return self.run_id
-
-
-def io_context(output_dir: Path, data_root: Path = EXAMPLE_DATA, run_id: str = "run-test") -> IoContext:
-    """An ``IoContext`` with a fixed clock."""
-    return IoContext(data_root=data_root, output_dir=output_dir, run_id=run_id, clock=FixedClock())
-
-
 # --- one local Dask cluster for the whole session; runs connect to it by address so no test pays a cluster start ---
 
 
@@ -413,60 +311,3 @@ def scheduler_address() -> Iterator[str]:
         yield str(cluster.scheduler_address)
     finally:
         cluster.close()
-
-
-def execution_on(scheduler_address: str, *, max_workers: int = 2) -> ExecutionSettings:
-    """Execution settings that use the session cluster."""
-    return ExecutionSettings(cluster=scheduler_address, min_workers=1, max_workers=max_workers, cluster_timeout_s=120.0)
-
-
-# --- loaders that prove the load stage's concurrency and plumbing ---
-
-_SYNC_BARRIER = threading.Barrier(2, timeout=5)
-_ASYNC_BARRIER: tuple[asyncio.AbstractEventLoop, asyncio.Barrier] | None = None
-
-
-def barrier_loader(request: LoadRequest) -> pd.DataFrame:
-    """Returns only once a second barrier loader is running at the same time — proof that sync loaders overlap."""
-    _SYNC_BARRIER.wait()
-    return pd.DataFrame({"portfolio_id": pd.Series(list(request.portfolio_ids), dtype="string")})
-
-
-async def async_barrier_loader(request: LoadRequest) -> pd.DataFrame:
-    """The async twin of ``barrier_loader``; two of these must be in flight together."""
-    global _ASYNC_BARRIER  # noqa: PLW0603  # one barrier per event loop, shared by the two loaders of a test
-    loop = asyncio.get_running_loop()
-    if _ASYNC_BARRIER is None or _ASYNC_BARRIER[0] is not loop:
-        _ASYNC_BARRIER = (loop, asyncio.Barrier(2))
-    await asyncio.wait_for(_ASYNC_BARRIER[1].wait(), timeout=5)
-    return pd.DataFrame({"portfolio_id": pd.Series(list(request.portfolio_ids), dtype="string")})
-
-
-def pool_reporting_loader(request: LoadRequest) -> pd.DataFrame:
-    """Reports which rate-limit pool the engine handed it, and takes one turn from it."""
-    with request.rate_limiter.sync:
-        return pd.DataFrame({"pool": pd.Series([request.rate_limiter.name], dtype="string"), "limited": [request.rate_limiter.is_limited]})
-
-
-async def async_pool_reporting_loader(request: LoadRequest) -> pd.DataFrame:
-    """The async twin of ``pool_reporting_loader``."""
-    async with request.rate_limiter:
-        return pd.DataFrame({"pool": pd.Series([request.rate_limiter.name], dtype="string"), "limited": [request.rate_limiter.is_limited]})
-
-
-def invalid_input_loader(request: LoadRequest) -> pd.DataFrame:
-    """A loader whose source rejected the request."""
-    msg = f"{request.dataset}: no rows as of {request.as_of:%Y-%m-%d}"
-    raise ValueError(msg)
-
-
-def unreachable_loader(request: LoadRequest) -> pd.DataFrame:
-    """A loader whose backend is down; an infrastructure failure, not an input problem."""
-    msg = f"{request.dataset}: connection refused"
-    raise ConnectionError(msg)
-
-
-def limiter_naming_portfolios_loader(request: LoadRequest) -> pd.DataFrame:
-    """A portfolio list whose single id is the name of the limiter the engine handed this input."""
-    with request.rate_limiter.sync:
-        return pd.DataFrame({"portfolio_id": pd.Series([request.rate_limiter.name], dtype="string"), "solve_order": pd.Series([0], dtype="Int64")})

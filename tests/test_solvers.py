@@ -1,6 +1,7 @@
 """Tier 1/2: the shipped solve steps — the cvxpy step through the seam, and a pro-rata fill that is verified like any solve."""
 
 from decimal import Decimal
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -14,7 +15,8 @@ from portfolio_optimizer.engine.tasks import constraint_refs, step_refs
 from portfolio_optimizer.solvers import pro_rata_fill
 from portfolio_optimizer.solving import SolveRequest
 from tests.conftest import Factories, resolved_example_real
-from tests.engine.test_backends import LazyBackend, execute
+from tests.engine.fakes import LazyBackend, factory_for
+from tests.engine.support import execute
 
 
 def _request(spec: ProblemSpec, chain: ChainState | None = None) -> SolveRequest:
@@ -61,29 +63,14 @@ def test_pro_rata_fill_verifies_like_a_solve(make: Factories) -> None:
     chain = ChainState.empty(output.spec.security_ids)
     result = pro_rata_fill(SolveRequest(spec=output.spec, chain=chain, profile=TWO_SIDED, terms=resolved.terms, constraints=resolved.constraints, solver=resolved.config.solver))
     assert result.w is not None
-    from portfolio_optimizer.domain.results import Solution, SolveStatus  # local: the assertion is about verification, not the record
-
-    solution = Solution(
-        w=result.w,
-        buy=result.w - output.spec.w0,
-        sell=np.zeros(3),
-        objective=None,
-        status=SolveStatus.OPTIMAL,
-        solver="f",
-        solver_version="0",
-        solve_time_s=0.0,
-        iterations=None,
-        spec_hash=output.spec.content_hash(),
-    )
+    solution = make.solution(output.spec, w=result.w, buy=result.w - output.spec.w0, objective=None, solver="f", iterations=None)
     report = verify(output.spec, solution, chain, step_refs(resolved.terms), constraint_refs(resolved.constraints), profile=TWO_SIDED)
     assert report.passed, report.violated
     assert result.w.sum() == pytest.approx(1.0), "cash_bounds [0, 0] means every dollar is invested"
 
 
-def test_the_example_runs_end_to_end_on_the_pro_rata_fill(tmp_path: object) -> None:
-    from pathlib import Path
-
-    report = execute(Path(str(tmp_path)), LazyBackend(), solve="pro_rata_fill")
+def test_the_example_runs_end_to_end_on_the_pro_rata_fill(tmp_path: Path) -> None:
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), solve="pro_rata_fill")
     assert report.exit_code == EXIT_OK
     for outcome in report.outcomes:
         assert isinstance(outcome, PortfolioResult) and outcome.report.passed and outcome.solution.solver == "portfolio_optimizer.solvers:pro_rata_fill"
