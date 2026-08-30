@@ -213,10 +213,11 @@ decision generalizes to *a run couples through its one side*.
 3. **`cash_bounds` keeps its meaning** — target cash after the run — and the direction is what the side
    permits: a buy-only run can only lower cash, a sell-only run can only raise it, and the build
    reports the case where the bounds ask for the other direction as the infeasibility it is.
-4. **A term that touches a side the run does not have fails at resolve.** `validate-config` constructs
-   each term and constraint once against a one-security dummy spec under the run's profile; a term
-   reaching for an absent `x.sell` raises there, in the same collected-failures shape as a bad step
-   name, and never on a worker.
+4. ~~**A term that touches a side the run does not have fails at resolve.**~~ Done 2026-08-29:
+   `validate-config` and the start of `run` construct each term and constraint once against a
+   one-security dummy spec under the run's profile (`construction_failures`); a step that raises or
+   returns the wrong type is refused in the collected-failures shape, never on a worker. A step asking
+   for a spec column the dummy lacks is skipped — that is the data's question.
 5. **Sells do not feed buys today**, so nothing crosses between a sell run and a buy run; see the
    enhancement below for when they do.
 
@@ -251,9 +252,9 @@ objective and pay 7.5 s of Clarabel at 100k names for an answer a numpy function
 milliseconds. The engine around the solve is the valuable part: the build, the chain, the derived
 graph, the verifier, the rounding, the manifest. None of it cares where `w` came from.
 
-Folded into *Constraints: one contract, three ways to author it* — the solve step is the engine's
-interpreter seam, and a pure function is its third implementation beside the shipped cvxpy step and a
-firm's own library. The contract, what a step must not do, and how its answer is verified are there.
+Done 2026-08-29: `solve` is a configured step, `pro_rata_fill` is the shipped pure function, and
+[how to replace the cvxpy solve](docs/how-to-write-a-solve-step.md) is the guide. What remains of
+this thread is in *Constraints: one contract, three ways to author it*.
 
 ## Acceptance scenarios the business writes, and a harness that runs them
 
@@ -498,10 +499,14 @@ promise something the solver will not deliver.
 
 ### Order of work, and what it composes with
 
-1. `constraints` as a discriminated union of pydantic models with the four-clause contract; `StepSpec`
-   as the first kind; labels unique at resolve; the shipped constraints' twins become each model's
-   `residual`. The shipped cvxpy adapter becomes the shipped solve step behind the same seam a firm's
-   library or a pure function would use.
+1. ~~`constraints` as a discriminated union of pydantic models with the four-clause contract; `StepSpec`
+   as the first kind; labels unique at resolve; the shipped cvxpy adapter becomes the shipped solve
+   step behind the same seam a firm's library or a pure function would use.~~ Done 2026-08-29:
+   `ConstraintStep` (`kind: "function"`, `label`), `ResolvedConstraint` with `reads_chain`, labels on
+   every check and manifest record; `solve` as a step (`SolveRequest -> SolveResult`), `solvers.cvxpy`
+   and `solvers.pro_rata_fill` shipped. Still open from that item: `residual` *on* the model — the
+   shipped constraints' twins are still the table in `check.py`, keyed by qualname; it moves onto the
+   model when the second kind arrives and needs it.
 2. `groups` on the spec and the row-block family (`bound_on`, `group_bound`), with `sector_bounds` as
    an instance.
 3. The style schema derived from the config (property 7).

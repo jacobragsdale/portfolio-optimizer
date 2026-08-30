@@ -171,19 +171,25 @@ for stage 8.
 
 ## 6. Solve
 
-`engine/solve.py` creates the decision variables `w`, `buy`, and `sell` — all fractions of NAV —
-invokes each configured term and constraint function to obtain expressions, and hands them to the
-adapter. `cvx/adapter.py` is the **only module that imports cvxpy**; terms are written against a dozen
-typed atoms (`dot`, `matvec`, `sum_squares`, `at_most`, ...) so that the verifier can mirror each one in
-numpy. The adapter checks that the solver is installed (there is no fallback), that the problem is
-DCP-compliant, maps `time_limit_s` to the solver's own option, and returns the raw outcome.
+`engine/solve.py` hands the configured **solve step** a `SolveRequest` — the spec, the chain, the
+side profile, the resolved terms and constraints, the `solver` block — and takes back a
+`SolveResult`: weights aligned to the spec and, if the step minimized one, an objective. The default
+step, `solvers.cvxpy`, creates the decision variables `w`, `buy`, and `sell` — all fractions of NAV —
+adds the side profile's trade identity, invokes each configured term and constraint function to obtain
+expressions, and hands them to the adapter. `cvx/adapter.py` is the **only module that imports
+cvxpy**; terms are written against a dozen typed atoms (`dot`, `matvec`, `sum_squares`, `at_most`,
+...) so that the verifier can mirror each one in numpy. The adapter checks that the problem is
+DCP-compliant, maps `time_limit_s` to the solver's own option, and returns the raw outcome. A step
+that is not cvxpy — the shipped `pro_rata_fill`, a firm's library, a function of your own — returns
+weights the same way and is verified the same way; see
+[how to replace the cvxpy solve](how-to-write-a-solve-step.md).
 
-Classification decides what the outcome means:
+Classification decides what the result means:
 
-- **Optimal.** The buy/sell split is **canonicalized** to `buy = max(w − w0, 0)` and
-  `sell = max(w0 − w, 0)`. With no term charging for trading, an interior-point solver can return a
-  wash trade — buy 0.3 and sell 0.3 of the same name — that nets to the right weights but is not
-  minimal.
+- **Optimal.** The side profile decides the buy/sell split the engine reports for the weights: for the
+  two-sided profile, the minimal one, `buy = max(w − w0, 0)` and `sell = max(w0 − w, 0)`. With no term
+  charging for trading, an interior-point solver can return a wash trade — buy 0.3 and sell 0.3 of the
+  same name — that nets to the right weights but is not minimal.
 - **Infeasible.** `InfeasibleError` carries an arithmetic diagnosis computed without another solve: do
   the upper bounds even sum to the required investment? Do the lower bounds exceed it? Can each sector
   reach its floor? Does moving the current weights inside their bounds already exceed `max_turnover`?
@@ -357,7 +363,10 @@ again (the diff names only the config). The [tutorial](tutorial-first-run.md) wa
 1. **Settings** — unknown or missing environment variables; a Kubernetes cluster without a worker image.
 2. **Config** — strict models; money as strings; timestamps with a zone.
 3. **Resolver** — the function exists, its signature matches the contract, its params validate; the
-   solver is known and installed. Run on the client, and again on every worker before it does any work.
+   solver is known and installed; constraint labels are unique. Run on the client, and again on every
+   worker before it does any work. On the client, every term and constraint is then constructed once
+   against a one-security dummy spec under the run's side profile, so a step that raises or returns the
+   wrong type is refused before a cluster is asked for.
 4. **Loaders** — dtypes declared up front; exact `Decimal` coercion.
 5. **Assembly** — each step's own claims (join keys, cardinality, coverage, dtype agreement on a
    union); then the required frames exist and every frame schema holds; then details and constraints
@@ -365,7 +374,8 @@ again (the diff names only the config). The [tutorial](tutorial-first-run.md) wa
 6. **`PortfolioData`** — cross-frame invariants including holdings/universe dtype agreement, re-run
    after every rule; a frame a rule replaces is re-validated against its schema.
 7. **`ProblemSpec`** — shapes, finiteness, bound ordering, read-only arrays.
-8. **Solver** — DCP-compliant, status classified, infeasibility diagnosed.
+8. **Solve step** — weights of the right shape, status classified, infeasibility diagnosed; for the
+   cvxpy step, DCP-compliant first.
 9. **Verifier** — every shipped constraint and the objective, independently of cvxpy.
 10. **Orders** — the `ORDERS` schema including `notional = quantity × price`, every BUY inside the
     buyable set, then the drift bound.

@@ -85,6 +85,22 @@ side. Today there is one profile, `both` — buys and sells in one problem, coup
 the one-sided profiles are what make a buy-only or sell-only run a third of the problem with no wash
 trade possible, and they slot in without touching the rest of the engine.
 
+## The solve step is the interpreter
+
+What the engine knows about a constraint is deliberately little: it is a strict model in the config
+with a unique label, it declares whether it reads the chain (which is what the dependency graph is
+derived from), and the verifier may know how to check it. What a *solver* does with it is not the
+engine's business. So the solve is a configured step — `solve`, `cvxpy` by default — that receives
+everything a solver could want (the spec, the chain, the side profile, the resolved terms and
+constraints, the cvxpy options) and returns weights. The shipped cvxpy step builds and solves the
+problem; the shipped `pro_rata_fill` is a numpy function with no objective at all; a firm's own
+library that builds the problem from the constraint models its own way fits the same contract. The
+engine treats every answer identically: the side profile turns weights into a trade, the verifier
+re-checks the shipped constraints, and the manifest records what solved it. This is what keeps the
+engine agnostic to the shape of a constraint and to whether cvxpy is involved — the guarantees are
+the verifier's, not the step's — and it is the seam the next constraint models will be interpreted
+through.
+
 ## Verification is independent of the solver
 
 After every solve, `engine/check.py` recomputes each constraint's violation and each objective term in

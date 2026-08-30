@@ -38,7 +38,8 @@ The schema cannot express one rule the models enforce: `as_of` must carry a time
 | `solve_order` | step | no | A solve-order step evaluated on each ruled bundle; its `Decimal` key replaces the `solve_order` column. Lower solves first. |
 | `sides` | string | no | Which side the run trades: `both` (default; the only value today). Selects the side profile that supplies the trade identity, the tradable set, and the chain. |
 | `objective` | object | yes | `sense` (only `minimize`), `terms` (step list, at least one). |
-| `constraints` | step list | no | Constraint functions. Default `[]`. The trade identity is not a step; `sides` supplies it, and `trade_balance` is refused by name. |
+| `constraints` | constraint list | no | Constraints. Default `[]`. Each is a step (bare name or `{"name", "params"}`) with two optional keys: `kind` (`function`, the only kind today) and `label` (unique among the run's constraints; defaults to the bare name; the verifier's report and the manifest key on it). The trade identity is not a constraint; `sides` supplies it, and `trade_balance` is refused by name. |
+| `solve` | step | no | The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`. Default `cvxpy`. A qualified name plugs in a firm's library or a pure function; see [how to replace the cvxpy solve](how-to-write-a-solve-step.md). |
 | `solver` | object | no | `name` (default `CLARABEL`; one of `CLARABEL`, `OSQP`, `SCS`, `HIGHS`, `PIQP`, and installed — checked when the config resolves, on the client and on every worker), `options` (map of solver options passed verbatim to `Problem.solve`, default `{}`), `time_limit_s` (number > 0 or absent; mapped to `time_limit` for `CLARABEL`, `OSQP`, and `HIGHS` and to `time_limit_secs` for `SCS`; `PIQP` rejects it at resolve), `verbose` (default `false`). |
 | `post_solve` | object | no | `violation_tol` (default `1e-6`), `objective_rel_tol` (`1e-5`), `objective_abs_tol` (`1e-9`); all > 0. |
 | `sink` | step | yes | Where orders go. |
@@ -171,7 +172,7 @@ Solve-order steps: `furthest_from_target_first`. Terms: `tracking_error`, `alpha
 `transaction_cost` (`cost_bps`), each with `weight` (default `"1"`). Constraints:
 `long_only`, `max_weight`, `cash_bounds`, `sector_bounds` (`tolerance`), `turnover_cap`,
 `cumulative_adv_participation` (`chain`: `buy + sell ≤ adv_capacity` and `buy ≤ adv_capacity − predecessors' buys`).
-Sinks: `orders_to_parquet`, `orders_to_csv` (`subdir`, default `orders`).
+Solve steps: `cvxpy` (default), `pro_rata_fill`. Sinks: `orders_to_parquet`, `orders_to_csv` (`subdir`, default `orders`).
 
 ## Style constraints (the `constraints` dataset)
 

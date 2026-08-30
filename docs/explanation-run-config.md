@@ -326,6 +326,11 @@ the ADV constraint, and the verifier's complementarity check rely on, so it come
 added to every solve; a config that still names `trade_balance` is refused at resolve with a message
 saying so.
 
+Each constraint may carry a `label`, unique among the run's constraints and defaulting to the bare
+name; the verifier's report and the manifest key on it, which is what tells two instances of one
+function apart. A `kind` key names what sort of constraint it is — `function`, a step, is the only
+kind today; it is the seam on which constraint models that are not functions will be added.
+
 Most constraints take no parameters, and the JSON Schema enforces that: `{"name": "long_only",
 "params": {"x": 1}}` is rejected by your editor. `sector_bounds` is the exception with a `tolerance`
 that loosens every sector band symmetrically; with an empty `sector_bounds` map in the style, it
@@ -338,6 +343,29 @@ predecessors' buys have consumed part of the budget. Sells are the portfolio's o
 Every shipped constraint has a numpy twin in the verifier, looked up by qualified name, so the
 post-solve check is a genuine second opinion for each one you list. A custom constraint without a twin
 is accepted and reported as `unverified` in the manifest rather than refused.
+
+## `solve`
+
+```json
+"solve": "cvxpy"
+```
+
+Which step decides the weights. The engine builds each portfolio's problem as data, folds the chain,
+and hands one function everything it may use — the spec, the chain, the side profile, the resolved
+terms and constraints, the `solver` block — and takes back weights. `cvxpy`, the default, is the
+optimizer: it builds the cvxpy problem from the terms and constraints and solves it. `pro_rata_fill`
+is the other shipped step and is not an optimizer at all — a numpy function that spends the cash on
+the underweights — which is the point of the key: what a desk does on one side is sometimes not an
+optimization, and dressing it as one costs seconds of solver time for an answer a function computes in
+milliseconds. A qualified name plugs in a firm's own library that builds the problem its own way.
+
+Whatever the step is, the engine treats its answer the same way: the side profile turns the weights
+into a trade, the verifier re-checks every shipped constraint against them, rounding and drift run
+unchanged, and the manifest records the step and its version where it records the solver's. A step
+that minimized nothing reports no objective; the verifier then skips the objective comparison and
+still evaluates the configured terms as a report line, so a heuristic and the optimizer can be
+compared on one book. The guarantees are the verifier's, not the step's — see
+[how to replace the cvxpy solve](how-to-write-a-solve-step.md).
 
 ## `solver`
 

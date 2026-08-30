@@ -65,7 +65,9 @@ term the verifier can mirror.
 ```
 
 The engine minimizes the sum of the terms. What `buy` and `sell` mean is not a constraint you list: the
-run's `sides` supplies the trade identity to every solve.
+run's `sides` supplies the trade identity to every solve. To use one constraint function twice with
+different params, give each instance a `label` — `{"name": "group_cap", "label": "country_caps", "params":
+{...}}` — since the verifier's report and the manifest key on it, and labels must be unique.
 
 ## 3. Give the verifier a twin, or accept "unverified"
 

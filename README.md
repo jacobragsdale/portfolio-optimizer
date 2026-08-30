@@ -71,6 +71,7 @@ validator against [`configs/run-config.schema.json`](configs/run-config.schema.j
 - [How to add security analytics columns to holdings and the universe](docs/how-to-add-security-analytics.md)
 - [How to add an objective term or a constraint](docs/how-to-add-a-term.md)
 - [How to set the solve order](docs/how-to-set-the-solve-order.md)
+- [How to replace the cvxpy solve with your own function or library](docs/how-to-write-a-solve-step.md)
 - [How to run on a cluster](docs/how-to-run-on-a-cluster.md)
 - [Reference: the run config](docs/reference-run-config.md)
 - [Reference: the per-portfolio bundle and the optimizer frame](docs/reference-portfolio-data.md)
