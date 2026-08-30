@@ -335,8 +335,9 @@ def test_a_per_portfolio_source_that_is_down_raises_the_failure_not_the_group(tm
     shutil.copytree(EXAMPLE_DATA, root)
     for portfolio_id in ("P1", "P2"):
         (root / "details" / f"{portfolio_id}.csv").unlink()
-    # details is batched two at a time, so both accounts are in one call and its group holds two failures
-    with pytest.raises(FileNotFoundError, match=r"P1\.csv"):
+    # details is batched two at a time, so both accounts are in one call and its group holds two failures;
+    # which of them is raised is the order they failed in, so the assertion is on the type and the file, not on which file
+    with pytest.raises(FileNotFoundError, match=r"details/P\d\.csv"):
         load_datasets(resolved_example(), data_root=root, run_id="test")
 
 
