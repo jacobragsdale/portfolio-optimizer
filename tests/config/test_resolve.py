@@ -195,7 +195,7 @@ VIOLATIONS: list[tuple[str, str, StepKind, Mapping[str, object], str]] = [
     ("params missing a required field", "fake_steps:rule_with_params", "rule", {}, "strength: Field required"),
     ("params with an unknown field", "fake_steps:rule_with_params", "rule", {"strength": "1", "tilt": "2"}, "tilt: Extra inputs are not permitted"),
     ("params with the wrong type", "fake_steps:rule_with_params", "rule", {"strength": "-1"}, "strength: Input should be greater than or equal to 0"),
-    ("a column kind the schemas do not have", "csv", "loader", {"path": "analytics.csv", "dtypes": {"score": "money"}}, "dtypes.score: Input should be"),
+    ("a loader param outside its bound", "load_universe", "loader", {"min_latency_s": -1}, "min_latency_s: Input should be greater than or equal to 0"),
     ("term used as a constraint", "fake_steps:term", "constraint", {}, "return annotation must be ConstraintSet, got ObjectiveTerm"),
     ("rule used as a loader", "fake_steps:plain_rule", "loader", {}, "unexpected parameter 'data'"),
     ("async rule", "fake_steps:async_rule", "rule", {}, "`async def` is only allowed for loaders"),
@@ -271,8 +271,7 @@ def fake_config(
 ) -> RunConfig:
     body: dict[str, object] = {
         "run": {"name": "r", "as_of_date": "2026-01-01T00:00:00Z"},
-        "portfolios": f"{fake_steps}:loader",
-        "datasets": {name: {"loader": f"{fake_steps}:loader"} for name in ("holdings", "universe", "details")},
+        "datasets": {name: {"loader": f"{fake_steps}:loader"} for name in ("portfolios", "holdings", "universe", "details")},
         "rules": rules if rules is not None else [f"{fake_steps}:plain_rule"],
         "objective": {"terms": terms if terms is not None else [f"{fake_steps}:term"]},
         "sink": f"{fake_steps}:sink",

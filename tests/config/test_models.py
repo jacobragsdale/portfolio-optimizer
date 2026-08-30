@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from portfolio_optimizer.config.models import RunConfig, StepSpec, config_sha256, is_step_name, load_run_config
+from portfolio_optimizer.config.models import DatasetConfig, InlinePortfolios, RunConfig, StepSpec, config_sha256, is_step_name, load_run_config
 from tests.conftest import EXAMPLE_CONFIG, example_body
 
 
@@ -16,7 +16,8 @@ def example_text() -> str:
 
 @pytest.fixture
 def example_dict() -> dict[str, object]:
-    return example_body()
+    """The shipped file as it ships: this module is about the config, so nothing here is adjusted for test speed."""
+    return example_body(latency=True)
 
 
 def section(config: dict[str, object], key: str) -> dict[str, object]:
@@ -119,8 +120,7 @@ def test_config_hash_ignores_source_whitespace_but_not_values(example_text: str,
 def test_defaults_fill_optional_sections() -> None:
     minimal = {
         "run": {"name": "r", "as_of_date": "2026-01-01T00:00:00Z"},
-        "portfolios": "csv",
-        "datasets": {name: {"loader": "csv"} for name in ("holdings", "universe", "details", "constraints")},
+        "datasets": {name: {"loader": "csv"} for name in ("portfolios", "holdings", "universe", "details", "constraints")},
         "objective": {"terms": ["alpha"]},
         "sink": "orders_to_parquet",
     }
@@ -133,11 +133,12 @@ def test_defaults_fill_optional_sections() -> None:
 
 
 def test_rate_limit_pool_named_by_a_dataset_must_be_declared(example_dict: dict[str, object]) -> None:
-    datasets = section(example_dict, "datasets") | {"holdings": {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}, "rate_limit": "vendor"}}
-    with pytest.raises(ValidationError, match="rate_limit 'vendor' is not declared in rate_limits \\[\\]"):
+    datasets = section(example_dict, "datasets") | {"holdings": {"loader": "load_holdings", "rate_limit": "vendor"}}
+    with pytest.raises(ValidationError, match="rate_limit 'vendor' is not declared in rate_limits \\['custodian'\\]"):
         load_run_config(json.dumps(example_dict | {"datasets": datasets}))
     config = load_run_config(json.dumps(example_dict | {"datasets": datasets, "rate_limits": {"vendor": {"requests_per_second": 20, "max_in_flight": 4}}}))
-    assert config.datasets["holdings"].rate_limit == "vendor"
+    holdings = config.datasets["holdings"]
+    assert isinstance(holdings, DatasetConfig) and holdings.rate_limit == "vendor"
     assert config.rate_limits["vendor"].to_limit().burst == 20
 
 
@@ -165,32 +166,81 @@ def test_rate_limit_burst_defaults_to_the_rate_rounded_up_and_never_below_one() 
     assert RateLimitConfig.model_validate({"max_in_flight": 8}).to_limit().max_in_flight == 8
 
 
-@pytest.mark.parametrize(
-    "portfolios",
-    ["csv", {"name": "csv", "params": {"path": "portfolios.csv"}}, {"loader": {"name": "csv", "params": {"path": "portfolios.csv"}}}, {"loader": "csv", "rate_limit": {"max_in_flight": 1}}],
-    ids=["bare name", "bare step", "loader object", "loader with its own bound"],
-)
-def test_portfolios_accepts_a_bare_step_or_the_full_input_form(example_dict: dict[str, object], portfolios: object) -> None:
-    config = load_run_config(json.dumps(example_dict | {"portfolios": portfolios}))
-    assert config.portfolios.loader.name == "csv"
+@pytest.mark.parametrize("portfolios", [["P7", "P2", "P9"], {"ids": ["P7", "P2", "P9"]}], ids=["bare array", "object form"])
+def test_the_portfolio_list_may_be_written_inline(example_dict: dict[str, object], portfolios: object) -> None:
+    config = load_run_config(json.dumps(example_dict | {"datasets": section(example_dict, "datasets") | {"portfolios": portfolios}}))
+    book = config.datasets["portfolios"]
+    assert isinstance(book, InlinePortfolios)
+    assert book.ids == ("P7", "P2", "P9"), "the written order is kept: it is the solve order"
 
 
-def test_a_bare_portfolios_step_hashes_the_same_as_its_wrapped_form(example_dict: dict[str, object]) -> None:
-    bare = load_run_config(json.dumps(example_dict | {"portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}}}))
-    wrapped = load_run_config(json.dumps(example_dict | {"portfolios": {"loader": {"name": "csv", "params": {"path": "portfolios.csv"}}}}))
+def test_a_bare_inline_list_hashes_the_same_as_its_object_form(example_dict: dict[str, object]) -> None:
+    bare = load_run_config(json.dumps(example_dict | {"datasets": section(example_dict, "datasets") | {"portfolios": ["P1", "P2"]}}))
+    wrapped = load_run_config(json.dumps(example_dict | {"datasets": section(example_dict, "datasets") | {"portfolios": {"ids": ["P1", "P2"]}}}))
     assert config_sha256(bare) == config_sha256(wrapped)
+
+
+@pytest.mark.parametrize(("portfolios", "fragment"), [(["P1", "P1"], "ids repeat"), ([""], "non-empty"), ([], "at least 1")], ids=["repeated id", "empty id", "empty list"])
+def test_a_malformed_inline_book_is_rejected(example_dict: dict[str, object], portfolios: object, fragment: str) -> None:
+    with pytest.raises(ValidationError, match=fragment):
+        load_run_config(json.dumps(example_dict | {"datasets": section(example_dict, "datasets") | {"portfolios": portfolios}}))
+
+
+def test_only_the_portfolio_list_may_be_written_inline(example_dict: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match="only 'portfolios' may be written inline"):
+        load_run_config(json.dumps(example_dict | {"datasets": section(example_dict, "datasets") | {"holdings": {"ids": ["P1"]}}}))
+
+
+def test_the_portfolio_list_is_required_and_global(example_dict: dict[str, object]) -> None:
+    without = {name: spec for name, spec in section(example_dict, "datasets").items() if name != "portfolios"}
+    with pytest.raises(ValidationError, match="datasets must declare 'portfolios'"):
+        load_run_config(json.dumps(example_dict | {"datasets": without}))
+    per_account = section(example_dict, "datasets") | {"portfolios": {"loader": "load_portfolios", "scope": "per_portfolio"}}
+    with pytest.raises(ValidationError, match="portfolios must be a global dataset"):
+        load_run_config(json.dumps(example_dict | {"datasets": per_account}))
+
+
+def test_a_per_portfolio_dataset_depends_on_the_book_implicitly(example_dict: dict[str, object]) -> None:
+    config = load_run_config(json.dumps(example_dict))
+    holdings, constraints, universe = config.datasets["holdings"], config.datasets["constraints"], config.datasets["universe"]
+    assert isinstance(holdings, DatasetConfig) and holdings.dependencies() == ("portfolios",), "per_portfolio implies the book without declaring it"
+    assert isinstance(constraints, DatasetConfig) and constraints.depends_on == ("portfolios",) == constraints.dependencies(), "a global input that wants the ids declares the dependency"
+    assert isinstance(universe, DatasetConfig) and universe.dependencies() == (), "nothing declared, nothing waited on"
+
+
+@pytest.mark.parametrize(
+    ("entry", "fragment"),
+    [
+        ({"loader": "load_holdings", "depends_on": ["univrse"]}, r"datasets.holdings: depends_on names unknown dataset\(s\) \['univrse'\]"),
+        ({"loader": "load_holdings", "depends_on": ["holdings"]}, "cannot depend on itself"),
+        ({"loader": "load_holdings", "depends_on": ["portfolios", "portfolios"]}, "depends_on repeats"),
+    ],
+    ids=["unknown name", "self-dependency", "repeated name"],
+)
+def test_malformed_dependencies_are_rejected(example_dict: dict[str, object], entry: dict[str, object], fragment: str) -> None:
+    with pytest.raises(ValidationError, match=fragment):
+        load_run_config(json.dumps(example_dict | {"datasets": section(example_dict, "datasets") | {"holdings": entry}}))
+
+
+def test_dependency_cycles_are_rejected_naming_the_cycle(example_dict: dict[str, object]) -> None:
+    looped = section(example_dict, "datasets") | {"universe": {"loader": "load_universe", "depends_on": ["constraints"]}, "constraints": {"loader": "load_constraints", "depends_on": ["universe"]}}
+    with pytest.raises(ValidationError, match="cycle: universe -> constraints -> universe"):
+        load_run_config(json.dumps(example_dict | {"datasets": looped}))
+    implicit = section(example_dict, "datasets") | {"portfolios": {"loader": "load_portfolios", "depends_on": ["holdings"]}}
+    with pytest.raises(ValidationError, match=r"cycle: portfolios -> holdings -> portfolios \(a per_portfolio dataset depends on 'portfolios' implicitly\)"):
+        load_run_config(json.dumps(example_dict | {"datasets": implicit}))
 
 
 def test_each_input_may_carry_its_own_inline_bound(example_dict: dict[str, object]) -> None:
     datasets = section(example_dict, "datasets") | {
         "holdings": {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}, "rate_limit": {"requests_per_second": 5, "max_in_flight": 2}},
         "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}, "rate_limit": {"max_in_flight": 16}},
+        "portfolios": {"loader": "csv", "rate_limit": "slow"},
     }
-    config = load_run_config(json.dumps(example_dict | {"datasets": datasets, "portfolios": {"loader": "csv", "rate_limit": "slow"}, "rate_limits": {"slow": {"requests_per_second": 1}}}))
-    holdings = config.datasets["holdings"].rate_limit
-    universe = config.datasets["universe"].rate_limit
-    assert not isinstance(holdings, str | None) and holdings.to_limit().max_in_flight == 2
-    assert not isinstance(universe, str | None) and universe.to_limit().requests_per_second is None
-    assert config.portfolios.rate_limit == "slow"
-    with pytest.raises(ValidationError, match="portfolios: rate_limit 'fast' is not declared"):
-        load_run_config(json.dumps(example_dict | {"portfolios": {"loader": "csv", "rate_limit": "fast"}}))
+    config = load_run_config(json.dumps(example_dict | {"datasets": datasets, "rate_limits": {"slow": {"requests_per_second": 1}}}))
+    holdings, universe, book = config.datasets["holdings"], config.datasets["universe"], config.datasets["portfolios"]
+    assert isinstance(holdings, DatasetConfig) and not isinstance(holdings.rate_limit, str | None) and holdings.rate_limit.to_limit().max_in_flight == 2
+    assert isinstance(universe, DatasetConfig) and not isinstance(universe.rate_limit, str | None) and universe.rate_limit.to_limit().requests_per_second is None
+    assert isinstance(book, DatasetConfig) and book.rate_limit == "slow"
+    with pytest.raises(ValidationError, match=r"datasets\.portfolios: rate_limit 'fast' is not declared"):
+        load_run_config(json.dumps(example_dict | {"datasets": section(example_dict, "datasets") | {"portfolios": {"loader": "csv", "rate_limit": "fast"}}}))

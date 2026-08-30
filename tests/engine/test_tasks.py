@@ -8,17 +8,17 @@ from portfolio_optimizer.engine.backends import SharedRunData
 from portfolio_optimizer.engine.environment import environment_for
 from portfolio_optimizer.engine.load import assemble, load_datasets
 from portfolio_optimizer.engine.tasks import BuildResult, build_task
-from tests.conftest import EXAMPLE_DATA, example_config_real, resolved_example_real
+from tests.conftest import example_config_real, resolved_example_real
 
 
-def _shared() -> SharedRunData:
+def _shared(book: Path) -> SharedRunData:
     resolved = resolved_example_real(sink="orders_to_parquet")  # every step from the template modules: a spawned worker cannot import tests.steps
-    assembled = assemble(load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="run-x"), resolved, run_id="run-x")
+    assembled = assemble(load_datasets(resolved, data_root=book, run_id="run-x"), resolved, run_id="run-x")
     return SharedRunData(assembled=assembled, config=resolved.config, config_sha256="example", run_id="run-x")
 
 
-def test_build_task_slices_rules_and_builds_from_the_shared_data_and_reports_its_environment() -> None:
-    shared = _shared()
+def test_build_task_slices_rules_and_builds_from_the_shared_data_and_reports_its_environment(book: Path) -> None:
+    shared = _shared(book)
     output = build_task(shared, PortfolioId("P1"))
     assert isinstance(output.outcome, BuildResult)
     assert output.outcome.spec.security_ids == ("A", "B", "C")
@@ -29,8 +29,8 @@ def test_build_task_slices_rules_and_builds_from_the_shared_data_and_reports_its
     assert isinstance(missing.outcome, PortfolioFailure) and missing.outcome.stage == "slice"
 
 
-def test_a_step_package_the_worker_cannot_import_is_a_worker_failure() -> None:
-    shared = _shared()
+def test_a_step_package_the_worker_cannot_import_is_a_worker_failure(book: Path) -> None:
+    shared = _shared(book)
     unresolvable = SharedRunData(assembled=shared.assembled, config=example_config_real(sink="no_such_package.sinks:publish"), config_sha256="other", run_id="run-y")
     output = build_task(unresolvable, PortfolioId("P1"))
     assert isinstance(output.outcome, PortfolioFailure) and (output.outcome.stage, output.outcome.error_type) == ("worker", "ConfigResolutionError")

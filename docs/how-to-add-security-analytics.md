@@ -23,28 +23,30 @@ into one optimizer frame cleanly.
 
 ## 1. Load the analytics dataset, typed
 
-Declare it under `datasets` with any name that is not engine-known. Type every column at the loader:
-the key as `string`, money and rates as `decimal`, statistical values as `Float64`, labels as
-`string`, flags as `bool`.
+Declare it under `datasets` with any name that is not engine-known, and
+[write its loader](how-to-add-a-loader-or-sink.md). The engine has no schema for a dataset it does not
+know, so the loader carries one: the key as `string`, money and rates as `decimal`, statistical values
+as `Float64`, labels as `string`, flags as `bool`.
+
+```python
+ANALYTICS = FrameSchema(
+    name="analytics", columns=(ColumnSpec("security_id", "string"), ColumnSpec("score", "Float64"), ColumnSpec("liquidity_bucket", "string"), ColumnSpec("fair_value", "decimal")), key=("security_id",)
+)
+
+
+async def load_analytics(request: LoadRequest) -> pd.DataFrame:
+    """Every security's vendor analytics as of ``request.as_of_date``."""
+    return coerce_frame(await vendor.analytics(as_of_date=request.as_of_date), ANALYTICS)
+```
 
 ```json
 "datasets": {
   "...": "the required datasets",
-  "analytics": {
-    "loader": {
-      "name": "csv",
-      "params": {
-        "path": "analytics.csv",
-        "dtypes": {"security_id": "string", "score": "Float64", "liquidity_bucket": "string",
-                   "fair_value": "decimal"}
-      }
-    }
-  }
+  "analytics": {"loader": "load_analytics"}
 }
 ```
 
-From a database or an API, [write a loader](how-to-add-a-loader-or-sink.md) that returns the frame
-already typed. Whatever dtypes leave the loader are the dtypes that land on `holdings` and `universe`.
+Whatever dtypes leave the loader are the dtypes that land on `holdings` and `universe`.
 
 ## 2. Attach the columns to the universe
 
@@ -173,7 +175,7 @@ def apply_mandate_exclusions(data: PortfolioData) -> PortfolioData:
 ```
 
 ```json
-"datasets": {"mandate_exclusions": {"loader": {"name": "csv", "params": {"path": "exclusions.csv", "dtypes": {"portfolio_id": "string", "security_id": "string"}}}}},
+"datasets": {"mandate_exclusions": {"loader": "load_mandate_exclusions"}},
 "rules": ["apply_mandate_exclusions"]
 ```
 

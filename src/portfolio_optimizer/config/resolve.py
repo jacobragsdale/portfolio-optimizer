@@ -28,7 +28,7 @@ import pandas as pd
 from pydantic import ValidationError
 from scipy.sparse import csr_array
 
-from portfolio_optimizer.config.models import RunConfig, StepSpec, config_sha256
+from portfolio_optimizer.config.models import DatasetConfig, RunConfig, StepSpec, config_sha256
 from portfolio_optimizer.config.steps import ResolvedStep, StepKind
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, installed_solvers, solver_failures
 from portfolio_optimizer.cvx.sides import decision_variables
@@ -86,7 +86,6 @@ class ResolvedConfig:
 
     config: RunConfig
     config_sha256: str
-    portfolios: ResolvedStep
     loaders: Mapping[str, ResolvedStep]
     assembly: tuple[ResolvedStep, ...]
     rules: tuple[ResolvedStep, ...]
@@ -109,7 +108,7 @@ class ResolvedConfig:
     def all_steps(self) -> tuple[ResolvedStep, ...]:
         """Every resolved step, in pipeline order."""
         ordering = () if self.solve_order is None else (self.solve_order,)
-        return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *ordering, *self.terms, self.solve, self.sink)
+        return (*self.loaders.values(), *self.assembly, *self.rules, *ordering, *self.terms, self.solve, self.sink)
 
 
 def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] = installed_solvers) -> ResolvedConfig:
@@ -128,8 +127,7 @@ def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] 
             failures.extend(f"{where}: {failure}" for failure in error.failures)
             return None
 
-    portfolios = resolve(config.portfolios.loader, "loader", "portfolios")
-    loaders = {name: resolve(dataset.loader, "loader", f"datasets.{name}") for name, dataset in config.datasets.items()}
+    loaders = {name: resolve(dataset.loader, "loader", f"datasets.{name}") for name, dataset in config.datasets.items() if isinstance(dataset, DatasetConfig)}
     assembly = [resolve(spec, "assembly", f"assembly[{i}]") for i, spec in enumerate(config.assembly)]
     rules = [resolve(spec, "rule", f"rules[{i}]") for i, spec in enumerate(config.rules)]
     solve_order = resolve(config.solve_order, "solve_order", "solve_order") if config.solve_order is not None else None
@@ -137,12 +135,11 @@ def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] 
     solve = resolve(config.solve, "solve", "solve")
     sink = resolve(config.sink, "sink", "sink")
     resolved_loaders = {name: step for name, step in loaders.items() if step is not None}
-    if failures or portfolios is None or solve is None or sink is None or len(resolved_loaders) != len(loaders):
+    if failures or solve is None or sink is None or len(resolved_loaders) != len(loaders):
         raise ConfigResolutionError(failures)
     resolved = ResolvedConfig(
         config=config,
         config_sha256=config_sha256(config),
-        portfolios=portfolios,
         loaders=resolved_loaders,
         assembly=tuple(step for step in assembly if step is not None),
         rules=tuple(step for step in rules if step is not None),

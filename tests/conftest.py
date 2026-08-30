@@ -8,6 +8,7 @@ Builders are exposed as fixtures because ``--import-mode=importlib`` keeps ``tes
 
 import json
 import logging
+import shutil
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -122,7 +123,7 @@ class Frames:
         return build(ORDERS, *rows)
 
     def parameters(self, **values: object) -> pd.DataFrame:
-        """A ``name``/``value`` extra dataset of runtime settings, typed the way the csv loader's `decimal` kind produces it."""
+        """A ``name``/``value`` extra dataset of runtime settings, typed the way ``load_parameters`` produces it."""
         return pd.DataFrame({"name": pd.Series(list(values), dtype="string"), "value": pd.Series([Decimal(str(value)) for value in values.values()], dtype="object")})
 
     def three_security_universe(self) -> pd.DataFrame:
@@ -265,11 +266,37 @@ def step_spec(name: str, **params: object) -> StepSpec:
     return StepSpec.model_validate_json(json.dumps({"name": name, "params": params}))
 
 
-def example_body() -> dict[str, object]:
-    """The shipped example config as a JSON object."""
-    loaded = json.loads(EXAMPLE_CONFIG.read_text())
-    assert isinstance(loaded, dict)
-    return {str(key): value for key, value in loaded.items()}
+NO_LATENCY: dict[str, object] = {"min_latency_s": 0, "max_latency_s": 0}
+"""What every shipped loader's `params` gets in a test: the mock services stand in for real ones and wait accordingly, and no test can afford that."""
+
+
+def as_object(value: object) -> dict[str, object]:
+    """A JSON object read from a config file, typed."""
+    assert isinstance(value, dict)
+    return {str(key): item for key, item in value.items()}
+
+
+def instant(entry: object) -> dict[str, object]:
+    """One `datasets` entry with its loader's simulated wait removed; an inline book passes through untouched."""
+    spec = as_object({"loader": entry} if isinstance(entry, str) else entry)
+    if "ids" in spec:
+        return spec
+    step = as_object({"name": spec["loader"]} if isinstance(spec["loader"], str) else spec["loader"])
+    return spec | {"loader": step | {"params": as_object(step.get("params", {})) | NO_LATENCY}}
+
+
+def example_body(*, latency: bool = False) -> dict[str, object]:
+    """The shipped example config as a JSON object, by default with every loader's simulated latency removed."""
+    body = as_object(json.loads(EXAMPLE_CONFIG.read_text()))
+    if latency:
+        return body
+    datasets = as_object(body["datasets"])
+    return body | {"datasets": {name: instant(spec) for name, spec in datasets.items()}}
+
+
+def example_datasets(**overrides: object) -> dict[str, object]:
+    """The example's `datasets` block with entries replaced; what a test that swaps one input starts from."""
+    return as_object(example_body()["datasets"]) | overrides
 
 
 def _example_body(real_steps: bool) -> dict[str, object]:
@@ -301,6 +328,27 @@ def resolved_example(**overrides: object) -> ResolvedConfig:
 def resolved_example_real(**overrides: object) -> ResolvedConfig:
     """``example_config_real`` resolved."""
     return resolve_config(example_config_real(**overrides))
+
+
+# --- the book the golden tests run over: the first two of the shipped hundred accounts ---
+
+
+TWO_ACCOUNTS = "portfolio_id,solve_order\nP1,0\nP2,1\n"
+"""A portfolio list of two accounts. Every other table is the shipped one: a loader returns only the rows the portfolio list asks for, so cutting the list cuts the book."""
+
+
+def two_account_book(root: Path, **files: str) -> Path:
+    """The example data copied to ``root``, cut to two accounts, with the named tables replaced."""
+    shutil.copytree(EXAMPLE_DATA, root, dirs_exist_ok=True)
+    for name, content in {"portfolios.csv": TWO_ACCOUNTS, **files}.items():
+        (root / name).write_text(content)
+    return root
+
+
+@pytest.fixture(scope="session")
+def book(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The two-account book, built once for the session; no test writes to it."""
+    return two_account_book(tmp_path_factory.mktemp("books") / "book")
 
 
 # --- one local Dask cluster for the whole session; runs connect to it by address so no test pays a cluster start ---

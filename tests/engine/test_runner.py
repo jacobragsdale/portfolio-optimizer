@@ -9,9 +9,9 @@ from portfolio_optimizer.domain.results import PortfolioFailure, PortfolioResult
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError
 from tests.conftest import EXAMPLE_DATA, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
-from tests.engine.support import EXAMPLE_ORDERS_P1, GIT, details_csv, example_book, execute, no_details_csv
+from tests.engine.support import EXAMPLE_ORDERS_P1, GIT, details_csv, details_without, example_book, execute
 
-CAPPED_P1 = details_csv("P1", max_weight="0.25")
+CAPPED_P1 = {"details.csv": details_csv(P1={"max_weight": "0.25"})}
 """P1's cap at a quarter: three names cannot hold the 0.8 of NAV its cash bounds oblige it to invest, so its solve is infeasible."""
 
 
@@ -47,7 +47,7 @@ def test_every_earlier_portfolio_as_a_predecessor_matches_the_overlap_schedule(t
 
 
 def test_fail_fast_skips_every_lower_priority_portfolio_and_publishes_nothing(tmp_path: Path, scheduler_address: str) -> None:
-    data_root = example_book(tmp_path, **{"details/P1.csv": CAPPED_P1})
+    data_root = example_book(tmp_path, **CAPPED_P1)
     report = execute(tmp_path, scheduler_address=scheduler_address, data_root=data_root)
     assert report.exit_code == EXIT_PORTFOLIO_FAILED
     p1, p2 = report.outcomes
@@ -63,7 +63,7 @@ def test_fail_fast_skips_every_lower_priority_portfolio_and_publishes_nothing(tm
 
 
 def test_continue_isolates_a_failure_nothing_depended_on(tmp_path: Path, scheduler_address: str) -> None:
-    data_root = example_book(tmp_path, **{"details/P1.csv": CAPPED_P1})
+    data_root = example_book(tmp_path, **CAPPED_P1)
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
     assert report.exit_code == EXIT_PORTFOLIO_FAILED
     assert [type(o).__name__ for o in report.outcomes] == ["PortfolioFailure", "PortfolioResult"]
@@ -72,7 +72,7 @@ def test_continue_isolates_a_failure_nothing_depended_on(tmp_path: Path, schedul
 
 
 def test_continue_skips_the_portfolios_that_depended_on_the_failure_and_names_it(tmp_path: Path, scheduler_address: str) -> None:
-    data_root = example_book(tmp_path, **{"details/P1.csv": CAPPED_P1})
+    data_root = example_book(tmp_path, **CAPPED_P1)
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioFailure) and p1.stage == "solve"
@@ -82,8 +82,8 @@ def test_continue_skips_the_portfolios_that_depended_on_the_failure_and_names_it
 
 
 def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_path: Path, scheduler_address: str) -> None:
-    holdings = (EXAMPLE_DATA / "holdings" / "P2.csv").read_text().replace("P2,B,10000,40", "P2,Z,10000,40")
-    data_root = example_book(tmp_path, **{"holdings/P2.csv": holdings})
+    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P2,B,10000,40", "P2,Z,10000,40")
+    data_root = example_book(tmp_path, **{"holdings.csv": holdings})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioResult)
@@ -93,8 +93,8 @@ def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_pa
 
 
 def test_a_failed_build_is_treated_as_overlapping_everything_after_it(tmp_path: Path, scheduler_address: str) -> None:
-    holdings = (EXAMPLE_DATA / "holdings" / "P1.csv").read_text().replace("P1,B,10000,40", "P1,Z,10000,40")
-    data_root = example_book(tmp_path, **{"holdings/P1.csv": holdings})
+    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P1,B,10000,40", "P1,Z,10000,40")
+    data_root = example_book(tmp_path, **{"holdings.csv": holdings})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioFailure) and p1.stage == "build"
@@ -102,8 +102,8 @@ def test_a_failed_build_is_treated_as_overlapping_everything_after_it(tmp_path: 
 
 
 def test_a_portfolio_whose_bundle_is_inconsistent_fails_at_slice(tmp_path: Path, scheduler_address: str) -> None:
-    details = {f"details/{pid}.csv": details_csv(pid, state="NEW YORK") for pid in ("P1", "P2")}  # a string the frame schema types but the account model refuses
-    data_root = example_book(tmp_path, **details)
+    new_york = {"state": "NEW YORK"}  # a string the frame schema types but the account model refuses
+    data_root = example_book(tmp_path, **{"details.csv": details_csv(P1=new_york, P2=new_york)})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
     assert [outcome.stage for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)] == ["slice", "slice"]
     assert "String should match pattern" in report.outcomes[0].message  # ty: ignore[unresolved-attribute]  # both outcomes are failures, asserted above
@@ -126,7 +126,7 @@ def test_sink_failure_is_infrastructure_and_the_manifest_still_records_it(tmp_pa
 
 
 def test_a_portfolio_the_inputs_do_not_cover_fails_alone_and_the_rest_of_the_book_solves(tmp_path: Path, scheduler_address: str) -> None:
-    data_root = example_book(tmp_path, **{"details/P2.csv": no_details_csv("P2")})
+    data_root = example_book(tmp_path, **{"details.csv": details_without("P2")})
     report = execute(tmp_path, scheduler_address=scheduler_address, data_root=data_root, on_error="continue")
     assert report.exit_code == EXIT_PORTFOLIO_FAILED
     solved, failed = report.solved, report.failed
@@ -137,7 +137,7 @@ def test_a_portfolio_the_inputs_do_not_cover_fails_alone_and_the_rest_of_the_boo
 
 
 def test_a_required_dataset_that_does_not_load_at_all_still_rejects_the_run(tmp_path: Path, scheduler_address: str) -> None:
-    data_root = example_book(tmp_path, **dict.fromkeys(("holdings/P1.csv", "holdings/P2.csv"), "portfolio_id,security_id,quantity\n"))
+    data_root = example_book(tmp_path, **{"holdings.csv": "portfolio_id,security_id,quantity\n"})
     with pytest.raises(InputRejectedError, match="holdings"):
         execute(tmp_path, scheduler_address=scheduler_address, data_root=data_root)
 

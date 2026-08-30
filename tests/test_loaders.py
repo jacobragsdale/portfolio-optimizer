@@ -1,112 +1,150 @@
-"""Tier 3/5: the shipped file loaders declare dtypes at the boundary and reject malformed input."""
+"""Tier 3/5: the shipped loaders fetch what the request asks for, type it at the boundary, and pace themselves against the input's rate limit."""
 
 import asyncio
 import json
+import time
 from decimal import Decimal
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from portfolio_optimizer.domain.data import LoadRequest
 from portfolio_optimizer.domain.frames import validate_frame
-from portfolio_optimizer.domain.schemas import CONSTRAINTS, HOLDINGS, UNIVERSE
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, PORTFOLIOS, UNIVERSE
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.loaders import CsvParams, CsvPerPortfolioParams, ParquetParams, csv, csv_per_portfolio, parquet
+from portfolio_optimizer.loaders import (
+    CUSTODIAN,
+    SECURITY_MASTER,
+    Latency,
+    ParametersParams,
+    ServiceParams,
+    load_constraints,
+    load_details,
+    load_holdings,
+    load_parameters,
+    load_portfolios,
+    load_universe,
+)
 from portfolio_optimizer.ratelimit import RateLimit, RateLimiter
-from tests.conftest import AS_OF, EXAMPLE_DATA, Frames
+from tests.conftest import AS_OF, EXAMPLE_DATA
+
+INSTANT = ServiceParams(min_latency_s=0, max_latency_s=0)
+"""Every shipped loader's simulated wait turned off; a test pays for the read and nothing else."""
 
 
-def request(dataset: str, root: Path = EXAMPLE_DATA) -> LoadRequest:
-    return LoadRequest(dataset=dataset, portfolio_ids=(PortfolioId("P1"),), as_of_date=AS_OF, data_root=root, run_id="test")
+def request(dataset: str, *portfolio_ids: str, root: Path = EXAMPLE_DATA, rate_limiter: RateLimiter | None = None) -> LoadRequest:
+    ids = tuple(PortfolioId(portfolio_id) for portfolio_id in portfolio_ids)
+    limiter = rate_limiter if rate_limiter is not None else RateLimiter.unlimited()
+    return LoadRequest(dataset=dataset, portfolio_ids=ids, as_of_date=AS_OF, data_root=root, run_id="test", rate_limiter=limiter)
 
 
-def test_csv_loads_an_engine_dataset_with_schema_dtypes() -> None:
-    holdings = csv(request("holdings"), CsvParams(path="holdings/P1.csv"))
+# --- what each service answers, and how it is typed on the way in ---
+
+
+def test_the_book_of_record_returns_every_account_and_its_priority() -> None:
+    portfolios = asyncio.run(load_portfolios(request("portfolios"), INSTANT))
+    validate_frame(portfolios, PORTFOLIOS)
+    assert len(portfolios) == 100
+    assert portfolios["portfolio_id"].tolist()[:2] == ["P1", "P2"]
+    assert portfolios["solve_order"].tolist()[:2] == [0, 1]
+
+
+def test_the_custodian_answers_only_for_the_accounts_asked_for_with_money_as_decimal() -> None:
+    holdings = asyncio.run(load_holdings(request("holdings", "P2"), INSTANT))
     validate_frame(holdings, HOLDINGS)
-    assert holdings["avg_cost"].iloc[0] == Decimal(100)
+    assert holdings["portfolio_id"].unique().tolist() == ["P2"]
+    assert holdings["avg_cost"].tolist() == [Decimal(100), Decimal(40)]
     assert str(holdings["acquired_on"].dtype) == "datetime64[ns, UTC]"
 
 
-def test_csv_loads_an_extra_dataset_with_the_kinds_its_dtypes_declare(tmp_path: Path) -> None:
-    (tmp_path / "analytics.csv").write_text("security_id,score\nA,100\nB,50\nC,10\n")
-    analytics = csv(request("analytics", tmp_path), CsvParams(path="analytics.csv", dtypes={"security_id": "string", "score": "decimal"}))
-    assert analytics["score"].tolist() == [Decimal(100), Decimal(50), Decimal(10)]
-    assert str(analytics["security_id"].dtype) in ("str", "string", "object")
+def test_the_security_master_answers_for_the_book_rather_than_per_account() -> None:
+    universe = asyncio.run(load_universe(request("universe"), INSTANT))
+    validate_frame(universe, UNIVERSE)
+    assert universe["security_id"].tolist() == ["A", "B", "C"]
+    assert universe["price"].tolist() == [Decimal(100), Decimal(50), Decimal(10)]
+    assert universe["restricted"].tolist() == [False, False, False], "a boolean column is read strictly, not by truthiness"
 
 
-def test_csv_types_an_extra_dataset_timestamp_from_its_declared_kind(tmp_path: Path) -> None:
-    (tmp_path / "signals.csv").write_text("security_id,published_at,live\nA,2026-08-28T00:00:00Z,true\n")
-    signals = csv(request("signals", tmp_path), CsvParams(path="signals.csv", dtypes={"security_id": "string", "published_at": "datetime_utc", "live": "bool"}))
-    assert str(signals["published_at"].dtype) == "datetime64[ns, UTC]"
-    assert str(signals["live"].dtype) == "bool"
+def test_the_account_master_takes_a_batch_of_ids_and_returns_a_row_each() -> None:
+    details = load_details(request("details", "P1", "P2"), INSTANT)
+    validate_frame(details, DETAILS)
+    assert details["portfolio_id"].tolist() == ["P1", "P2"]
+    assert details["name"].tolist() == ["Alpha Growth", "Beta Income"]
+    assert details["max_weight"].tolist() == [Decimal("0.4"), Decimal("0.6")]
 
 
-def test_csv_leaves_a_column_no_kind_is_declared_for_to_pandas(tmp_path: Path) -> None:
-    (tmp_path / "signals.csv").write_text("security_id,rank\nA,3\n")
-    signals = csv(request("signals", tmp_path), CsvParams(path="signals.csv", dtypes={"security_id": "string"}))
-    assert signals["rank"].iloc[0] == 3
-
-
-def test_csv_reads_booleans_strictly(tmp_path: Path) -> None:
-    (tmp_path / "universe.csv").write_text("security_id,price,sector,adv_shares,lot_size,restricted\nA,10,TECH,1,1,maybe\n")
-    with pytest.raises(ValueError, match="maybe"):
-        csv(request("universe", tmp_path), CsvParams(path="universe.csv"))
-
-
-def test_parquet_round_trips_decimal_columns(tmp_path: Path, frames: Frames) -> None:
-    universe = frames.universe({"security_id": "A", "price": Decimal("12.34")})
-    universe.to_parquet(tmp_path / "universe.parquet", index=False)
-    loaded = parquet(request("universe", tmp_path), ParquetParams(path="universe.parquet"))
-    validate_frame(loaded, UNIVERSE)
-    assert loaded["price"].iloc[0] == Decimal("12.34")
-
-
-def test_parquet_extra_dataset_converts_float_columns_to_decimal(tmp_path: Path) -> None:
-    pd.DataFrame({"security_id": ["A"], "price": [0.1]}).to_parquet(tmp_path / "prices.parquet", index=False)
-    loaded = parquet(request("prices", tmp_path), ParquetParams(path="prices.parquet", dtypes={"price": "decimal"}))
-    assert loaded["price"].iloc[0] == Decimal("0.1")
-
-
-def test_csv_loads_the_example_constraints_with_the_desks_own_columns_untouched() -> None:
-    constraints = csv(request("constraints"), CsvParams(path="constraints.csv"))
+def test_compliance_returns_the_desks_own_columns_untouched() -> None:
+    constraints = asyncio.run(load_constraints(request("constraints", "P1"), INSTANT))
     validate_frame(constraints, CONSTRAINTS)
     assert set(constraints.columns) == {"portfolio_id", "name", "label", "params"}, "the schema declares only portfolio_id; the rest arrive as the desk wrote them"
     band = constraints.loc[constraints["label"] == "tech", "params"].iloc[0]
     assert json.loads(str(band)) == {"sector": "TECH", "lower": "0.5", "upper": "1"}
 
 
-def _per_portfolio_files(root: Path) -> None:
-    (root / "holdings").mkdir()
-    (root / "holdings" / "P1.csv").write_text("portfolio_id,security_id,quantity,avg_cost,acquired_on\nP1,A,100,90.5,2024-01-15T00:00:00Z\n")
-    (root / "holdings" / "P2.csv").write_text("portfolio_id,security_id,quantity,avg_cost,acquired_on\nP2,B,200,40,2025-06-01T00:00:00Z\nP2,C,300,9.25,2025-06-01T00:00:00Z\n")
+def test_the_parameter_store_fetches_the_set_the_dataset_names() -> None:
+    parameters = asyncio.run(load_parameters(request("global_parameters"), ParametersParams(min_latency_s=0, max_latency_s=0)))
+    assert dict(zip(parameters["name"], parameters["value"], strict=True)) == {"risk_aversion": Decimal("2.5"), "max_names": Decimal(150)}
+    named = ParametersParams(min_latency_s=0, max_latency_s=0, set_name="buy_universe_parameters")
+    other = asyncio.run(load_parameters(request("whatever_the_desk_calls_it"), named))
+    assert other["name"].tolist() == ["min_adv_shares"]
 
 
-def test_csv_per_portfolio_fans_out_under_the_rate_limit_and_keeps_portfolio_order(tmp_path: Path) -> None:
-    _per_portfolio_files(tmp_path)
-
-    async def scenario() -> tuple[pd.DataFrame, RateLimiter]:
-        limiter = RateLimiter(RateLimit(max_in_flight=1), name="files")
-        request = LoadRequest(dataset="holdings", portfolio_ids=(PortfolioId("P2"), PortfolioId("P1")), as_of_date=AS_OF, data_root=tmp_path, run_id="test", rate_limiter=limiter)
-        return await csv_per_portfolio(request, CsvPerPortfolioParams(directory="holdings")), limiter
-
-    holdings, limiter = asyncio.run(scenario())
-    validate_frame(holdings, HOLDINGS)
-    assert holdings["portfolio_id"].tolist() == ["P2", "P2", "P1"]
-    assert holdings["avg_cost"].tolist() == [Decimal(40), Decimal("9.25"), Decimal("90.5")]
-    assert limiter.acquired == 2
+def test_a_global_input_still_fetches_the_book_and_not_the_firm() -> None:
+    constraints = asyncio.run(load_constraints(request("constraints", "P1", "P2"), INSTANT))
+    assert constraints["portfolio_id"].unique().tolist() == ["P1", "P2"], "a global input receives every id, so the query is filtered to the accounts in the run"
 
 
-def test_csv_per_portfolio_with_no_portfolios_returns_an_empty_frame_with_the_schema_columns(tmp_path: Path) -> None:
-    request = LoadRequest(dataset="holdings", portfolio_ids=(), as_of_date=AS_OF, data_root=tmp_path, run_id="test")
-    holdings = asyncio.run(csv_per_portfolio(request, CsvPerPortfolioParams(directory="holdings")))
+def test_an_account_the_source_has_no_rows_for_comes_back_empty_rather_than_raising() -> None:
+    details = load_details(request("details", "P404"), INSTANT)
+    assert len(details) == 0, "a missing account is a coverage problem the engine fails alone, not a dataset failure"
+
+
+def test_no_accounts_asked_for_returns_an_empty_frame_with_the_schema_columns() -> None:
+    holdings = asyncio.run(load_holdings(request("holdings"), INSTANT))
     assert len(holdings) == 0
     assert list(holdings.columns) == [column.name for column in HOLDINGS.columns]
 
 
-def test_csv_per_portfolio_names_the_portfolio_whose_file_is_missing(tmp_path: Path) -> None:
-    _per_portfolio_files(tmp_path)
-    request = LoadRequest(dataset="holdings", portfolio_ids=(PortfolioId("P1"), PortfolioId("P9")), as_of_date=AS_OF, data_root=tmp_path, run_id="test")
-    with pytest.raises(ExceptionGroup) as info:
-        asyncio.run(csv_per_portfolio(request, CsvPerPortfolioParams(directory="holdings")))
-    assert info.group_contains(FileNotFoundError, match="P9.csv")
+# --- fan-out, rate limits, and the simulated wait ---
+
+
+def test_the_custodian_fans_out_under_the_rate_limit_and_keeps_the_requests_order() -> None:
+    async def scenario() -> tuple[list[str], RateLimiter]:
+        limiter = RateLimiter(RateLimit(max_in_flight=1), name="custodian")
+        holdings = await load_holdings(request("holdings", "P2", "P1", rate_limiter=limiter), INSTANT)
+        return [str(value) for value in holdings["portfolio_id"]], limiter
+
+    ordered, limiter = asyncio.run(scenario())
+    assert ordered == ["P2", "P2", "P1", "P1"], "results come back in the order the request listed the accounts, not the order the calls finished"
+    assert limiter.acquired == 2, "one acquisition per account, because this source answers one account per call"
+
+
+def test_the_blocking_loader_draws_from_the_same_pool_through_the_sync_bridge() -> None:
+    async def scenario() -> RateLimiter:
+        limiter = RateLimiter(RateLimit(max_in_flight=2), name="account_master")
+        await asyncio.to_thread(load_details, request("details", "P1", "P2", rate_limiter=limiter), INSTANT)
+        return limiter
+
+    assert asyncio.run(scenario()).acquired == 1, "one query for the whole batch"
+
+
+def test_a_loader_waits_as_long_as_its_service_would() -> None:
+    slow = ServiceParams(min_latency_s=0.05, max_latency_s=0.05)
+    started = time.perf_counter()
+    asyncio.run(load_universe(request("universe"), slow))
+    assert time.perf_counter() - started >= 0.05
+
+
+def test_the_wait_is_drawn_from_the_loaders_own_band_unless_the_config_overrides_it() -> None:
+    assert ServiceParams().latency(CUSTODIAN) == CUSTODIAN
+    assert ServiceParams(min_latency_s=4).latency(CUSTODIAN) == Latency(4, 4), "an override below the band's floor cannot outlive its ceiling"
+    assert ServiceParams(max_latency_s=0).latency(SECURITY_MASTER) == Latency(0, 0)
+    with pytest.raises(ValueError, match="min_latency_s must not exceed max_latency_s"):
+        ServiceParams(min_latency_s=2, max_latency_s=1)
+
+
+def test_the_wait_is_the_same_every_time_a_run_makes_the_same_call() -> None:
+    band = Latency(0.5, 30.0)
+    assert band.draw("run-1:universe:") == band.draw("run-1:universe:")
+    assert band.draw("run-1:universe:") != band.draw("run-2:universe:"), "two runs of one config wait different amounts; one run reproduces its own"
+    assert all(band.low_s <= band.draw(f"run-1:holdings:P{i}") <= band.high_s for i in range(20))

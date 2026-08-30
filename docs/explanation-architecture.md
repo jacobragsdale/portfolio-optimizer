@@ -26,9 +26,14 @@ logic that produced it, and two runs can be compared to find whether code, data,
 ## Loading is the slow part, so it is concurrent and metered
 
 In production the datasets come from APIs and databases, and waiting on them dominates a run. The load
-stage is therefore asynchronous: after the portfolio list — whose ids every other request needs — all
-dataset loaders start at once, `async def` loaders on the event loop and plain ones in worker threads.
-Loaders are the only step kind that may be async; everything downstream is pure and synchronous.
+stage is therefore asynchronous and runs the dependency DAG the config declares: each dataset starts
+the moment the datasets its entry depends on have loaded — with no dependencies, immediately — with
+`async def` loaders on the event loop and plain ones in worker threads. The DAG is declared rather
+than inferred, because the engine cannot see inside a loader: only the config can say that compliance
+needs the book's ids while the security master needs nothing. `portfolios` is just the node the
+per-account inputs depend on, so the stage costs its longest chain — in the example the security
+master's scan — rather than the book of record plus everything behind it. Loaders are the only step
+kind that may be async; everything downstream is pure and synchronous.
 
 A backend has limits, and a source that answers one portfolio per call will hit them on a large run.
 Backends also differ: a vendor API may tolerate two concurrent requests where a warehouse takes

@@ -7,6 +7,73 @@ and leaves this file. The last section is the exception: known defects and trail
 already and waiting only to be done. Numbers below are for a book of *N* = 100,000 unique securities,
 which a business unit can exceed — measured where the text says so, estimated otherwise.
 
+## The derived solve graph is the headline feature, and nothing here says so
+
+The state of the art in production rebalancing is parallel builds and a sequential solve. The
+sequential half is not laziness: it is what a chain-aware constraint forces. `cumulative_adv_participation`
+is the ordinary example — an account may take its share of a name's daily volume only after the
+accounts ahead of it have taken theirs — so account *j*'s feasible set depends on what *1…j−1*
+actually traded, and the safe reading of that dependency is a line. *N* solves end to end, wall clock
+*N* × solve. At the 9.8 s the measured 100k book takes, five hundred accounts is eighty minutes of
+solving on a cluster that is idle for all but one core of it.
+
+The line is a worst case, not the truth. Two accounts that cannot trade a security in common cannot
+affect each other's feasible set, whatever their constraints read. The real object is a DAG, and the
+engine derives it rather than being told it:
+
+- `order_portfolios` fixes the priority order from the data (`solve_order`, or a step that computes it).
+- `OverlapIndex` takes one portfolio's tradable set — the securities the side profile couples through,
+  buys under `both` and `buy` — and answers which *earlier* portfolios share one, without knowing the
+  portfolios still to come. Predecessors are direct and the graph is never transitively reduced,
+  because a solve folds its direct predecessors' own contributions.
+- Because every predecessor is earlier in the order, the graph can be grown a portfolio at a time:
+  `_stream_solves` walks the order and submits each solve as the build it has reached reports, so the
+  head of the book is solving while the tail is still building.
+- The manifest records the shape it derived: `coupling`, `edges`, `components`, `largest_component`,
+  `critical_path`.
+
+So the wall clock is `critical_path` × solve, not *N* × solve, and independent components solve at
+once, bounded only by workers. What makes that a claim rather than an assertion is `dependencies: all`,
+the line, kept deliberately: a test runs the same book both ways and asserts the spec hashes, the chain
+hashes, and the orders are identical. The fast schedule and the safe one agree, and anyone can check it
+on their own book with one config key.
+
+Nothing in the repository leads with this. The README's `execution` bullet describes `dependencies` in
+terms of what happens when a portfolio fails; `how-to-set-the-solve-order.md` is about the key, not the
+graph; the schedule's own docstring is the only place the mechanism is explained, and it is in the
+engine. A reader has to reach the layout table to learn a dependency graph exists at all.
+
+Three pieces of work, in order:
+
+1. **Lead with it.** A paragraph at the top of the README and a section in the architecture explanation
+   that states the problem (chain-aware constraints serialize a book), the derivation (overlap on the
+   coupled side), and the check (`all` gives the same answer). It wants the one diagram this repository
+   does not have: a book of accounts, the edges overlap actually produces, and the critical path
+   through it against the line beside it.
+2. **Measure it.** Nothing measures the schedule at scale — `benchmarks/profile_portfolio.py` times
+   *one* portfolio, and the schedule the shipped example derives is the degenerate one (below). The
+   number that carries the argument is a book-level benchmark: *N* accounts over a shared universe with
+   a realistic overlap structure, reporting edges, components, critical path, and wall clock against
+   `dependencies: all` on the same cluster. Until that exists the feature is a design claim, not a
+   result.
+3. **Say where it degenerates.** Overlap is on *any* shared tradable security, so a book whose accounts
+   all buy from one universe is a complete DAG and the critical path is the line again. The shipped
+   example is exactly that case and says so in its own manifest — 100 accounts over three securities:
+   `edges 4950, components 1, largest_component 100, critical_path 100`, every solve waiting on every
+   earlier one. That is the honest case, and the one a reader will have. The win as it stands belongs
+   to books partitioned by strategy, universe, or restriction list, where the components are real.
+
+Which points at the thread that would make it bite everywhere. The engine couples two portfolios when
+their tradable sets intersect, because a constraint is opaque data and that is the widest safe reading.
+But a chain-aware constraint knows more than the engine does: `cumulative_adv_participation` couples
+only through names whose budget can actually bind, and on a 100k universe rebalanced at ordinary
+turnover that is a small fraction of the tradable set. If the constraint contract — the behavioural
+union in the constraints thread above, which already declares *whether* a constraint reads the chain —
+also declared the securities it couples *through*, `OverlapIndex` would index those instead, and a
+single-universe book would stop being one component. That is the same declaration the engine already
+asks for, made one field more specific, and it is what turns the graph from a structural win into a
+numerical one.
+
 ## Where the time goes at 100k names: the solver, not the build
 
 Measured 2026-08-29 with `benchmarks/profile_portfolio.py` — one portfolio, the shipped rules, terms,
@@ -697,6 +764,10 @@ in flight, which is exactly the case that matters most.
 
 ## Other threads
 
+- **Batch-level pipelining in the load DAG.** A dataset that depends on a `per_portfolio` dataset
+  waits for every batch today and receives the concatenated frame; letting batch *i* of a dependent
+  start when batch *i* of its dependency lands would overlap the two fan-outs. Worth building only
+  when a real book shows the wait matters — the manifest's `started_s` per dataset is where it would show.
 - **Tax lots.** Holdings are security-level with an average cost. Lot-level tax needs one sell variable
   per lot (*N* + *L* variables, lot-to-security aggregation as one more sparse matrix), changes the
   holdings schema and `orders.py`, and is the first extension that would reopen the question of where
@@ -734,7 +805,9 @@ higher than the one the solver reported, and `verify` fails the portfolio with a
 regardless — they derive from `w` alone (`engine/orders.py`), and a round trip does not change `w`.
 
 Found on 2026-08-29 by the profile's synthetic book (`benchmarks/profile_portfolio.py`): 500 held
-names, half at a loss, 5 bps `tcost_bps`. The example data cannot show it: no losses, no cost column.
+names, half at a loss, 5 bps `tcost_bps`. The example data cannot show it, and not by accident — every
+lot in `examples/data/holdings.csv` is at a gain or flat, because an account holding a loss makes the
+shipped run fail this way.
 Only the two-sided profile can have this problem — a one-sided run has one vector and no round trip to
 strip — so it belongs to a deferred path, and the first fix below is the one still worth doing.
 

@@ -13,8 +13,9 @@ import pandas as pd
 
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, scale, total
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
+from portfolio_optimizer.domain.frames import ColumnSpec, FrameSchema, coerce_frame
 from portfolio_optimizer.domain.results import Artifact, ProblemSpec
-from portfolio_optimizer.loaders import CsvPerPortfolioParams, csv_per_portfolio
+from portfolio_optimizer.loaders import ServiceParams, load_holdings
 from portfolio_optimizer.rules import parameter
 from portfolio_optimizer.solvers import cvxpy
 from portfolio_optimizer.solving import SolveRequest, SolveResult
@@ -109,6 +110,36 @@ def barrier_loader(request: LoadRequest) -> pd.DataFrame:
     return pd.DataFrame({"portfolio_id": pd.Series(list(request.portfolio_ids), dtype="string")})
 
 
+def barrier_portfolios_loader(request: LoadRequest) -> pd.DataFrame:
+    """A book of record that answers only once another barrier loader is in flight — proof the book no longer loads alone."""
+    del request
+    _SYNC_BARRIER.wait()
+    return pd.DataFrame({"portfolio_id": pd.Series(["P1", "P2"], dtype="string"), "solve_order": pd.Series([0, 1], dtype="Int64")})
+
+
+def inputs_reporting_loader(request: LoadRequest) -> pd.DataFrame:
+    """Report what the engine handed this loader: each input frame's name and row count, and the ids of the call."""
+    names = sorted(request.inputs)
+    return pd.DataFrame(
+        {
+            "input": pd.Series(names, dtype="string"),
+            "rows": pd.Series([len(request.inputs[name]) for name in names], dtype="Int64"),
+            "ids": pd.Series([",".join(request.portfolio_ids)] * len(names), dtype="string"),
+        }
+    )
+
+
+INPUT_VIEWS: list[tuple[tuple[str, ...], tuple[str, ...], int]] = []
+"""Per call of ``recording_inputs_holdings``: the batch's ids, the ids in its ``portfolios`` input, and its ``universe`` input's rows. Cleared by each test that uses it."""
+
+
+async def recording_inputs_holdings(request: LoadRequest) -> pd.DataFrame:
+    """The custodian mock, recording the view of its inputs each batch received."""
+    portfolios = request.inputs["portfolios"]
+    INPUT_VIEWS.append((tuple(str(value) for value in request.portfolio_ids), tuple(str(value) for value in portfolios["portfolio_id"]), len(request.inputs["universe"])))
+    return await load_holdings(request, ServiceParams(min_latency_s=0, max_latency_s=0))
+
+
 async def async_barrier_loader(request: LoadRequest) -> pd.DataFrame:
     """The async twin of ``barrier_loader``; two of these must be in flight together."""
     global _ASYNC_BARRIER  # noqa: PLW0603  # one barrier per event loop, shared by the two loaders of a test
@@ -143,6 +174,15 @@ def unreachable_loader(request: LoadRequest) -> pd.DataFrame:
     raise ConnectionError(msg)
 
 
+BUY_LIST = FrameSchema(name="buy_list", columns=(ColumnSpec("portfolio_id", "string"), ColumnSpec("security_id", "string")), key=("portfolio_id", "security_id"))
+"""The shape of an extra dataset a desk loads for itself: the engine knows nothing about it, so its loader types it."""
+
+
+def load_buy_list(request: LoadRequest) -> pd.DataFrame:
+    """The securities each account may buy, from its own source."""
+    return coerce_frame(pd.read_csv(request.data_root / "buy_list.csv", dtype={"portfolio_id": "string", "security_id": "string"}), BUY_LIST)
+
+
 def limiter_naming_portfolios_loader(request: LoadRequest) -> pd.DataFrame:
     """A portfolio list whose single id is the name of the limiter the engine handed this input."""
     with request.rate_limiter.sync:
@@ -155,20 +195,20 @@ def last_portfolio_id_first(data: PortfolioData) -> Decimal:
 
 
 BATCHES: list[tuple[str, ...]] = []
-"""Every batch of ids the engine handed :func:`recording_csv`, in call order; a test clears it first."""
+"""Every batch of ids the engine handed :func:`recording_holdings`, in call order; a test clears it first."""
 
 
-class RecordingCsvParams(CsvPerPortfolioParams):
-    """:class:`CsvPerPortfolioParams` plus the portfolios this source has no data for."""
+class RecordingLoaderParams(ServiceParams):
+    """:class:`ServiceParams` plus the portfolios this source has no data for."""
 
     fails_for: tuple[str, ...] = ()
 
 
-async def recording_csv(request: LoadRequest, params: RecordingCsvParams) -> pd.DataFrame:
-    """A per-portfolio loader that records the batch it was given, reads that batch's rows, and refuses a batch holding a portfolio it has no data for."""
+async def recording_holdings(request: LoadRequest, params: RecordingLoaderParams) -> pd.DataFrame:
+    """A per-portfolio loader that records the batch it was given, fetches that batch's rows, and refuses a batch holding a portfolio it has no data for."""
     BATCHES.append(tuple(request.portfolio_ids))
     refused = sorted(set(request.portfolio_ids) & set(params.fails_for))
     if refused:
         msg = f"{request.dataset}: no data for {refused}"
         raise ValueError(msg)
-    return await csv_per_portfolio(request, params)
+    return await load_holdings(request, params)

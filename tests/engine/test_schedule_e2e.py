@@ -25,25 +25,23 @@ ALPHAS = {"A": "0.01", "B": "0.02", "C": "0.03", "D": "0.04", "E": "0.05"}
 
 
 def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
-    """Write a random book: per-account holdings and details, per-portfolio buy lists, tying priorities; one shared universe."""
+    """Write a random book: holdings and details for every account, per-portfolio buy lists, tying priorities; one shared universe."""
     root.mkdir()
     portfolio_ids = [f"P{index}" for index in range(1, portfolios + 1)]
-    holdings_header = "portfolio_id,security_id,quantity,avg_cost,acquired_on"
-    details_header = "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,max_weight,max_turnover,max_adv_participation,min_trade_notional,cash_lb,cash_ub"
+    holdings = ["portfolio_id,security_id,quantity,avg_cost,acquired_on"]
+    details = ["portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,max_weight,max_turnover,max_adv_participation,min_trade_notional,cash_lb,cash_ub"]
     style = "1,2,0.25,0,0,0"  # the example's limits, which bind nothing here: the schedule is what this test is about
-    (root / "holdings").mkdir()
-    (root / "details").mkdir()
     buy_list = ["portfolio_id,security_id"]
     for portfolio_id in portfolio_ids:
         nav = 0
-        rows = [holdings_header]
         for security in sorted(rng.sample(SECURITIES, k=rng.randint(1, 3))):
             quantity = rng.randint(1, 4) * 1000
-            rows.append(f"{portfolio_id},{security},{quantity},{PRICES[security]},2024-01-15T00:00:00Z")
+            holdings.append(f"{portfolio_id},{security},{quantity},{PRICES[security]},2024-01-15T00:00:00Z")
             nav += quantity * PRICES[security]
-        (root / "holdings" / f"{portfolio_id}.csv").write_text("\n".join(rows) + "\n")
-        (root / "details" / f"{portfolio_id}.csv").write_text(f"{details_header}\n{portfolio_id},{portfolio_id} book,NY,0.40,0.20,0,{nav},{style}\n")
+        details.append(f"{portfolio_id},{portfolio_id} book,NY,0.40,0.20,0,{nav},{style}")
         buy_list.extend(f"{portfolio_id},{security}" for security in sorted(rng.sample(SECURITIES, k=rng.randint(1, 3))))
+    (root / "holdings.csv").write_text("\n".join(holdings) + "\n")
+    (root / "details.csv").write_text("\n".join(details) + "\n")
     (root / "portfolios.csv").write_text("\n".join(["portfolio_id,solve_order", *(f"{portfolio_id},{rng.randint(0, 1)}" for portfolio_id in portfolio_ids)]) + "\n")
     (root / "buy_list.csv").write_text("\n".join(buy_list) + "\n")
     (root / "buy_universe_parameters.csv").write_text("name,value\nmin_adv_shares,1000\n")
@@ -60,7 +58,7 @@ def run_book(tmp_path: Path, root: Path, dependencies: str, run_id: str) -> RunR
     example = example_body()
     example_datasets, example_rules = example["datasets"], example["rules"]
     assert isinstance(example_datasets, dict) and isinstance(example_rules, list)
-    datasets = {**example_datasets, "buy_list": {"loader": {"name": "csv", "params": {"path": "buy_list.csv", "dtypes": {"portfolio_id": "string", "security_id": "string"}}}}}
+    datasets = {**example_datasets, "buy_list": {"loader": "tests.steps:load_buy_list"}}
     rules = [*example_rules, "tests.steps:buy_only_listed"]
     return execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=root, run_id=run_id, dependencies=dependencies, datasets=datasets, rules=rules)
 

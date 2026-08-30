@@ -26,58 +26,59 @@ The quickest way to see what the engine does is to read the run it ships with,
     "tags": {"desk": "template"}
   },
 
-  // Runs first and alone: it returns the portfolio ids every other loader is told to fetch.
-  "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}},
-
-  // Everything else, all loaded at once as soon as the portfolio list is known.
+  // Every input the run loads. Each dataset starts the moment the datasets its `depends_on` names
+  // have loaded — with no dependencies, immediately — so the stage costs its longest chain rather
+  // than its sum. Each loader stands in for a service — a custodian, a security master, an account
+  // master — and waits as long as that source would; nothing here is a file read in a real run.
   "datasets": {
+    // The book of record: the portfolio ids and their solve priorities. A dataset like any other —
+    // only the inputs that ask for its ids wait on it. A fixed book can skip the loader and be
+    // written inline: "portfolios": ["P1", "P2"].
+    "portfolios": {"loader": "load_portfolios"},
+
     // `per_portfolio` is the engine's fan-out: one call per batch of accounts, `batch_size: 1`
-    // being a call each — the shape of a custodian that answers one at a time.
+    // being a call each — the shape of a custodian that answers one at a time — and it implies
+    // `depends_on: ["portfolios"]`. A hundred calls at once is more than a vendor allows, so this
+    // input names a pool.
     "holdings": {
-      "loader": {"name": "csv_per_portfolio", "params": {"directory": "holdings"}},
+      "loader": "load_holdings",
       "scope": "per_portfolio",
-      "batch_size": 1
+      "batch_size": 1,
+      "rate_limit": "custodian"
     },
 
-    // No `scope` means `global`: one call for the book, and the only datasets assembly sees.
-    "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
+    // No `scope` means `global`: one call for the book, and the only datasets assembly sees. No
+    // `depends_on` means it starts at once — this one is the run's long pole, and it no longer
+    // waits for the book of record to answer first.
+    "universe": {"loader": "load_universe"},
 
-    // The account master: NAV, cash, tax rates, style limits. `batch_size: 2` hands the loader
-    // two ids per call — the shape of a source that takes a list.
+    // The account master: NAV, cash, tax rates, style limits. `batch_size: 25` hands the loader
+    // twenty-five ids per call — the shape of a source that takes a list — and the bound is inline
+    // because the firm's own database is nobody else's budget to share.
     "details": {
-      "loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
+      "loader": "load_details",
       "scope": "per_portfolio",
-      "batch_size": 2
+      "batch_size": 25,
+      "rate_limit": {"max_in_flight": 4}
     },
 
     // Which constraints bind each account and how tight they are. The engine reads only
-    // `portfolio_id`; the solve step interprets every other column.
-    "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
+    // `portfolio_id`; the solve step interprets every other column. `depends_on` hands the loader
+    // the book's ids as `request.portfolio_ids`, so compliance is asked about the book, not the firm.
+    "constraints": {"loader": "load_constraints", "depends_on": ["portfolios"]},
 
-    // A name the engine does not know is an extra: carried untouched to the rules and on to
-    // the solve step, which is where runtime parameters belong. `dtypes` types what no
-    // schema can.
-    "global_parameters": {
-      "loader": {
-        "name": "csv",
-        "params": {
-          "path": "global_parameters.csv",
-          "dtypes": {"name": "string", "value": "decimal"}
-        }
-      }
-    },
+    // A name the engine does not know is an extra: carried untouched to the rules and on to the
+    // solve step, which is where runtime parameters belong. One loader, two sets, each named by
+    // its dataset.
+    "global_parameters": {"loader": "load_parameters"},
 
     // The same shape, read earlier: `restrict_low_liquidity` takes its `min_adv_shares` here.
-    "buy_universe_parameters": {
-      "loader": {
-        "name": "csv",
-        "params": {
-          "path": "buy_universe_parameters.csv",
-          "dtypes": {"name": "string", "value": "decimal"}
-        }
-      }
-    }
+    "buy_universe_parameters": {"loader": "load_parameters"}
   },
+
+  // Named pools inputs share. `holdings` is the only one here that names this pool, but a second
+  // input on the same vendor would draw from the same budget rather than a second one.
+  "rate_limits": {"custodian": {"requests_per_second": 20, "burst": 20, "max_in_flight": 8}},
 
   // Applied in order to each portfolio's bundle; a rule never sees another portfolio.
   "rules": ["restrict_low_liquidity"],
@@ -119,9 +120,13 @@ that kind of step, or by `package.module:function`, with optional `params` (see
 - **`run`** — the run's identity. `name` and `tags` go into the manifest; `as_of_date` is the timezone-aware
   instant the run is *as of* — every loader receives it, and it decides whether each tax lot is long- or
   short-term.
-- **`portfolios`** — the one loader that runs first and alone. It returns the portfolio ids and,
-  optionally, a `solve_order` priority; every other loader is told which ids to fetch.
-- **`datasets`** — everything else to load, all at once, every one a frame. Three names are required and
+- **`datasets`** — everything the run loads, every one a frame, scheduled as the dependency DAG the
+  entries declare: a dataset starts the moment the datasets its `depends_on` names have loaded, and
+  one with no dependencies starts immediately, so the stage costs its longest chain rather than its
+  sum. `portfolios` is the required first fact — the portfolio ids and, optionally, a `solve_order`
+  priority — loaded like any dataset or written inline as a list of ids (the written order is the
+  solve order); an input that wants the book's ids as `request.portfolio_ids` names it in
+  `depends_on`, and a dependency's frames reach the loader as `request.inputs`. Three more names are required and
   validated against fixed schemas: `holdings`, `universe`, and `details` (the account's facts *and* its
   style limits); `constraints` is engine-known but optional. Any other name is an extra dataset
   the engine does not interpret: assembly steps see it, and whatever survives assembly reaches each
@@ -129,9 +134,11 @@ that kind of step, or by `package.module:function`, with optional `params` (see
   `universe` and `constraints` say nothing and are `global`: one call for the
   whole book, and the only datasets assembly sees. `holdings` and `details` are `per_portfolio`, so the engine calls their loaders per
   account rather than once for the book, and `batch_size` says how finely: `1` is a call per account,
-  the shape of a custodian that answers one at a time; `2` hands the loader two ids per call, the shape
-  of an account master that takes a list. It is also why a portfolio whose own inputs are missing fails
-  alone instead of stopping the run. An input from a throttled source adds a `rate_limit`.
+  the shape of a custodian that answers one at a time; `25` hands the loader twenty-five ids per call,
+  the shape of an account master that takes a list. It is also why a portfolio whose own inputs are
+  missing fails alone instead of stopping the run. An input whose source will not take a hundred calls
+  at once adds a `rate_limit`: a named pool it shares with the other inputs on that backend, or a bound
+  of its own.
 - **`rules`** — business logic, run per portfolio in order: each takes one portfolio's validated bundle
   and returns a modified one, and never sees other portfolios. The example runs one, freezing names too
   illiquid to trade at a threshold it reads from `buy_universe_parameters` rather than from the config;
@@ -154,12 +161,11 @@ that kind of step, or by `package.module:function`, with optional `params` (see
   work runs and how many workers there are is an environment setting, so a laptop run and a cluster run
   of one config hash identically.
 
-Five keys the example leaves at their defaults: `assembly` (steps that reshape the loaded datasets
+Four keys the example leaves at their defaults: `assembly` (steps that reshape the loaded datasets
 before the engine-known frames are validated — a `join` that attaches per-security analytics to
 `universe`, a `drop` for the dataset that supplied them), `sides` (`both`; `buy` or `sell` runs a
 one-sided problem a third the size), `solve` (`cvxpy`; a heuristic or your own library can replace it),
-`solve_order` (a step that computes each portfolio's priority from the data instead of the column), and
-`rate_limits` (named pools shared by inputs on one backend).
+and `solve_order` (a step that computes each portfolio's priority from the data instead of the column).
 
 Numbers — positions, prices, caps, bands, tax rates, a liquidity threshold — are never in the config;
 they live in the data, including the run's own parameters.
@@ -176,8 +182,10 @@ uv run --env-file .env portfolio-optimizer validate-config configs/example_run.j
 uv run --env-file .env portfolio-optimizer run configs/example_run.json
 ```
 
-The example runs two portfolios over three securities with a hand-checkable optimum; see
-[the tutorial](docs/tutorial-first-run.md) for what to expect at each step.
+The example runs a hundred accounts over three securities, and takes about half a minute of which
+almost all is the shipped loaders pretending to be the services they stand in for. Its first two
+accounts have a hand-checkable optimum; see [the tutorial](docs/tutorial-first-run.md) for what to
+expect at each step.
 
 ## The one convention
 
@@ -220,7 +228,7 @@ an editor; the engine accepts the key and ignores it.
 | `src/portfolio_optimizer/cvx/` | `adapter.py`, the only module that imports cvxpy, and `sides.py`, the side profiles' cvxpy half: each side's decision variables and trade identity. |
 | `src/portfolio_optimizer/solving.py` | The solve step's contract: `SolveRequest` in, `SolveResult` out. |
 | `src/portfolio_optimizer/ratelimit.py` | Rate-limit pools loaders draw from, and `fan_out` for sources that answer one portfolio per call. |
-| `configs/example_run.json`, `configs/run-config.schema.json`, `examples/data/` | The shipped example and the generated JSON Schema. |
+| `configs/example_run.json`, `configs/run-config.schema.json`, `examples/data/` | The shipped example — a hundred accounts over three securities, one CSV table per source — and the generated JSON Schema. |
 | `benchmarks/profile_portfolio.py` | Times one portfolio through the pipeline stage by stage at a chosen book size and side; the numbers in `IDEAS.md` come from it. |
 | `docs/` | Tutorial, how-to guides, reference, and explanation. |
 | `IDEAS.md` | Threads that are not yet decisions, and known defects waiting to be fixed. |

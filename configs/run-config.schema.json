@@ -312,7 +312,7 @@
     },
     "DatasetConfig": {
       "additionalProperties": false,
-      "description": "How one input is loaded, how its portfolios are partitioned across calls, and how hard its source may be pushed.",
+      "description": "How one input is loaded, what it depends on, how its portfolios are partitioned across calls, and how hard its source may be pushed.",
       "properties": {
         "batch_size": {
           "anyOf": [
@@ -325,8 +325,17 @@
             }
           ],
           "default": null,
-          "description": "How many portfolios one call of a `per_portfolio` loader is given, as `request.portfolio_ids`. `1` is a call per portfolio; a larger number batches a source that takes an id list; omitted, every portfolio goes in one call. Ignored for a `global` dataset, which never receives ids.",
+          "description": "How many portfolios one call of a `per_portfolio` loader is given, as `request.portfolio_ids`. `1` is a call per portfolio; a larger number batches a source that takes an id list; omitted, every portfolio goes in one call. Ignored for a `global` dataset, which is loaded by one call.",
           "title": "Batch Size"
+        },
+        "depends_on": {
+          "default": [],
+          "description": "Names of other `datasets` entries this one needs. The engine starts every dataset the moment its dependencies have loaded and hands their frames to the loader as `request.inputs`. Declare `portfolios` to receive the book's ids as `request.portfolio_ids`; a `per_portfolio` dataset depends on `portfolios` implicitly. Default: no dependencies, so the loader starts the moment the load stage does.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Depends On",
+          "type": "array"
         },
         "loader": {
           "$ref": "#/$defs/LoaderStep",
@@ -351,7 +360,7 @@
         "scope": {
           "$ref": "#/$defs/DatasetScope",
           "default": "global",
-          "description": "`global` (default): one call for the whole book, and the dataset is visible to every assembly step. `per_portfolio`: the engine partitions the portfolio ids into batches and calls the loader once per batch, so a source that answers per account is driven by the engine rather than by the loader; a batch that fails, or that comes back without a portfolio's rows, fails those portfolios alone at stage `load` and the run carries on. A per-portfolio dataset is not passed to assembly — attach its columns in a rule instead."
+          "description": "`global` (default): one call, and the dataset is visible to every assembly step. `per_portfolio`: the engine partitions the portfolio ids into batches and calls the loader once per batch, so a source that answers per account is driven by the engine rather than by the loader; a batch that fails, or that comes back without a portfolio's rows, fails those portfolios alone at stage `load` and the run carries on. A per-portfolio dataset is not passed to assembly — attach its columns in a rule instead."
         }
       },
       "required": [
@@ -367,6 +376,17 @@
         "per_portfolio"
       ],
       "type": "string"
+    },
+    "DatasetSpec": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DatasetConfig"
+        },
+        {
+          "$ref": "#/$defs/InlinePortfolios"
+        }
+      ],
+      "description": "One entry of `datasets`: a loaded input, or — for `portfolios` only — the inline list of ids."
     },
     "Dependencies": {
       "description": "Which higher-priority portfolios a portfolio waits for; see `execution.dependencies`.",
@@ -395,6 +415,26 @@
       "title": "ExecutionConfig",
       "type": "object"
     },
+    "InlinePortfolios": {
+      "additionalProperties": false,
+      "description": "The portfolio list written directly in the config instead of loaded: `{\"ids\": [\"P7\", \"P2\"]}`, or the bare array as shorthand.\n\nThe written order is the solve order — the first id solves first. Only the `portfolios` dataset may\nbe written inline; it costs nothing to load, so every dataset that depends on it starts at once.\nA book too large to write out, or one whose priorities come from data, uses a loader instead.",
+      "properties": {
+        "ids": {
+          "description": "The portfolio ids, in solve order: the first id solves first, and the engine records `solve_order` as the position.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "ids"
+      ],
+      "title": "InlinePortfolios",
+      "type": "object"
+    },
     "JoinCardinality": {
       "description": "Expected key cardinality of a join, enforced by pandas.",
       "enum": [
@@ -413,18 +453,10 @@
       "type": "string"
     },
     "LoaderStep": {
-      "$comment": "Shipped steps: ['csv', 'csv_per_portfolio', 'parquet']",
+      "$comment": "Shipped steps: ['load_constraints', 'load_details', 'load_holdings', 'load_parameters', 'load_portfolios', 'load_universe']",
       "anyOf": [
         {
-          "$comment": "These shipped steps have required parameters and must use the object form: ['csv', 'csv_per_portfolio', 'parquet']",
           "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
-          "not": {
-            "enum": [
-              "csv",
-              "csv_per_portfolio",
-              "parquet"
-            ]
-          },
           "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -435,7 +467,7 @@
               "if": {
                 "properties": {
                   "name": {
-                    "const": "csv"
+                    "const": "load_constraints"
                   }
                 },
                 "required": [
@@ -446,46 +478,47 @@
                 "properties": {
                   "params": {
                     "additionalProperties": false,
-                    "description": "Parameters for :func:`csv`.",
+                    "description": "What every shipped loader accepts: how long its source is pretended to take.\n\nEach loader draws a wait from its own band — :data:`SECURITY_MASTER` is tens of seconds, a\nparameter store is under one — seeded on the run id, the dataset, and the ids in the call, so two\nruns of one config wait the same amounts. Setting both fields overrides that band; setting both to\nzero removes the wait, which is what a test does. A real loader has none of this: delete the field\nand the wait, and keep the rest.",
                     "properties": {
-                      "dtypes": {
-                        "additionalProperties": {
-                          "enum": [
-                            "string",
-                            "Int64",
-                            "bool",
-                            "Float64",
-                            "decimal",
-                            "datetime_utc"
-                          ],
-                          "type": "string"
-                        },
-                        "description": "Column name to kind: `string`, `Int64`, `Float64`, `bool`, `decimal` (an exact `Decimal` — money, prices, rates), or `datetime_utc` (a timezone-aware timestamp).",
-                        "title": "Dtypes",
-                        "type": "object"
+                      "max_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Longest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Max Latency S"
                       },
-                      "path": {
-                        "minLength": 1,
-                        "title": "Path",
-                        "type": "string"
+                      "min_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Shortest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Min Latency S"
                       }
                     },
-                    "required": [
-                      "path"
-                    ],
                     "type": "object"
                   }
-                },
-                "required": [
-                  "params"
-                ]
+                }
               }
             },
             {
               "if": {
                 "properties": {
                   "name": {
-                    "const": "csv_per_portfolio"
+                    "const": "load_details"
                   }
                 },
                 "required": [
@@ -496,46 +529,47 @@
                 "properties": {
                   "params": {
                     "additionalProperties": false,
-                    "description": "Parameters for :func:`csv_per_portfolio`.",
+                    "description": "What every shipped loader accepts: how long its source is pretended to take.\n\nEach loader draws a wait from its own band — :data:`SECURITY_MASTER` is tens of seconds, a\nparameter store is under one — seeded on the run id, the dataset, and the ids in the call, so two\nruns of one config wait the same amounts. Setting both fields overrides that band; setting both to\nzero removes the wait, which is what a test does. A real loader has none of this: delete the field\nand the wait, and keep the rest.",
                     "properties": {
-                      "directory": {
-                        "minLength": 1,
-                        "title": "Directory",
-                        "type": "string"
+                      "max_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Longest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Max Latency S"
                       },
-                      "dtypes": {
-                        "additionalProperties": {
-                          "enum": [
-                            "string",
-                            "Int64",
-                            "bool",
-                            "Float64",
-                            "decimal",
-                            "datetime_utc"
-                          ],
-                          "type": "string"
-                        },
-                        "description": "Column name to kind: `string`, `Int64`, `Float64`, `bool`, `decimal` (an exact `Decimal` — money, prices, rates), or `datetime_utc` (a timezone-aware timestamp).",
-                        "title": "Dtypes",
-                        "type": "object"
+                      "min_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Shortest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Min Latency S"
                       }
                     },
-                    "required": [
-                      "directory"
-                    ],
                     "type": "object"
                   }
-                },
-                "required": [
-                  "params"
-                ]
+                }
               }
             },
             {
               "if": {
                 "properties": {
                   "name": {
-                    "const": "parquet"
+                    "const": "load_holdings"
                   }
                 },
                 "required": [
@@ -546,39 +580,207 @@
                 "properties": {
                   "params": {
                     "additionalProperties": false,
-                    "description": "Parameters for :func:`parquet`.",
+                    "description": "What every shipped loader accepts: how long its source is pretended to take.\n\nEach loader draws a wait from its own band — :data:`SECURITY_MASTER` is tens of seconds, a\nparameter store is under one — seeded on the run id, the dataset, and the ids in the call, so two\nruns of one config wait the same amounts. Setting both fields overrides that band; setting both to\nzero removes the wait, which is what a test does. A real loader has none of this: delete the field\nand the wait, and keep the rest.",
                     "properties": {
-                      "dtypes": {
-                        "additionalProperties": {
-                          "enum": [
-                            "string",
-                            "Int64",
-                            "bool",
-                            "Float64",
-                            "decimal",
-                            "datetime_utc"
-                          ],
-                          "type": "string"
-                        },
-                        "description": "Column name to kind: `string`, `Int64`, `Float64`, `bool`, `decimal` (an exact `Decimal` — money, prices, rates), or `datetime_utc` (a timezone-aware timestamp).",
-                        "title": "Dtypes",
-                        "type": "object"
+                      "max_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Longest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Max Latency S"
                       },
-                      "path": {
-                        "minLength": 1,
-                        "title": "Path",
-                        "type": "string"
+                      "min_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Shortest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Min Latency S"
                       }
                     },
-                    "required": [
-                      "path"
-                    ],
                     "type": "object"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "const": "load_parameters"
                   }
                 },
                 "required": [
-                  "params"
+                  "name"
                 ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "Parameters for :func:`load_parameters`.",
+                    "properties": {
+                      "max_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Longest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Max Latency S"
+                      },
+                      "min_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Shortest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Min Latency S"
+                      },
+                      "set_name": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Which parameter set to fetch. Omit to fetch the one named by the dataset itself, which is the usual arrangement.",
+                        "title": "Set Name"
+                      }
+                    },
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "const": "load_portfolios"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "What every shipped loader accepts: how long its source is pretended to take.\n\nEach loader draws a wait from its own band — :data:`SECURITY_MASTER` is tens of seconds, a\nparameter store is under one — seeded on the run id, the dataset, and the ids in the call, so two\nruns of one config wait the same amounts. Setting both fields overrides that band; setting both to\nzero removes the wait, which is what a test does. A real loader has none of this: delete the field\nand the wait, and keep the rest.",
+                    "properties": {
+                      "max_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Longest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Max Latency S"
+                      },
+                      "min_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Shortest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Min Latency S"
+                      }
+                    },
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "const": "load_universe"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "What every shipped loader accepts: how long its source is pretended to take.\n\nEach loader draws a wait from its own band — :data:`SECURITY_MASTER` is tens of seconds, a\nparameter store is under one — seeded on the run id, the dataset, and the ids in the call, so two\nruns of one config wait the same amounts. Setting both fields overrides that band; setting both to\nzero removes the wait, which is what a test does. A real loader has none of this: delete the field\nand the wait, and keep the rest.",
+                    "properties": {
+                      "max_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Longest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Max Latency S"
+                      },
+                      "min_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Shortest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Min Latency S"
+                      }
+                    },
+                    "type": "object"
+                  }
+                }
               }
             }
           ],
@@ -1488,11 +1690,11 @@
       "type": "array"
     },
     "datasets": {
-      "$comment": "Required unless an assembly step produces them: ['holdings', 'universe', 'details']. `constraints` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
+      "$comment": "`portfolios` is always required; ['holdings', 'universe', 'details'] are required unless an assembly step produces them. `constraints` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
       "additionalProperties": {
         "$ref": "#/$defs/DatasetConfig"
       },
-      "description": "Named datasets, every one a frame. `holdings`, `universe`, and `details` must be declared here unless an assembly step produces them; `constraints` is engine-known but optional, and a run that omits it constrains nothing beyond the trade identity. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known.",
+      "description": "Named datasets, every one a frame. `portfolios` is required — the list of portfolio ids and their `solve_order` priorities (lower solves first, ties break on `portfolio_id`), loaded like any dataset or written inline as a list of ids — and is consumed by the engine rather than passed to assembly. `holdings`, `universe`, and `details` must be declared unless an assembly step produces them; `constraints` is engine-known but optional, and a run that omits it constrains nothing beyond the trade identity. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Each dataset's loader starts the moment its `depends_on` dependencies have loaded — with none, the moment the load stage does.",
       "properties": {
         "constraints": {
           "$ref": "#/$defs/DatasetConfig"
@@ -1503,10 +1705,44 @@
         "holdings": {
           "$ref": "#/$defs/DatasetConfig"
         },
+        "portfolios": {
+          "anyOf": [
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/DatasetConfig"
+                },
+                {
+                  "properties": {
+                    "scope": {
+                      "const": "global"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "$ref": "#/$defs/InlinePortfolios"
+            },
+            {
+              "$comment": "A bare array is shorthand for {\"ids\": [...]}.",
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "description": "The portfolio list: a loaded dataset (always `scope: global`), or the ids written inline — `{\"ids\": [...]}` or the bare array, whose written order is the solve order."
+        },
         "universe": {
           "$ref": "#/$defs/DatasetConfig"
         }
       },
+      "required": [
+        "portfolios"
+      ],
       "title": "Datasets",
       "type": "object"
     },
@@ -1517,18 +1753,6 @@
     "objective": {
       "$ref": "#/$defs/ObjectiveConfig",
       "description": "What the optimizer minimizes."
-    },
-    "portfolios": {
-      "$comment": "A bare step is shorthand for {\"loader\": step}.",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/LoaderStep"
-        },
-        {
-          "$ref": "#/$defs/DatasetConfig"
-        }
-      ],
-      "description": "The portfolio list (`portfolio_id`, optional `solve_order`): a bare loader step, or `{\"loader\": step, \"rate_limit\": ...}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, and a portfolio waits only for higher-priority portfolios whose tradable set — the securities it can trade on the side the run couples through — overlaps its own. A `solve_order` step replaces the column."
     },
     "post_solve": {
       "$ref": "#/$defs/PostSolveConfig",
@@ -1587,7 +1811,6 @@
   },
   "required": [
     "run",
-    "portfolios",
     "datasets",
     "objective",
     "sink"

@@ -4,39 +4,26 @@
     "as_of_date": "2026-08-28T00:00:00Z",
     "tags": {"desk": "template"}
   },
-  "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}},
   "datasets": {
+    "portfolios": {"loader": "load_portfolios"},
     "holdings": {
-      "loader": {"name": "csv_per_portfolio", "params": {"directory": "holdings"}},
+      "loader": "load_holdings",
       "scope": "per_portfolio",
-      "batch_size": 1
+      "batch_size": 1,
+      "rate_limit": "custodian"
     },
-    "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
+    "universe": {"loader": "load_universe"},
     "details": {
-      "loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
+      "loader": "load_details",
       "scope": "per_portfolio",
-      "batch_size": 2
+      "batch_size": 25,
+      "rate_limit": {"max_in_flight": 4}
     },
-    "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
-    "global_parameters": {
-      "loader": {
-        "name": "csv",
-        "params": {
-          "path": "global_parameters.csv",
-          "dtypes": {"name": "string", "value": "decimal"}
-        }
-      }
-    },
-    "buy_universe_parameters": {
-      "loader": {
-        "name": "csv",
-        "params": {
-          "path": "buy_universe_parameters.csv",
-          "dtypes": {"name": "string", "value": "decimal"}
-        }
-      }
-    }
+    "constraints": {"loader": "load_constraints", "depends_on": ["portfolios"]},
+    "global_parameters": {"loader": "load_parameters"},
+    "buy_universe_parameters": {"loader": "load_parameters"}
   },
+  "rate_limits": {"custodian": {"requests_per_second": 20, "burst": 20, "max_in_flight": 8}},
   "rules": ["restrict_low_liquidity"],
   "objective": {
     "sense": "minimize",

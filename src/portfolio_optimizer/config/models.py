@@ -9,6 +9,8 @@ this module is also the schema's documentation.
 import hashlib
 import math
 import re
+from collections import Counter
+from collections.abc import Mapping
 from typing import Literal, Self
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
@@ -100,17 +102,21 @@ class RateLimitConfig(StrictModel):
 
 
 class DatasetConfig(StrictModel):
-    """How one input is loaded, how its portfolios are partitioned across calls, and how hard its source may be pushed."""
+    """How one input is loaded, what it depends on, how its portfolios are partitioned across calls, and how hard its source may be pushed."""
 
     loader: StepSpec = Field(description="The loader step: `(request: LoadRequest[, params]) -> DataFrame`, plain or `async def`.")
+    depends_on: tuple[str, ...] = Field(
+        default=(),
+        description="Names of other `datasets` entries this one needs. The engine starts every dataset the moment its dependencies have loaded and hands their frames to the loader as `request.inputs`. Declare `portfolios` to receive the book's ids as `request.portfolio_ids`; a `per_portfolio` dataset depends on `portfolios` implicitly. Default: no dependencies, so the loader starts the moment the load stage does.",
+    )
     scope: DatasetScope = Field(
         default="global",
-        description="`global` (default): one call for the whole book, and the dataset is visible to every assembly step. `per_portfolio`: the engine partitions the portfolio ids into batches and calls the loader once per batch, so a source that answers per account is driven by the engine rather than by the loader; a batch that fails, or that comes back without a portfolio's rows, fails those portfolios alone at stage `load` and the run carries on. A per-portfolio dataset is not passed to assembly — attach its columns in a rule instead.",
+        description="`global` (default): one call, and the dataset is visible to every assembly step. `per_portfolio`: the engine partitions the portfolio ids into batches and calls the loader once per batch, so a source that answers per account is driven by the engine rather than by the loader; a batch that fails, or that comes back without a portfolio's rows, fails those portfolios alone at stage `load` and the run carries on. A per-portfolio dataset is not passed to assembly — attach its columns in a rule instead.",
     )
     batch_size: int | None = Field(
         default=None,
         ge=1,
-        description="How many portfolios one call of a `per_portfolio` loader is given, as `request.portfolio_ids`. `1` is a call per portfolio; a larger number batches a source that takes an id list; omitted, every portfolio goes in one call. Ignored for a `global` dataset, which never receives ids.",
+        description="How many portfolios one call of a `per_portfolio` loader is given, as `request.portfolio_ids`. `1` is a call per portfolio; a larger number batches a source that takes an id list; omitted, every portfolio goes in one call. Ignored for a `global` dataset, which is loaded by one call.",
     )
     rate_limit: str | RateLimitConfig | None = Field(
         default=None,
@@ -118,11 +124,21 @@ class DatasetConfig(StrictModel):
     )
 
     @model_validator(mode="after")
-    def _batch_size_needs_a_partitioned_dataset(self) -> Self:
+    def _shape_is_consistent(self) -> Self:
         if self.batch_size is not None and self.scope != "per_portfolio":
             msg = "batch_size applies only to a per_portfolio dataset; a global dataset is loaded by one call"
             raise ValueError(msg)
+        duplicates = sorted(name for name, count in Counter(self.depends_on).items() if count > 1)
+        if duplicates:
+            msg = f"depends_on repeats {duplicates}"
+            raise ValueError(msg)
         return self
+
+    def dependencies(self) -> tuple[str, ...]:
+        """The effective dependencies: the declared ones, with `portfolios` prepended for a `per_portfolio` dataset that does not declare it."""
+        if self.scope == "per_portfolio" and "portfolios" not in self.depends_on:
+            return ("portfolios", *self.depends_on)
+        return self.depends_on
 
     def batches(self, portfolio_ids: tuple[PortfolioId, ...]) -> tuple[tuple[PortfolioId, ...], ...]:
         """How this dataset's calls are partitioned: one batch of every id when global, otherwise `batch_size` at a time."""
@@ -130,6 +146,79 @@ class DatasetConfig(StrictModel):
             return (portfolio_ids,)
         size = self.batch_size or max(len(portfolio_ids), 1)
         return tuple(portfolio_ids[start : start + size] for start in range(0, len(portfolio_ids), size)) or ((),)
+
+
+class InlinePortfolios(StrictModel):
+    """The portfolio list written directly in the config instead of loaded: `{"ids": ["P7", "P2"]}`, or the bare array as shorthand.
+
+    The written order is the solve order — the first id solves first. Only the `portfolios` dataset may
+    be written inline; it costs nothing to load, so every dataset that depends on it starts at once.
+    A book too large to write out, or one whose priorities come from data, uses a loader instead.
+    """
+
+    ids: tuple[str, ...] = Field(min_length=1, description="The portfolio ids, in solve order: the first id solves first, and the engine records `solve_order` as the position.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_bare_list(cls, value: object) -> object:
+        """A bare array is shorthand for the object form; containers become tuples because a before-validator forfeits JSON-mode coercion."""
+        if isinstance(value, list | tuple):
+            return {"ids": tuple(value)}
+        if isinstance(value, dict):
+            ids = value.get("ids")
+            if isinstance(ids, list):
+                return {**value, "ids": tuple(ids)}
+        return value
+
+    @field_validator("ids")
+    @classmethod
+    def _ids_are_unique_and_non_empty(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not portfolio_id for portfolio_id in value):
+            msg = "ids must be non-empty strings"
+            raise ValueError(msg)
+        duplicates = sorted(portfolio_id for portfolio_id, count in Counter(value).items() if count > 1)
+        if duplicates:
+            msg = f"ids repeat {duplicates}"
+            raise ValueError(msg)
+        return value
+
+    def dependencies(self) -> tuple[str, ...]:
+        """An inline book depends on nothing; it is the run's first fact."""
+        return ()
+
+
+type DatasetSpec = DatasetConfig | InlinePortfolios
+"""One entry of `datasets`: a loaded input, or — for `portfolios` only — the inline list."""
+
+
+def dataset_order(datasets: Mapping[str, DatasetSpec]) -> tuple[str, ...]:
+    """Every dataset after the ones it depends on; raises ``ValueError`` naming the cycle when there is one.
+
+    The config validator runs this to refuse a cyclic config, and the engine runs it again as a guard —
+    a cycle that reached the scheduler would deadlock silently — and for a deterministic outcome order.
+    """
+    order: list[str] = []
+    done: set[str] = set()
+    path: list[str] = []
+
+    def visit(name: str) -> None:
+        if name in done:
+            return
+        if name in path:
+            cycle = [*path[path.index(name) :], name]
+            hint = " (a per_portfolio dataset depends on 'portfolios' implicitly)" if "portfolios" in cycle else ""
+            msg = f"datasets depend on each other in a cycle: {' -> '.join(cycle)}{hint}"
+            raise ValueError(msg)
+        path.append(name)
+        for dependency in datasets[name].dependencies():
+            visit(dependency)
+        path.pop()
+        done.add(name)
+        order.append(name)
+
+    for name in datasets:
+        visit(name)
+    return tuple(order)
 
 
 class ObjectiveConfig(StrictModel):
@@ -193,11 +282,8 @@ class RunConfig(StrictModel):
 
     schema_ref: str | None = Field(default=None, alias="$schema", description="Optional pointer to the JSON Schema for editor validation; ignored by the engine.")
     run: RunMeta = Field(description="Run identity.")
-    portfolios: DatasetConfig = Field(
-        description='The portfolio list (`portfolio_id`, optional `solve_order`): a bare loader step, or `{"loader": step, "rate_limit": ...}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, and a portfolio waits only for higher-priority portfolios whose tradable set — the securities it can trade on the side the run couples through — overlaps its own. A `solve_order` step replaces the column.'
-    )
-    datasets: dict[str, DatasetConfig] = Field(
-        description="Named datasets, every one a frame. `holdings`, `universe`, and `details` must be declared here unless an assembly step produces them; `constraints` is engine-known but optional, and a run that omits it constrains nothing beyond the trade identity. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known."
+    datasets: dict[str, DatasetSpec] = Field(
+        description="Named datasets, every one a frame. `portfolios` is required — the list of portfolio ids and their `solve_order` priorities (lower solves first, ties break on `portfolio_id`), loaded like any dataset or written inline as a list of ids — and is consumed by the engine rather than passed to assembly. `holdings`, `universe`, and `details` must be declared unless an assembly step produces them; `constraints` is engine-known but optional, and a run that omits it constrains nothing beyond the trade identity. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Each dataset's loader starts the moment its `depends_on` dependencies have loaded — with none, the moment the load stage does."
     )
     rate_limits: dict[str, RateLimitConfig] = Field(
         default_factory=dict,
@@ -226,29 +312,41 @@ class RunConfig(StrictModel):
     sink: StepSpec = Field(description="Sink step from `sinks.py`, called once with every solved portfolio's orders.")
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig, description="Failure semantics and how dependencies between portfolios are derived.")
 
-    @field_validator("portfolios", mode="before")
-    @classmethod
-    def _accept_bare_portfolios_step(cls, value: object) -> object:
-        if isinstance(value, str) or (isinstance(value, dict) and "name" in value):
-            return {"loader": value}
-        return value
-
     @model_validator(mode="after")
     def _datasets_are_consistent(self) -> Self:
+        portfolios = self.datasets.get("portfolios")
+        if portfolios is None:
+            msg = "datasets must declare 'portfolios': the list of portfolios the run is over"
+            raise ValueError(msg)
+        if isinstance(portfolios, DatasetConfig) and portfolios.scope != "global":
+            msg = "portfolios must be a global dataset: it produces the ids a per_portfolio dataset is partitioned by"
+            raise ValueError(msg)
         if not self.assembly:
             missing = [name for name in REQUIRED_DATASETS if name not in self.datasets]
             if missing:
                 msg = f"datasets must declare {list(REQUIRED_DATASETS)}; missing {missing}; a run without assembly steps has nothing else to produce them"
                 raise ValueError(msg)
-        inputs = [("portfolios", self.portfolios), *((f"datasets.{name}", dataset) for name, dataset in self.datasets.items())]
-        for where, dataset in inputs:
+        for name, dataset in self.datasets.items():
+            if isinstance(dataset, InlinePortfolios):
+                if name != "portfolios":
+                    msg = f"datasets.{name}: only 'portfolios' may be written inline as a list of ids; every other dataset needs a loader"
+                    raise ValueError(msg)
+                continue
             if isinstance(dataset.rate_limit, str) and dataset.rate_limit not in self.rate_limits:
-                msg = f"{where}: rate_limit {dataset.rate_limit!r} is not declared in rate_limits {sorted(self.rate_limits)}"
+                msg = f"datasets.{name}: rate_limit {dataset.rate_limit!r} is not declared in rate_limits {sorted(self.rate_limits)}"
                 raise ValueError(msg)
-        if self.portfolios.scope != "global":
-            msg = "portfolios must be a global dataset: it is the loader that produces the ids every other loader is partitioned by"
-            raise ValueError(msg)
+            self._check_dependencies(name, dataset)
+        dataset_order(self.datasets)
         return self
+
+    def _check_dependencies(self, name: str, dataset: DatasetConfig) -> None:
+        unknown = [dependency for dependency in dataset.depends_on if dependency not in self.datasets]
+        if unknown:
+            msg = f"datasets.{name}: depends_on names unknown dataset(s) {unknown}; declared: {sorted(self.datasets)}"
+            raise ValueError(msg)
+        if name in dataset.dependencies():
+            msg = f"datasets.{name}: a dataset cannot depend on itself"
+            raise ValueError(msg)
 
 
 def load_run_config(text: str) -> RunConfig:

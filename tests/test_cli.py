@@ -9,8 +9,8 @@ import pandas as pd
 import pytest
 
 from portfolio_optimizer.cli import run_cli
-from tests.conftest import EXAMPLE_CONFIG, EXAMPLE_DATA, example_body
-from tests.engine.support import EXAMPLE_ORDERS_P1, FixedClock, FixedIds
+from tests.conftest import EXAMPLE_CONFIG, example_body
+from tests.engine.support import EXAMPLE_ORDERS_P1, FixedClock, FixedIds, example_book
 
 
 def cli(argv: Sequence[str], env: dict[str, str] | None = None, run_id: str = "run-smoke") -> tuple[int, str, str]:
@@ -20,11 +20,19 @@ def cli(argv: Sequence[str], env: dict[str, str] | None = None, run_id: str = "r
 
 
 @pytest.fixture
+def config(tmp_path: Path) -> Path:
+    """The shipped config with the mock services' latency removed: the file a smoke test can afford to run."""
+    path = tmp_path / "example_run.json"
+    path.write_text(json.dumps(example_body()))
+    return path
+
+
+@pytest.fixture
 def env(tmp_path: Path, scheduler_address: str) -> dict[str, str]:
-    """Settings that point the run at the session cluster, so a CLI test does not pay a cluster start."""
+    """Settings that point the run at the session cluster and the two-account book, so a CLI test does not pay a cluster start or the shipped hundred accounts."""
     return {
         "PORTFOLIO_OPTIMIZER_OUTPUT_DIR": str(tmp_path / "out"),
-        "PORTFOLIO_OPTIMIZER_DATA_ROOT": str(EXAMPLE_DATA),
+        "PORTFOLIO_OPTIMIZER_DATA_ROOT": str(example_book(tmp_path)),
         "PORTFOLIO_OPTIMIZER_LOG_LEVEL": "WARNING",
         "PORTFOLIO_OPTIMIZER_CLUSTER": scheduler_address,
         "PORTFOLIO_OPTIMIZER_MIN_WORKERS": "1",
@@ -33,8 +41,8 @@ def env(tmp_path: Path, scheduler_address: str) -> dict[str, str]:
     }
 
 
-def test_run_produces_the_golden_orders_and_a_manifest(tmp_path: Path, env: dict[str, str]) -> None:
-    code, out, err = cli(["run", str(EXAMPLE_CONFIG)], env)
+def test_run_produces_the_golden_orders_and_a_manifest(tmp_path: Path, env: dict[str, str], config: Path) -> None:
+    code, out, err = cli(["run", str(config)], env)
     assert code == 0, err
     assert "run run-smoke" in out
     assert "P1: solved, 3 order(s)" in out
@@ -45,9 +53,9 @@ def test_run_produces_the_golden_orders_and_a_manifest(tmp_path: Path, env: dict
     assert (run_dir / "manifest.json").exists()
 
 
-def test_rerun_diffs_clean_and_verify_passes_without_cvxpy_objects(tmp_path: Path, env: dict[str, str]) -> None:
-    assert cli(["run", str(EXAMPLE_CONFIG)], env, run_id="one")[0] == 0
-    assert cli(["run", str(EXAMPLE_CONFIG)], env, run_id="two")[0] == 0
+def test_rerun_diffs_clean_and_verify_passes_without_cvxpy_objects(tmp_path: Path, env: dict[str, str], config: Path) -> None:
+    assert cli(["run", str(config)], env, run_id="one")[0] == 0
+    assert cli(["run", str(config)], env, run_id="two")[0] == 0
     left = tmp_path / "out" / "one" / "manifest.json"
     right = tmp_path / "out" / "two" / "manifest.json"
     code, out, _ = cli(["diff-manifests", str(left), str(right)])
@@ -70,7 +78,8 @@ def test_validate_config_lists_every_resolved_step() -> None:
     assert "dependencies overlap" in out
     assert "rule                portfolio_optimizer.rules:restrict_low_liquidity" in out
     assert "term                portfolio_optimizer.terms:alpha" in out
-    assert "constraint" not in out, "constraints are loaded data now, so validate-config has none to list"
+    assert "loader              portfolio_optimizer.loaders:load_constraints" in out
+    assert "constraint          " not in out, "constraints are loaded data now, so validate-config has none to list"
 
 
 def test_validate_config_constructs_every_term_before_saying_ok(tmp_path: Path) -> None:
@@ -90,23 +99,23 @@ def test_validate_config_rejects_a_solver_the_adapter_does_not_know(tmp_path: Pa
     assert "config rejected" in err and "solver: solver 'SCIPY' is not one the adapter knows" in err
 
 
-def test_exit_code_contract(tmp_path: Path, env: dict[str, str]) -> None:
+def test_exit_code_contract(tmp_path: Path, env: dict[str, str], config: Path) -> None:
     bad_json = tmp_path / "bad.json"
     bad_json.write_text('{"run": {}}')
     assert cli(["validate-config", str(bad_json)])[0] == 2
     assert cli(["validate-config", str(tmp_path / "missing.json")])[0] == 3
-    assert cli(["run", str(EXAMPLE_CONFIG)], {})[0] == 2  # settings missing
-    code, _, err = cli(["run", str(EXAMPLE_CONFIG)], env | {"PORTFOLIO_OPTIMIZER_DATA_ROOT": str(tmp_path / "nowhere")})
+    assert cli(["run", str(config)], {})[0] == 2  # settings missing
+    code, _, err = cli(["run", str(config)], env | {"PORTFOLIO_OPTIMIZER_DATA_ROOT": str(tmp_path / "nowhere")})
     assert code == 3
     assert "infrastructure failure" in err
     assert cli(["no-such-command"])[0] == 2
 
 
-def test_run_flags_override_settings(tmp_path: Path, env: dict[str, str]) -> None:
-    code, out, _ = cli(["run", str(EXAMPLE_CONFIG), "--output", str(tmp_path / "elsewhere"), "--max-workers", "1"], env)
+def test_run_flags_override_settings(tmp_path: Path, env: dict[str, str], config: Path) -> None:
+    code, out, _ = cli(["run", str(config), "--output", str(tmp_path / "elsewhere"), "--max-workers", "1"], env)
     assert code == 0
     manifest = json.loads((tmp_path / "elsewhere" / "run-smoke" / "manifest.json").read_text())
     assert "elsewhere" in out
     assert manifest["settings"]["max_workers"] == "1"
     assert manifest["cluster"]["kind"] == "address"
-    assert cli(["run", str(EXAMPLE_CONFIG), "--max-workers", "0"], env)[0] == 2
+    assert cli(["run", str(config), "--max-workers", "0"], env)[0] == 2

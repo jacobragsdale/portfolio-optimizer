@@ -15,8 +15,7 @@ version. Read it when you have a config in front of you and want it to make sens
 | Block | What it tells the engine | When the engine consumes it |
 |---|---|---|
 | [`run`](#run) | The run's name and tags, and the instant it is *as of* | `as_of_date` at load and at build (tax-lot terms) |
-| [`portfolios`](#portfolios) | How to load the list of portfolio ids and their priorities | First, alone, before any other loader |
-| [`datasets`](#datasets) | How to load every other input, engine-known or extra, and how its calls are partitioned | All at once, after the portfolio list |
+| [`datasets`](#datasets) | How to load every input — the portfolio list included — what each depends on, and how its calls are partitioned | Each dataset the moment its dependencies are loaded |
 | [`rate_limits`](#rate_limit-on-a-dataset-and-rate_limits) | Named request budgets that inputs on one backend share | During loading |
 | [`assembly`](#assembly) | Steps that turn loaded datasets into the tables the build expects | Once, after all loaders return, before schema validation |
 | [`rules`](#rules) | Business logic applied to each portfolio's bundle, in order | Per portfolio, on a worker, before the build |
@@ -86,21 +85,36 @@ short-term (held longer than 365 days as of this timestamp means the long-term r
 order row carries it; and the manifest records it. It must be timezone-aware, because a naive
 timestamp compared against a lot's `acquired_on` would be a silent off-by-hours bug.
 
-## `portfolios`
+## `datasets`
 
 ```json
-"portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}}
+"datasets": {
+  "portfolios":  {"loader": "load_portfolios"},
+  "holdings":    {"loader": "load_holdings", "scope": "per_portfolio", "batch_size": 1,
+                  "rate_limit": "custodian"},
+  "universe":    {"loader": "load_universe"},
+  "details":     {"loader": "load_details", "scope": "per_portfolio", "batch_size": 25,
+                  "rate_limit": {"max_in_flight": 4}},
+  "constraints": {"loader": "load_constraints", "depends_on": ["portfolios"]}
+}
 ```
 
-This is the one loader that runs alone, before everything else. Its frame has a `portfolio_id` column
-and an optional `solve_order`, and the engine sorts it by `solve_order` then `portfolio_id` to produce
-the tuple of ids the rest of the run starts from: it is included in every other dataset's request so a
-loader for a per-portfolio source knows exactly which ids to fetch. That dependency is why this loader
-cannot overlap with the others.
+### `portfolios`: the book of record
 
-The block is written here as a bare step because a file needs no throttling. A source that does can
-use the longer form, `{"loader": step, "rate_limit": ...}`, which is the same shape every entry in
-`datasets` has; the bare form is a convenience the model expands.
+`portfolios` is the one entry every run must declare. Its frame has a `portfolio_id` column and an
+optional `solve_order`, and the engine sorts it by `solve_order` then `portfolio_id` to produce the
+tuple of ids the run is over. It is consumed by the engine — assembly never sees it — but scheduled
+like any other dataset: nothing waits on it except the entries that ask for its ids by naming it in
+`depends_on`. A manager who keeps a fixed book can skip the loader and write the ids straight into
+the config:
+
+```json
+"portfolios": ["P7", "P2", "P9"]
+```
+
+The written order is the solve order — the engine records `solve_order` as each id's position — the
+list costs nothing to load, so every dependent starts at once, and the manifest hashes the literal
+ids where it would hash a loader's source.
 
 `solve_order` is a *priority*, not a sequence: lower solves first, ties break on `portfolio_id`, and it
 matters only when a term or constraint is chain-aware — when a later portfolio's problem depends on what
@@ -111,21 +125,10 @@ finds that P1 has consumed the ADV budget for security C. Swap the `solve_order`
 P2 gets the budget instead. A [`solve_order` step](#solve_order) computes the key from the data instead
 of reading this column.
 
-## `datasets`
+### The other names, and what each entry says
 
-```json
-"datasets": {
-  "holdings":    {"loader": {"name": "csv_per_portfolio", "params": {"directory": "holdings"}},
-                  "scope": "per_portfolio", "batch_size": 1},
-  "universe":    {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
-  "details":     {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
-                  "scope": "per_portfolio", "batch_size": 1},
-  "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}}
-}
-```
-
-Each key is a dataset name and each value says how to load it. The names fall into three groups, and
-the engine treats them differently.
+Each key is a dataset name and each value says how to load it. Beyond the book, the names fall into
+three groups, and the engine treats them differently.
 
 **Three names are required**, because the build cannot produce a problem without them: `holdings`
 (what each portfolio owns, with cost basis and acquisition date), `universe` (every security the
@@ -146,10 +149,10 @@ trade identity its side implies. The section below explains why it is data rathe
 every assembly step by name, and whatever is still present after the last step is carried into each
 portfolio's bundle as `data.extras` — reduced to that portfolio's rows when it has a `portfolio_id`
 column, passed whole otherwise — where a rule can use it, and on past the build to the solve step as
-`request.extras`. Because the engine cannot type an extra frame from a schema, the loader has to be
-told: `dtypes` names each column's kind — `security_id` a `string` key, a score a `decimal` so it
-arrives as an exact `Decimal` rather than a float — in the same vocabulary the engine's own schemas are
-written in.
+`request.extras`. The engine cannot type an extra frame from a schema it does not have, so its loader
+types it: the shipped `load_parameters` declares a two-column `FrameSchema` of its own — `name` a
+`string`, `value` a `decimal` so it arrives as an exact `Decimal` rather than a float — in the same
+vocabulary the engine's own schemas are written in, and casts what it fetched to it.
 
 Two shapes recur. A vendor's **per-security analytics** file is declared here, joined onto the universe
 by an assembly step, and then dropped so it is not carried into every bundle for nothing; from the
@@ -157,23 +160,30 @@ universe the build exports it as a spec column a term can read. **Runtime parame
 a narrow `name`/`value` frame of numbers that change without the config changing.
 
 ```json
-"global_parameters": {"loader": {"name": "csv", "params": {"path": "global_parameters.csv",
-                                                           "dtypes": {"name": "string", "value": "decimal"}}}}
+"global_parameters": {"loader": "load_parameters"},
+"buy_universe_parameters": {"loader": "load_parameters"}
 ```
 
-The example declares two. `buy_universe_parameters` holds the `min_adv_shares` that
+The example declares two, both served by one loader that fetches the set named by the dataset itself. `buy_universe_parameters` holds the `min_adv_shares` that
 `restrict_low_liquidity` reads, which is why that rule takes no number in the config;
 `global_parameters` holds settings for a solve step, and nothing shipped reads it — the `cvxpy` step has
 no business interpreting a desk's own settings. Both are content-hashed and recorded in the manifest
 like every other input, which is the point: a run driven by parameters is still a pure function of a
 snapshot, and `diff-manifests` says so when one changes.
 
-Once the portfolio list is known, **every dataset loader starts at once**, called with a `LoadRequest`
-carrying the dataset name, portfolio ids, `as_of_date`, the data root, the run id, and a rate limiter. An
-`async def` loader runs on the event loop; a plain `def` loader runs in a worker thread so a blocking
-driver cannot stall the others. Each loaded frame is recorded in the manifest with its loader, params
-hash, row count, and an order-insensitive content hash, which is what lets `diff-manifests` say "the
-data changed" rather than "something changed".
+**Every dataset loads as early as its dependencies allow.** An entry that declares nothing starts the
+moment the load stage does — in the example that is `portfolios`, `universe`, and both parameter sets,
+so the security-master scan, the slowest input by an order of magnitude, no longer waits behind the
+book of record. An entry that names other datasets in `depends_on` starts when they have loaded and
+receives their frames as `request.inputs`; declaring `portfolios` is what fills
+`request.portfolio_ids`, which is why `constraints` declares it — its loader fetches the book, not the
+firm. The whole stage costs its longest chain rather than its sum. Each loader is called with a
+`LoadRequest` carrying the dataset name, portfolio ids, the input frames, `as_of_date`, the data root,
+the run id, and a rate limiter. An `async def` loader runs on the event loop; a plain `def` loader
+runs in a worker thread so a blocking driver cannot stall the others. Each loaded frame is recorded in
+the manifest with its loader, params hash, row count, dependencies, start offset, and an
+order-insensitive content hash, which is what lets `diff-manifests` say "the data changed" rather than
+"something changed".
 
 **How many times each loader is called is `scope`.** A `global` dataset — the default, so every entry
 above that says nothing about scope — is one call for the whole book, and is what the assembly steps
@@ -188,10 +198,10 @@ The example is deliberately mixed, because a real book is. `holdings` and `detai
 account-shaped inputs — a custodian says what an account owns, an account master says its NAV, cash,
 tax rates, and style limits — so both are `per_portfolio`, and their `batch_size` records the difference
 between the two kinds of source. `holdings` asks for `1`: a call per account, for a backend that
-answers one at a time. `details` asks for `2`: the engine hands its loader two ids per call, for a
-backend that takes a list — one call on this two-account book, two hundred and fifty on a book of five
-hundred, and the number to tune when a source has a maximum request size or charges per call.
-`universe` and `constraints` are book-wide by nature, so both are
+answers one at a time, which on the shipped hundred-account book is a hundred calls. `details` asks for
+`25`: the engine hands its loader twenty-five ids per call, for a backend that takes a list — four calls
+on that book, twenty on a book of five hundred, and the number to tune when a source has a maximum
+request size or charges per call. `universe` and `constraints` are book-wide by nature, so both are
 global.
 
 Making `holdings` per-account has a consequence worth understanding before you copy it, because
@@ -204,9 +214,9 @@ instead and one `join` does both tables at once — that is the trade, and
 the split in the run's log —
 
 ```text
-dataset 'universe' loaded: 3 row(s) in 1 batch(es), 0.01s
-dataset 'holdings' loaded: 4 row(s) in 2 batch(es), 0.02s
-dataset 'details' loaded: 2 row(s) in 1 batch(es), 0.02s
+dataset 'universe' loaded: 3 row(s) in 1 batch(es), 13.65s
+dataset 'holdings' loaded: 200 row(s) in 100 batch(es), 16.36s
+dataset 'details' loaded: 100 row(s) in 4 batch(es), 2.68s
 ```
 
 — and in the manifest, where each dataset's audit records its `batches` and how many portfolios it
@@ -217,28 +227,35 @@ missing, a schema violated, a global loader that raised, or a per-portfolio data
 came back — the run stops, because nothing can be built. One batch that raised, or a portfolio with no
 `details` row — that portfolio alone is recorded as failed at stage `load` and the rest of the book
 runs. In the example that is the difference between deleting
-`examples/data/universe.csv`, which stops the run, and deleting `examples/data/holdings/P2.csv`, after
-which P1 still solves and P2 alone is reported as failed at `load`. A portfolio rejected here never
+`examples/data/universe.csv`, which stops the run, and deleting P2's row from
+`examples/data/details.csv`, after which every other account still solves and P2 alone is reported as
+failed at `load`. A portfolio rejected here never
 entered the run, so it traded nothing and couples to nobody in the schedule. Loading failures are
 otherwise collected rather than raced: one failing dataset does not cancel the others, and all of them
 are reported together.
 
-The shipped loaders show the two shapes a source can take. `csv` and `parquet` read one file for the
-whole dataset — `examples/data/universe.csv` and its neighbours. `csv_per_portfolio` reads
-`<directory>/<portfolio_id>.csv` for every id in the request, concurrently, under the dataset's rate
-limiter — the shape of a loader for an API that answers one portfolio per call, with a file read
-standing in for the HTTP request, and what `examples/data/holdings/` and `examples/data/details/` are
-for — one file per account in each. It
-works under either scope: as a `global` dataset it owns its fan-out, and — as the example configures
-it — with `"scope": "per_portfolio", "batch_size": 1` the engine owns it and each call reads one file.
+The shipped loaders show the two shapes a source can take. `load_universe`, `load_constraints`, and
+`load_parameters` answer for the whole book in one call. `load_holdings` answers one account per call:
+it hands `request.portfolio_ids` to `fan_out`, which starts every call at once and lets the rate limiter
+decide when each runs — the shape of a loader for an API with a per-account endpoint. It works under
+either scope: as a `global` dataset it owns its own fan-out, and — as the example configures it — with
+`"scope": "per_portfolio", "batch_size": 1` the engine owns the partition and each call fetches one
+account. `load_details` is the third shape and a plain `def`: a blocking database driver, run by the
+engine in a worker thread, taking the limiter's synchronous form and issuing one query per batch of ids.
+
+None of them is really a file loader. Each waits as long as its own source would and then answers from a
+CSV table under the data root, so the template runs against no infrastructure; replacing one with the
+real client changes the line that waits and nothing around it.
 
 ### `rate_limit` on a dataset, and `rate_limits`
 
-Every entry in `datasets` (and `portfolios`) accepts an optional `rate_limit`, which the loader
+Every loaded entry in `datasets` (an inline book has no source to bound) accepts an optional `rate_limit`, which the loader
 receives as `request.rate_limiter` and wraps around each call to its backend: either an inline bound
 private to that input, or the name of a pool declared under the top-level `rate_limits` and shared by
-every input that names it. Omit it and the loader never waits; the example sets none because it reads
-local files, and has no `rate_limits` block for the same reason. The choice between the two spellings
+every input that names it. Omit it and the loader never waits. The example uses both spellings: `holdings`
+names the shared `custodian` pool, because a hundred calls at once is more than a vendor allows and a
+second input on that vendor would have to share the same budget; `details` carries an inline
+`{"max_in_flight": 4}`, because the firm's own database is nobody else's budget to share. The choice between the two spellings
 is about sharing — a pool is a property of the *backend*, not of any one input, which is why pools are
 declared at the top level — and the reasoning is in
 [the architecture explanation](explanation-architecture.md#loading-is-the-slow-part-so-it-is-concurrent-and-metered).
@@ -388,7 +405,7 @@ There is no `constraints` key. Which constraints bind an account is *data*, load
 `holdings`, and the engine never interprets it:
 
 ```json
-"constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}}
+"constraints": {"loader": "load_constraints"}
 ```
 
 ```csv

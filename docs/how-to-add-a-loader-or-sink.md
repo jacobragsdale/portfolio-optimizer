@@ -9,8 +9,9 @@ dependency.
 - You know the dataset's shape. Engine-known datasets (`portfolios`, `holdings`, `universe`, `details`,
   `constraints`) must satisfy the schemas in `src/portfolio_optimizer/domain/schemas.py`
   after assembly (`holdings` and `universe` may carry any further columns); any other dataset only
-  needs the columns your assembly steps and rules use, typed the way you want them to arrive — declare
-  `dtypes` for its key columns (`{"security_id": "string"}`) so a join never has to guess.
+  needs the columns your assembly steps and rules use, typed the way you want them to arrive — give its
+  loader a `FrameSchema` of its own, as the shipped `load_parameters` does, so a join never has to guess
+  a key's dtype.
 
 ## Add a loader
 
@@ -32,7 +33,9 @@ def holdings_from_sql(request: LoadRequest, params: SqlParams) -> pd.DataFrame:
 ```
 
 - `request: LoadRequest` carries `dataset` (the config key being loaded), `portfolio_ids` in solve
-  order, `as_of_date`, `data_root`, `run_id`, and `rate_limiter` (see below).
+  order (filled when the entry's `depends_on` names `portfolios`; `per_portfolio` implies it),
+  `inputs` (the frames of the datasets named in `depends_on`), `as_of_date`, `data_root`, `run_id`,
+  and `rate_limiter` (see below).
 - Return `pd.DataFrame` with every dtype declared. `coerce_frame` casts to the dataset's schema and turns
   money written as strings, ints, or floats into `Decimal` — do this at the read boundary, not later.
 - Every dataset loader returns a DataFrame, `constraints` included; money inside a frame may
@@ -43,26 +46,31 @@ so a tier-4 contract test can call the real query and validate its shape with th
 
 ### Async loaders, fan-out, and rate limits
 
-Every dataset loader runs concurrently once the portfolio list is known: an `async def` loader runs on
-the engine's event loop, a plain `def` loader in a worker thread. Use `async def` for a source with an
-async client; a blocking driver is fine as a plain function and still overlaps with the other loaders.
+Every dataset loader starts the moment the datasets its entry depends on have loaded — with no
+`depends_on`, the moment the run does: an `async def` loader runs on the engine's event loop, a plain
+`def` loader in a worker thread. Use `async def` for a source with an async client; a blocking driver
+is fine as a plain function and still overlaps with the other loaders. A loader that needs another
+dataset's rows — a vendor whose query wants the universe's tickers, say — names it in `depends_on` and
+reads `request.inputs["universe"]` rather than loading it again.
 
 A source that answers one portfolio per call needs two things a large run cannot do without: fan-out
 and a rate limit. Every input can be bounded on its own, because sources scale differently:
 
 ```json
-"portfolios": {"loader": "portfolios_from_api", "rate_limit": {"max_in_flight": 1}},
 "rate_limits": {"vendor_api": {"requests_per_second": 20, "burst": 40, "max_in_flight": 8}},
 "datasets": {
-  "holdings": {"loader": "holdings_from_api", "rate_limit": "vendor_api"},
+  "portfolios": {"loader": "portfolios_from_api", "rate_limit": {"max_in_flight": 1}},
+  "holdings": {"loader": "holdings_from_api", "rate_limit": "vendor_api", "depends_on": ["portfolios"]},
   "universe": {"loader": "universe_from_api", "rate_limit": "vendor_api"},
-  "details": {"loader": "details_from_sql", "rate_limit": {"max_in_flight": 32}}
+  "details": {"loader": "details_from_sql", "rate_limit": {"max_in_flight": 32}, "depends_on": ["portfolios"]}
 }
 ```
 
 `holdings` and `universe` name the same pool, so together they never exceed 20 requests per second or
 8 in flight against the vendor. `details` has an inline bound of its own — the database takes 32
-concurrent queries happily — and the portfolio list is held to one call at a time. The loader receives
+concurrent queries happily — and the portfolio list is held to one call at a time. `holdings` and
+`details` declare `depends_on: ["portfolios"]`, which is what fills their `request.portfolio_ids`;
+`universe` declares nothing and starts immediately. The loader receives
 whichever bound its input carries as `request.rate_limiter`:
 
 ```python
@@ -81,7 +89,8 @@ in portfolio order, and one failure cancels the rest and surfaces as an `Excepti
 engine unwraps when it holds a single failure, so the log and the manifest record that error's own
 type and message rather than the group's. From a plain
 loader, wrap each call in `with request.rate_limiter.sync:` instead — it draws from the same pool. The
-shipped `csv_per_portfolio` is this pattern with files in place of a client; copy its shape.
+shipped `load_holdings` is this pattern with a table read standing in for the client, and
+`load_details` is the blocking twin; copy whichever matches your source.
 
 ### Let the engine do the fan-out instead
 
@@ -94,9 +103,10 @@ whole stage overlaps the global loaders:
 "holdings": {"loader": "holdings_from_api", "scope": "per_portfolio", "batch_size": 1, "rate_limit": "vendor_api"}
 ```
 
-The shipped example is this arrangement in miniature: `examples/data/holdings/` and
-`examples/data/details/` hold one CSV per account, and `configs/example_run.json` loads both with
-`csv_per_portfolio`, `per_portfolio`, and `batch_size: 1`, while its four other datasets stay global.
+The shipped example does exactly this over a hundred accounts: `configs/example_run.json` loads
+`holdings` with `load_holdings`, `per_portfolio`, and `batch_size: 1` — a hundred calls, paced by a
+shared rate-limit pool — and `details` with `load_details`, `per_portfolio`, and `batch_size: 25` — four
+calls, each handed a list of ids — while its four other datasets stay global.
 
 `scope: "per_portfolio"` says the ids are the engine's to cut up; `batch_size` says how finely. `1` is
 a call per portfolio, a larger number suits a source that takes an id list, and omitting it puts the
@@ -113,7 +123,8 @@ Two things follow from a per-portfolio dataset being loaded in pieces:
   back the source is down rather than an account being bad, and the run is rejected like any other
   dataset failure.
 
-The manifest records how long each dataset took (`load_time_s`), how many calls it was cut into
+The manifest records how long each dataset took (`load_time_s`), when it started and what it waited on
+(`started_s`, `depends_on`), how many calls it was cut into
 (`batches`), how many portfolios a failed batch cost (`rejected`), and the run log reports each pool's
 request count and total time spent waiting, so a slow run can be traced to the dataset and the limit
 that paced it.

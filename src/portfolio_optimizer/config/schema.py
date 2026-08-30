@@ -28,6 +28,7 @@ type JsonObject = dict[str, object]
 
 _ENUM_DESCRIPTIONS: Mapping[str, str] = {
     "DatasetScope": "How a dataset is partitioned across loader calls; see `datasets.<name>.scope`.",
+    "DatasetSpec": "One entry of `datasets`: a loaded input, or — for `portfolios` only — the inline list of ids.",
     "Dependencies": "Which higher-priority portfolios a portfolio waits for; see `execution.dependencies`.",
     "JoinCardinality": "Expected key cardinality of a join, enforced by pandas.",
     "JoinHow": "Join type: keep every left row, or only matched rows.",
@@ -56,7 +57,6 @@ def run_config_schema() -> JsonObject:
     for name, description in _ENUM_DESCRIPTIONS.items():
         defs[name] = {**_object(defs[name]), "description": description}
     properties = _object(base["properties"])
-    properties["portfolios"] = _portfolios_schema(properties["portfolios"])
     properties["assembly"] = _with_items(properties["assembly"], "AssemblyStep")
     properties["rules"] = _with_items(properties["rules"], "RuleStep")
     properties["solve_order"] = _with_nullable_ref(properties["solve_order"], "SolveOrderStep")
@@ -168,21 +168,28 @@ def _params_schema(model: type[Params], defs: JsonObject) -> JsonObject:
 
 def _datasets_schema(datasets: object) -> JsonObject:
     schema = _object(datasets)
+    schema.pop("additionalProperties", None)
     properties: JsonObject = {name: {"$ref": "#/$defs/DatasetConfig"} for name in (*REQUIRED_FRAMES, "constraints")}
+    properties["portfolios"] = _portfolios_property()
     return {
         **schema,
         "properties": dict(sorted(properties.items())),
+        "required": ["portfolios"],
         "additionalProperties": {"$ref": "#/$defs/DatasetConfig"},
-        "$comment": f"Required unless an assembly step produces them: {list(REQUIRED_FRAMES)}. `constraints` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
+        "$comment": f"`portfolios` is always required; {list(REQUIRED_FRAMES)} are required unless an assembly step produces them. `constraints` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
     }
 
 
-def _portfolios_schema(property_schema: object) -> JsonObject:
-    """A bare loader step, or the full `{"loader": step, "rate_limit": ...}` form; the model normalizes the first into the second."""
-    schema = _object(property_schema)
-    schema.pop("$ref", None)
-    schema.pop("allOf", None)
-    return {**schema, "anyOf": [{"$ref": "#/$defs/LoaderStep"}, {"$ref": "#/$defs/DatasetConfig"}], "$comment": 'A bare step is shorthand for {"loader": step}.'}
+def _portfolios_property() -> JsonObject:
+    """The one dataset that may be written inline: a loaded input held to `scope: global`, the `{"ids": [...]}` object, or the bare array of ids."""
+    return {
+        "description": 'The portfolio list: a loaded dataset (always `scope: global`), or the ids written inline — `{"ids": [...]}` or the bare array, whose written order is the solve order.',
+        "anyOf": [
+            {"allOf": [{"$ref": "#/$defs/DatasetConfig"}, {"properties": {"scope": {"const": "global"}}}]},
+            {"$ref": "#/$defs/InlinePortfolios"},
+            {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "$comment": 'A bare array is shorthand for {"ids": [...]}.'},
+        ],
+    }
 
 
 def _with_ref(property_schema: object, definition: str) -> JsonObject:

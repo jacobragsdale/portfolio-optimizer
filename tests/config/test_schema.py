@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from portfolio_optimizer.config.models import config_sha256, load_run_config
 from portfolio_optimizer.config.resolve import ConfigResolutionError, resolve_config
 from portfolio_optimizer.config.schema import SCHEMA_DIALECT, run_config_schema, schema_json
-from tests.conftest import EXAMPLE_CONFIG, REPO_ROOT, example_body
+from tests.conftest import EXAMPLE_CONFIG, REPO_ROOT, example_body, example_datasets
 
 SCHEMA_PATH = REPO_ROOT / "configs" / "run-config.schema.json"
 
@@ -66,7 +66,7 @@ def test_the_example_validates_against_the_schema(validator: Validator) -> None:
 
 REJECTED: list[tuple[str, dict[str, object], str]] = [
     ("unknown top-level key", {"parallelism": 4}, "<root>"),
-    ("missing required dataset", {"datasets": {name: {"loader": "csv"} for name in ("holdings", "universe", "details", "constraints")}}, "datasets"),
+    ("dataset scope the engine does not have", {"datasets": example_datasets(holdings={"loader": "load_holdings", "scope": "per_security"})}, "datasets"),
     ("malformed step name", {"rules": ["1bad"]}, "rules/0"),
     ("shipped rule with required params given as a string", {"rules": ["cap_single_name"]}, "rules/0"),
     ("shipped rule with a wrong param type", {"rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": "many"}}]}, "rules/0"),
@@ -75,7 +75,11 @@ REJECTED: list[tuple[str, dict[str, object], str]] = [
     ("execution mechanics in the config", {"execution": {"on_error": "fail_fast", "max_workers": 2}}, "execution"),
     ("the removed execution mode", {"execution": {"mode": "sequential"}}, "execution"),
     ("shipped assembly step missing a required param", {"assembly": [{"name": "join", "params": {"into": "universe", "source": "analytics", "on": ["security_id"]}}]}, "assembly/0"),
-    ("engine frame neither loaded nor assembled", {"datasets": {name: {"loader": "csv"} for name in ("holdings", "universe", "details", "constraints")}, "assembly": []}, "datasets"),
+    ("batch size that is not a count", {"datasets": example_datasets(holdings={"loader": "load_holdings", "scope": "per_portfolio", "batch_size": 0})}, "datasets"),
+    ("no book of record", {"datasets": {name: spec for name, spec in example_datasets().items() if name != "portfolios"}}, "datasets"),
+    ("a book loaded per portfolio", {"datasets": example_datasets(portfolios={"loader": "load_portfolios", "scope": "per_portfolio"})}, "datasets"),
+    ("depends_on that is not a list", {"datasets": example_datasets(holdings={"loader": "load_holdings", "depends_on": "portfolios"})}, "datasets"),
+    ("an inline list for a dataset that is not the book", {"datasets": example_datasets(holdings={"ids": ["P1"]})}, "datasets"),
 ]
 
 
@@ -108,7 +112,7 @@ def test_every_shipped_step_is_described(schema: dict[str, object]) -> None:
     assert "transaction_cost" in str(as_object(defs["TermStep"])["$comment"])
     assert "orders_to_parquet" in str(as_object(defs["SinkStep"])["$comment"])
     assert "union" in str(as_object(defs["AssemblyStep"])["$comment"])
-    assert "csv_per_portfolio" in str(as_object(defs["LoaderStep"])["$comment"])
+    assert "load_holdings" in str(as_object(defs["LoaderStep"])["$comment"])
 
 
 def test_schema_file_is_valid_json_with_sorted_keys() -> None:

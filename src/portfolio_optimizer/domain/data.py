@@ -260,9 +260,15 @@ class PortfolioData:
         return replace(self, applied_rules=(*self.applied_rules, qualname))
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class LoadRequest:
-    """What a loader is asked for: which dataset, for which portfolios, as of when, and where data lives.
+    """What a loader is asked for: which dataset, for which portfolios, as of when, what it depends on, and where data lives.
+
+    ``portfolio_ids`` are the ids this call is for: every id still in the run for a global dataset
+    whose ``depends_on`` names ``portfolios``, the batch's ids for a ``per_portfolio`` dataset, and
+    empty for a dataset that declared no dependency on the book. ``inputs`` holds the loaded frames of
+    the dataset's dependencies by name; for a ``per_portfolio`` batch, an input with a ``portfolio_id``
+    column is reduced to the batch's rows and one without is passed whole.
 
     ``rate_limiter`` is the pool the dataset's config names, or an unlimited one. A loader that
     makes many calls wraps each in ``async with request.rate_limiter:`` (or
@@ -276,6 +282,7 @@ class LoadRequest:
     data_root: Path
     run_id: str
     rate_limiter: RateLimiter = field(default_factory=RateLimiter.unlimited)
+    inputs: Frames = field(default_factory=Frames)
 
 
 @dataclass(frozen=True, slots=True)

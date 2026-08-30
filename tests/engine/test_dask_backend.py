@@ -5,12 +5,16 @@ from pathlib import Path
 from portfolio_optimizer.engine.runner import EXIT_OK, RunContext, run
 from portfolio_optimizer.settings import ExecutionSettings
 from tests.conftest import resolved_example_real
-from tests.engine.support import EXAMPLE_ORDERS_P1, GIT, io_context
+from tests.engine.support import EXAMPLE_ORDERS_P1, GIT, example_book, io_context
 
 
 def test_a_run_owned_local_cluster_solves_the_example(tmp_path: Path) -> None:
     context = RunContext(
-        io=io_context(tmp_path / "dask", run_id="dask"), execution=ExecutionSettings(cluster="local", min_workers=1, max_workers=2, cluster_timeout_s=180.0), git=GIT, config_path="c.json", settings={}
+        io=io_context(tmp_path / "dask", data_root=example_book(tmp_path), run_id="dask"),
+        execution=ExecutionSettings(cluster="local", min_workers=1, max_workers=2, cluster_timeout_s=180.0),
+        git=GIT,
+        config_path="c.json",
+        settings={},
     )
     report = run(resolved_example_real(sink="orders_to_parquet"), context)
     assert report.exit_code == EXIT_OK, [str(o) for o in report.outcomes]

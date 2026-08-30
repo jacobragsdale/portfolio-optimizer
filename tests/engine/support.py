@@ -1,6 +1,6 @@
 """Run helpers shared by the engine and CLI tests: a fixed clock and ids, the example book with files swapped, the hand-checked answers, and one ``execute``."""
 
-import shutil
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -11,7 +11,7 @@ from portfolio_optimizer.engine.backends import BackendFactory
 from portfolio_optimizer.engine.environment import GitInfo
 from portfolio_optimizer.engine.runner import RunContext, RunReport, run
 from portfolio_optimizer.settings import ExecutionSettings
-from tests.conftest import AS_OF, EXAMPLE_DATA, resolved_example_real
+from tests.conftest import AS_OF, EXAMPLE_DATA, resolved_example_real, two_account_book
 
 GIT = GitInfo(sha="0123456789abcdef", dirty=False)
 
@@ -64,25 +64,38 @@ EXAMPLE_ORDERS_P1: Orders = [{"security_id": "A", "side": "SELL", "quantity": 15
 
 
 def example_book(tmp_path: Path, **files: str) -> Path:
-    """A copy of the example data under ``tmp_path`` with the named files replaced by the given text."""
-    root = tmp_path / "book"
-    shutil.copytree(EXAMPLE_DATA, root)
-    for name, content in files.items():
-        (root / name).write_text(content)
-    return root
+    """The two-account book under ``tmp_path`` with the named tables replaced by the given text."""
+    return two_account_book(tmp_path / "book", **files)
 
 
-def details_csv(portfolio_id: str, **overrides: str) -> str:
-    """The example's ``details`` row for one portfolio with named columns overridden."""
-    header, row = (EXAMPLE_DATA / "details" / f"{portfolio_id}.csv").read_text().splitlines()[:2]
+def _table(name: str) -> tuple[str, list[str]]:
+    header, *rows = (EXAMPLE_DATA / name).read_text().splitlines()
+    return header, rows
+
+
+def details_csv(**overrides: Mapping[str, str]) -> str:
+    """The example's ``details`` table with named columns overridden for the named accounts."""
+    header, rows = _table("details.csv")
     names = header.split(",")
-    values = dict(zip(names, row.split(","), strict=True)) | overrides
-    return f"{header}\n" + ",".join(values[name] for name in names) + "\n"
+    written = []
+    for row in rows:
+        values = dict(zip(names, row.split(","), strict=True))
+        values |= overrides.get(values["portfolio_id"], {})
+        written.append(",".join(values[name] for name in names))
+    return "\n".join([header, *written]) + "\n"
 
 
-def no_details_csv(portfolio_id: str) -> str:
-    """A ``details`` file with its header and no row: the dataset loads, but this portfolio has no row in it."""
-    return (EXAMPLE_DATA / "details" / f"{portfolio_id}.csv").read_text().splitlines()[0] + "\n"
+def details_without(*portfolio_ids: str) -> str:
+    """The ``details`` table with the named accounts left out: the dataset loads, but they have no row in it."""
+    header, rows = _table("details.csv")
+    return "\n".join([header, *(row for row in rows if row.split(",")[0] not in portfolio_ids)]) + "\n"
+
+
+def holdings_csv(**positions: Sequence[tuple[str, int, str, str]]) -> str:
+    """The ``holdings`` table with the named accounts' positions replaced by ``(security_id, quantity, avg_cost, acquired_on)`` rows."""
+    header, rows = _table("holdings.csv")
+    replaced = [f"{portfolio_id},{security},{quantity},{cost},{acquired}" for portfolio_id, lots in positions.items() for security, quantity, cost, acquired in lots]
+    return "\n".join([header, *replaced, *(row for row in rows if row.split(",")[0] not in positions)]) + "\n"
 
 
 HALF_CASH_ORDERS_P1: Orders = [{"security_id": "A", "side": "BUY", "quantity": 1500}, {"security_id": "B", "side": "BUY", "quantity": 2000}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
@@ -97,13 +110,11 @@ def half_cash_book(tmp_path: Path) -> Path:
     C's budget spent by P1 and a 60% cap, puts the same half into A first: 3,500 A and 3,000 B.
     ``HALF_CASH_ORDERS_P1`` and ``HALF_CASH_ORDERS_P2``.
     """
-    details = {f"details/{pid}.csv": details_csv(pid, cash="500000") for pid in ("P1", "P2")}
-    header = "portfolio_id,security_id,quantity,avg_cost,acquired_on\n"
-    holdings = {
-        "holdings/P1.csv": header + "P1,A,2500,100,2024-01-15T00:00:00Z\nP1,B,5000,50,2024-01-15T00:00:00Z\n",
-        "holdings/P2.csv": header + "P2,A,2500,100,2025-11-01T00:00:00Z\nP2,B,5000,50,2025-11-01T00:00:00Z\n",
-    }
-    return example_book(tmp_path, **details, **holdings)
+    holdings = holdings_csv(
+        P1=[("A", 2500, "100", "2024-01-15T00:00:00Z"), ("B", 5000, "50", "2024-01-15T00:00:00Z")], P2=[("A", 2500, "100", "2025-11-01T00:00:00Z"), ("B", 5000, "50", "2025-11-01T00:00:00Z")]
+    )
+    half = {"cash": "500000"}
+    return example_book(tmp_path, **{"details.csv": details_csv(P1=half, P2=half), "holdings.csv": holdings})
 
 
 SELL_BOOK_ORDERS_P1: Orders = [{"security_id": "A", "side": "SELL", "quantity": 1000}, {"security_id": "B", "side": "SELL", "quantity": 8000}]
@@ -119,9 +130,9 @@ def sell_book(tmp_path: Path) -> Path:
     1,000 A and 8,000 B. P2, with no A budget left, keeps A at 0.5 and so has the whole floor covered:
     it sells all 10,000 B. ``SELL_BOOK_ORDERS_P1`` and ``SELL_BOOK_ORDERS_P2``.
     """
-    raise_cash = {f"details/{pid}.csv": details_csv(pid, cash_ub="1") for pid in ("P1", "P2")}
+    raise_cash = {"cash_ub": "1"}
     universe = "security_id,price,sector,adv_shares,lot_size,restricted,alpha,tcost_bps\nA,100,TECH,4000,1,false,-0.03,5\nB,50,TECH,1000000,1,false,-0.10,5\nC,10,HEALTH,100000,1,false,0.05,20\n"
-    return example_book(tmp_path, **raise_cash, **{"universe.csv": universe})
+    return example_book(tmp_path, **{"details.csv": details_csv(P1=raise_cash, P2=raise_cash), "universe.csv": universe})
 
 
 # --- one run helper: a cluster run connects by address, a fake run supplies its backend ---
@@ -132,7 +143,7 @@ def execute(
     *,
     backend_factory: BackendFactory | None = None,
     scheduler_address: str | None = None,
-    data_root: Path = EXAMPLE_DATA,
+    data_root: Path | None = None,
     run_id: str = "run-test",
     max_workers: int = 2,
     sink: str = "orders_to_parquet",
@@ -142,13 +153,14 @@ def execute(
 ) -> RunReport:
     """Run the real example config over ``data_root``, writing under ``tmp_path / run_id``.
 
-    ``on_error`` and ``dependencies`` fill the config's ``execution`` section; any other section is
-    replaced by ``config_overrides``. A run on a real cluster passes ``scheduler_address``; a run through
+    The book is the two-account one unless ``data_root`` names another. ``on_error`` and ``dependencies``
+    fill the config's ``execution`` section; any other section is replaced by ``config_overrides``. A run on a real cluster passes ``scheduler_address``; a run through
     a fake passes ``backend_factory`` and the address is never dialled.
     """
     resolved = resolved_example_real(execution={"on_error": on_error, "dependencies": dependencies}, sink=sink, **config_overrides)
     execution = execution_on(scheduler_address if scheduler_address is not None else "tcp://fake:8786", max_workers=max_workers)
-    context = RunContext(io=io_context(tmp_path / run_id, data_root=data_root, run_id=run_id), execution=execution, git=GIT, config_path="c.json", settings={})
+    root = example_book(tmp_path) if data_root is None else data_root
+    context = RunContext(io=io_context(tmp_path / run_id, data_root=root, run_id=run_id), execution=execution, git=GIT, config_path="c.json", settings={})
     if backend_factory is None:
         return run(resolved, context)
     return run(resolved, context, backend_factory=backend_factory)

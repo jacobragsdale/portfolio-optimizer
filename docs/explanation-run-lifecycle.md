@@ -66,14 +66,22 @@ does not block; the point is that the cluster comes up underneath the slow stage
 ## 2. Loading and assembly: validation, first layer
 
 Loading is the slow part of a real run — API calls and database queries, not files — so `engine/load.py`
-is asynchronous. It calls the **portfolios loader first**, validates the result against the `PORTFOLIOS`
-schema, and sorts it by `solve_order` then `portfolio_id`. `solve_order` is a *priority* — lower solves
-first, ties break on the id, and the column may be omitted or repeated — and this loaded order is only
-the order builds are submitted in and the fallback key when no `solve_order` step is configured. The
-tuple of ids is part of every other request, which is why this one loader cannot overlap with the rest. Then
-**every dataset loader starts at once**, called with a `LoadRequest` (dataset name, portfolio ids,
-`as_of_date`, `data_root`, `run_id`, and a rate limiter): an `async def` loader runs as a task on the event
-loop, a plain `def` loader in a worker thread so a blocking driver never stalls the loop.
+is asynchronous and runs the **dependency DAG the config declares**: every dataset is a task that
+starts the moment the datasets its `depends_on` names (plus `portfolios`, for a `per_portfolio`
+dataset) have loaded, and one with no dependencies starts immediately, so the stage costs its longest
+chain rather than its sum. Each loader is called with a `LoadRequest` (dataset name, portfolio ids,
+its dependencies' frames as `inputs`, `as_of_date`, `data_root`, `run_id`, and a rate limiter): an
+`async def` loader runs as a task on the event loop, a plain `def` loader in a worker thread so a
+blocking driver never stalls the loop.
+
+`portfolios` is engine-known but scheduled like any other node — loaded by a loader, or read at no
+cost from an inline list in the config, whose written order is the solve order. Once it loads, the
+engine validates it against the `PORTFOLIOS` schema and sorts it by `solve_order` then `portfolio_id`.
+`solve_order` is a *priority* — lower solves first, ties break on the id, and the column may be
+omitted or repeated — and this loaded order is only the order builds are submitted in and the fallback
+key when no `solve_order` step is configured. The ids reach the entries that declare a dependency on
+`portfolios` as `request.portfolio_ids`; an entry that declares nothing — the example's `universe`,
+the slowest source in the run — is already loading by then.
 
 How many times each loader is called is the dataset's `scope`. A **global** dataset is one call for the
 whole book, and is what the assembly steps see. A **per-portfolio** dataset is the engine's own
@@ -84,7 +92,8 @@ book whose global stage is the long pole they cost nothing.
 
 Failure is split along the same line. A **structural** problem rejects the whole run — a required
 dataset missing, a schema violated, a global loader that raised, a per-portfolio dataset no batch of
-which came back. A **coverage** problem fails only the portfolios it touches — one batch that raised,
+which came back — and a dataset downstream of one of those is skipped, never called, and named beside
+the failure. A **coverage** problem fails only the portfolios it touches — one batch that raised,
 a portfolio with no `details` row — recorded as a failure at stage `load` so
 that every other portfolio still solves. A portfolio rejected here never entered the run, so it traded
 nothing and couples to nobody: it appears in the manifest as failed and blocks no one in the schedule.
@@ -94,17 +103,19 @@ params hash, row count, columns, how many batches it took, how many portfolios a
 how long it took, and a **content hash** that ignores row order, column order, and index, so which
 batch returned first never reaches the manifest.
 
-Every input — the portfolio list and each dataset — may carry a `rate_limit`, inline or as the name of
+Every loaded dataset — the portfolio list included — may carry a `rate_limit`, inline or as the name of
 a pool shared with other inputs on the same backend; the loader receives it as `request.rate_limiter`
 and wraps each call to its source in it, and `fan_out` packages the one-call-per-portfolio pattern.
 Why the bound is per input is in [the architecture explanation](explanation-architecture.md#loading-is-the-slow-part-so-it-is-concurrent-and-metered);
 the keys are in [the reference](reference-run-config.md#rate-limits).
 
-The shipped loaders (`loaders.py`) are the only place I/O happens. The CSV loader deliberately reads
-decimal and timestamp columns as strings, then `coerce_frame` turns them into `Decimal` exactly; a float
-only ever becomes `Decimal(repr(value))`, the shortest round-tripping form. `csv_per_portfolio` is the
-fan-out pattern with files in place of a client. Every dataset is a frame, so every loader has the one
-shape.
+The shipped loaders (`loaders.py`) are the only place I/O happens. Each stands in for a service — a
+custodian, a security master, an account master — waiting as long as that source would and then
+answering from a table under the data root. They read decimal and timestamp columns as strings and let
+`coerce_frame` turn them into `Decimal` exactly; a float only ever becomes `Decimal(repr(value))`, the
+shortest round-tripping form. `load_holdings` is the fan-out pattern, one call per account;
+`load_details` is its blocking twin, one query per batch of ids in a worker thread. Every dataset is a
+frame, so every loader has the one shape.
 
 `assemble` runs the config's **assembly steps** in order. Each is a function `Frames → Frames` over
 every loaded dataset by name — a vendor's analytics joined into `universe`, then dropped once it has
@@ -388,10 +399,11 @@ solve → orders. "Did the data change, or did the solver?" is a one-command que
 
 ## The example, stage by stage
 
-`configs/example_run.json` declares two portfolios over three securities, three global datasets and two
-loaded per account (`holdings` and `details`, one call and one file per portfolio), no assembly steps,
-one rule, three terms (alpha, tax cost, transaction cost), seven constraints, the Clarabel solver, and
-`fail_fast`; how many workers the run has is the `PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting.
+`configs/example_run.json` declares a hundred accounts over three securities, four global datasets and
+two loaded per account (`holdings`, a call each under a shared rate-limit pool, and `details`,
+twenty-five ids a call), no assembly steps, one rule, three terms (alpha, tax cost, transaction cost),
+up to seven constraints an account, the Clarabel solver, and `fail_fast`; how many workers the run has
+is the `PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting. The first two accounts are the ones to follow.
 
 P1 and P2 each hold $500,000 of A and $500,000 of B (5,000 A at 100, 10,000 B at 50 against a cost of
 40, so B carries a fifth of unrealized gain). C has the best expected return and the worst liquidity: it
@@ -404,7 +416,9 @@ the quarter of NAV that C's budget allows and takes A down first, because A is a
 sell 1,500 A, sell 2,000 B to the cap, buy 25,000 C — the hand-computable optimum, to the share. P2 can
 buy the same securities, so it waits for P1; when it solves, the chain state says C's budget is spent,
 and with a 60% cap forcing nothing and a short-term rate on B's gain making every A/B swap uneconomic,
-P2 produces no orders. Run the config twice and `diff-manifests` reports `no differences`; run it with
+P2 produces no orders. The other ninety-eight accounts follow behind them, each waiting on all the
+ones ahead because every account in this book trades the same three names; about half find something
+worth trading. Run the config twice and `diff-manifests` reports `no differences`; run it with
 `"dependencies": "all"` and every portfolio record is the same again (the diff names only the config).
 The [tutorial](tutorial-first-run.md) walks through exactly this.
 

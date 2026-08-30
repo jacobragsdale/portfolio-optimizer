@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from portfolio_optimizer.config.models import RunConfig
+from portfolio_optimizer.config.models import DatasetConfig, RunConfig
 from portfolio_optimizer.cvx.adapter import solver_version
 from portfolio_optimizer.domain.types import StrictModel
 
@@ -77,7 +77,7 @@ def external_modules(config: RunConfig) -> tuple[str, ...]:
     which is the ordinary arrangement; ones in a package nothing else names are not fingerprinted, and
     a worker missing them fails at stage ``solve`` rather than at the environment check.
     """
-    specs = [config.portfolios.loader, *(dataset.loader for dataset in config.datasets.values()), *config.assembly, *config.rules, *config.objective.terms, config.solve, config.sink]
+    specs = [*(dataset.loader for dataset in config.datasets.values() if isinstance(dataset, DatasetConfig)), *config.assembly, *config.rules, *config.objective.terms, config.solve, config.sink]
     if config.solve_order is not None:
         specs.append(config.solve_order)
     return tuple(sorted({spec.name.partition(":")[0] for spec in specs if spec.is_qualified}))
