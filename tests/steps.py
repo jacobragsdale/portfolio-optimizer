@@ -123,7 +123,7 @@ async def async_pool_reporting_loader(request: LoadRequest) -> pd.DataFrame:
 
 def invalid_input_loader(request: LoadRequest) -> pd.DataFrame:
     """A loader whose source rejected the request."""
-    msg = f"{request.dataset}: no rows as of {request.as_of:%Y-%m-%d}"
+    msg = f"{request.dataset}: no rows as of {request.as_of_date:%Y-%m-%d}"
     raise ValueError(msg)
 
 

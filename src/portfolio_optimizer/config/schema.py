@@ -37,11 +37,6 @@ _ENUM_DESCRIPTIONS: Mapping[str, str] = {
 
 _STEP_DEFINITIONS: Mapping[StepKind, tuple[str, str, ModuleType]] = {
     "loader": ("LoaderStep", "A dataset loader from `loaders.py`: `(request: LoadRequest[, params]) -> DataFrame`, plain or `async def`.", loaders),
-    "constraints_loader": (
-        "ConstraintsLoaderStep",
-        "The loader for the `constraints` dataset: `(request: LoadRequest[, params]) -> dict[portfolio_id, style constraints]`, plain or `async def`.",
-        loaders,
-    ),
     "assembly": ("AssemblyStep", "An assembly step from `assembly.py`: `(frames: Frames[, params]) -> Frames`, run once over every loaded dataset.", assembly),
     "rule": ("RuleStep", "A business-logic rule from `rules.py`: `(data: PortfolioData[, params]) -> PortfolioData`.", rules),
     "solve_order": ("SolveOrderStep", "A solve-order step from `solve_order.py`: `(data: PortfolioData[, params]) -> Decimal`; lower keys solve first, ties break on `portfolio_id`.", solve_order),
@@ -77,7 +72,6 @@ def run_config_schema() -> JsonObject:
     dataset_properties["loader"] = _with_ref(dataset_properties["loader"], "LoaderStep")
     dataset_config["properties"] = dataset_properties
     defs["DatasetConfig"] = dataset_config
-    defs["ConstraintsDatasetConfig"] = _constraints_dataset_config(dataset_config)
     objective = _object(defs["ObjectiveConfig"])
     objective_properties = _object(objective["properties"])
     objective_properties["terms"] = _with_items(objective_properties["terms"], "TermStep")
@@ -116,7 +110,7 @@ def shipped_steps(module: ModuleType, kind: StepKind) -> dict[str, type[Params] 
 
 def _kind_of(module: ModuleType, returns: object) -> StepKind | None:
     if module is loaders:
-        return "loader" if returns is pd.DataFrame else "constraints_loader"
+        return "loader" if returns is pd.DataFrame else None
     if module is assembly:
         return "assembly"
     if module is rules:
@@ -178,26 +172,12 @@ def _params_schema(model: type[Params], defs: JsonObject) -> JsonObject:
 
 def _datasets_schema(datasets: object) -> JsonObject:
     schema = _object(datasets)
-    properties: JsonObject = {name: {"$ref": "#/$defs/DatasetConfig"} for name in REQUIRED_FRAMES}
-    properties["constraints"] = {"$ref": "#/$defs/ConstraintsDatasetConfig"}
+    properties: JsonObject = {name: {"$ref": "#/$defs/DatasetConfig"} for name in (*REQUIRED_FRAMES, "sector_bounds")}
     return {
         **schema,
         "properties": dict(sorted(properties.items())),
-        "required": ["constraints"],
         "additionalProperties": {"$ref": "#/$defs/DatasetConfig"},
-        "$comment": f"Always required: constraints. Required unless an assembly step produces them: {list(REQUIRED_FRAMES)}. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
-    }
-
-
-def _constraints_dataset_config(dataset_config: JsonObject) -> JsonObject:
-    return {
-        **dataset_config,
-        "title": "ConstraintsDatasetConfig",
-        "description": "How the `constraints` dataset (style constraints per portfolio) is loaded.",
-        "properties": {
-            **_object(dataset_config["properties"]),
-            "loader": {"$ref": "#/$defs/ConstraintsLoaderStep", "description": "A loader returning a mapping of portfolio id to style-constraint object."},
-        },
+        "$comment": f"Required unless an assembly step produces them: {list(REQUIRED_FRAMES)}. `sector_bounds` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
     }
 
 

@@ -39,7 +39,7 @@ from portfolio_optimizer.config.models import StepSpec, load_run_config
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
 from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm
 from portfolio_optimizer.cvx.sides import decision_variables
-from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails, StyleConstraints
+from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails
 from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.build import build_problem_spec
@@ -58,13 +58,13 @@ MB = 1e6
 
 @dataclass(frozen=True, slots=True)
 class Book:
-    """A synthetic single-portfolio book: the four frames and the style the engine slices for one portfolio."""
+    """A synthetic single-portfolio book: the frames and the account row the engine slices for one portfolio."""
 
     details: PortfolioDetails
     holdings: pd.DataFrame
     universe: pd.DataFrame
     targets: pd.DataFrame
-    style: StyleConstraints
+    sector_bounds: pd.DataFrame
 
 
 def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, held: int, sides: str) -> Book:
@@ -107,16 +107,31 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
             "weight": pd.Series([Decimal(int(value)) / total for value in raw_weights], dtype="object"),
         }
     )
-    details = PortfolioDetails(portfolio_id="P1", name="Benchmark Book", state="NY", st_tax_rate=Decimal("0.40"), lt_tax_rate=Decimal("0.20"), cash=NAV * Decimal("0.1"), nav=NAV, benchmark_id="B1")
-    style = StyleConstraints(
+    details = PortfolioDetails(
+        portfolio_id="P1",
+        name="Benchmark Book",
+        state="NY",
+        st_tax_rate=Decimal("0.40"),
+        lt_tax_rate=Decimal("0.20"),
+        cash=NAV * Decimal("0.1"),
+        nav=NAV,
+        benchmark_id="B1",
         max_weight=Decimal("0.05"),
         max_turnover=Decimal(2),
-        min_trade_notional=Decimal(0),
-        cash_bounds=(Decimal(0), Decimal(1)) if sides == "sell" else (Decimal(0), Decimal(0)),
         max_adv_participation=Decimal("0.25"),
-        sector_bounds={name: (Decimal(0), Decimal("0.5")) for name in sector_names},
+        min_trade_notional=Decimal(0),
+        cash_lb=Decimal(0),
+        cash_ub=Decimal(1) if sides == "sell" else Decimal(0),
     )
-    return Book(details=details, holdings=holdings, universe=universe, targets=targets, style=style)
+    sector_bounds = pd.DataFrame(
+        {
+            "portfolio_id": pd.Series(["P1"] * len(sector_names), dtype="string"),
+            "sector": pd.Series(list(sector_names), dtype="string"),
+            "lower": pd.Series([Decimal(0)] * len(sector_names), dtype="object"),
+            "upper": pd.Series([Decimal("0.5")] * len(sector_names), dtype="object"),
+        }
+    )
+    return Book(details=details, holdings=holdings, universe=universe, targets=targets, sector_bounds=sector_bounds)
 
 
 @dataclass(slots=True)
@@ -207,7 +222,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     book = synthetic_book(rng, securities=securities, sectors=sectors, held=held, sides=sides)
     report = Report()
     with report.stage("validate bundle", f"{securities:,} securities in {sectors} sectors, {held:,} held; sides {sides}, terms {', '.join(step.name for step in resolved.terms)}") as row:
-        data = PortfolioData(details=book.details, holdings=book.holdings, universe=book.universe, targets=book.targets, style=book.style, as_of=AS_OF)
+        data = PortfolioData(details=book.details, holdings=book.holdings, universe=book.universe, targets=book.targets, sector_bounds=book.sector_bounds, as_of_date=AS_OF)
     with report.stage("rules", ", ".join(step.name for step in resolved.rules)):
         ruled, _ = apply_rules(data, resolved.rules)
     with report.stage("spec build") as row:

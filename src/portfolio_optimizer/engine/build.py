@@ -82,13 +82,14 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
     lb, ub = _bounds(data, universe, ids, w0)
     sector_names = tuple(sorted({str(value) for value in universe["sector"]}))
     sector_matrix = _membership(universe["sector"], sector_names)
-    sector_lb = [data.style.sector_bounds[name][0] if name in data.style.sector_bounds else Decimal(0) for name in sector_names]
-    sector_ub = [data.style.sector_bounds[name][1] if name in data.style.sector_bounds else Decimal(1) for name in sector_names]
-    adv_capacity = [data.style.max_adv_participation * Decimal(int(adv)) * px / nav for adv, px in zip(universe["adv_shares"], price, strict=True)]
+    bounds = _sector_bounds(data.sector_bounds)
+    sector_lb = [bounds[name][0] if name in bounds else Decimal(0) for name in sector_names]
+    sector_ub = [bounds[name][1] if name in bounds else Decimal(1) for name in sector_names]
+    adv_capacity = [data.details.max_adv_participation * Decimal(int(adv)) * px / nav for adv, px in zip(universe["adv_shares"], price, strict=True)]
     columns, flags = _extra_columns(universe)
     spec = ProblemSpec(
         portfolio_id=data.details.portfolio_id,
-        as_of=data.as_of,
+        as_of_date=data.as_of_date,
         security_ids=ids,
         sector_names=sector_names,
         nav=float(nav),
@@ -105,17 +106,22 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
         sector_matrix=sector_matrix,
         sector_lb=to_float64(sector_lb, "sector_lb"),
         sector_ub=to_float64(sector_ub, "sector_ub"),
-        max_turnover=float(data.style.max_turnover),
-        cash_lb=float(data.style.cash_bounds[0]),
-        cash_ub=float(data.style.cash_bounds[1]),
-        min_trade_notional=float(data.style.min_trade_notional),
+        max_turnover=float(data.details.max_turnover),
+        cash_lb=float(data.details.cash_lb),
+        cash_ub=float(data.details.cash_ub),
+        min_trade_notional=float(data.details.min_trade_notional),
         columns=columns,
         flags=flags,
     )
     inputs = OrderInputs(
-        security_ids=ids, price=tuple(price), shares_held=tuple(shares_held), lot_size=tuple(lot_size), w0=tuple(w0), ub=tuple(ub), nav=nav, min_trade_notional=data.style.min_trade_notional
+        security_ids=ids, price=tuple(price), shares_held=tuple(shares_held), lot_size=tuple(lot_size), w0=tuple(w0), ub=tuple(ub), nav=nav, min_trade_notional=data.details.min_trade_notional
     )
     return BuildOutput(spec=spec, order_inputs=inputs)
+
+
+def _sector_bounds(frame: pd.DataFrame) -> dict[str, tuple[Decimal, Decimal]]:
+    """The portfolio's sector limits by sector name; a sector with no row is unbounded, `[0, 1]`."""
+    return {str(sector): (_decimal(low), _decimal(high)) for sector, low, high in zip(frame["sector"], frame["lower"], frame["upper"], strict=True)}
 
 
 def _membership(column: pd.Series, names: tuple[str, ...]) -> csr_array:
@@ -171,7 +177,7 @@ def _tax_per_dollar(data: PortfolioData, position: _Position | None, price: Deci
     """Signed tax owed per dollar sold: gain fraction times the rate for the holding period. Losses are negative."""
     if position is None:
         return Decimal(0)
-    rate = data.details.lt_tax_rate if data.as_of - position.acquired_on > LONG_TERM_HOLDING else data.details.st_tax_rate
+    rate = data.details.lt_tax_rate if data.as_of_date - position.acquired_on > LONG_TERM_HOLDING else data.details.st_tax_rate
     return (price - position.avg_cost) / price * rate
 
 
@@ -189,7 +195,7 @@ def _bounds(data: PortfolioData, universe: pd.DataFrame, ids: tuple[str, ...], w
         floor = floors[index]
         cap = caps[index]
         low = Decimal(0) if floor is None else max(Decimal(0), floor)
-        high = data.style.max_weight if cap is None else min(data.style.max_weight, cap)
+        high = data.details.max_weight if cap is None else min(data.details.max_weight, cap)
         if low > high:
             msg = f"{security}: lower bound {low} exceeds upper bound {high}"
             raise BuildError(msg)

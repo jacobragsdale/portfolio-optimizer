@@ -91,7 +91,7 @@ class RunMeta(StrictModel):
     """Identity of the run, recorded in the manifest."""
 
     name: str = Field(min_length=1, description="Human-readable run name, e.g. `daily_rebalance`.")
-    as_of: AwareDatetime = Field(description="The timestamp the run is as of, timezone-aware (`2026-08-28T00:00:00Z`). Holding periods and the manifest use it; naive timestamps are rejected.")
+    as_of_date: AwareDatetime = Field(description="The timestamp the run is as of, timezone-aware (`2026-08-28T00:00:00Z`). Holding periods and the manifest use it; naive timestamps are rejected.")
     tags: dict[str, str] = Field(default_factory=dict, description='Free-form string labels copied into the manifest, e.g. `{"desk": "tax-aware"}`.')
 
 
@@ -127,7 +127,7 @@ class RateLimitConfig(StrictModel):
 class DatasetConfig(StrictModel):
     """How one input is loaded, how its portfolios are partitioned across calls, and how hard its source may be pushed."""
 
-    loader: StepSpec = Field(description="The loader step. For frame datasets it returns a DataFrame; for `constraints` it returns a mapping of portfolio id to style-constraint object.")
+    loader: StepSpec = Field(description="The loader step: `(request: LoadRequest[, params]) -> DataFrame`, plain or `async def`.")
     scope: DatasetScope = Field(
         default="global",
         description="`global` (default): one call for the whole book, and the dataset is visible to every assembly step. `per_portfolio`: the engine partitions the portfolio ids into batches and calls the loader once per batch, so a source that answers per account is driven by the engine rather than by the loader; a batch that fails, or that comes back without a portfolio's rows, fails those portfolios alone at stage `load` and the run carries on. A per-portfolio dataset is not passed to assembly — attach its columns in a rule instead.",
@@ -222,7 +222,7 @@ class RunConfig(StrictModel):
         description='The portfolio list (`portfolio_id`, optional `solve_order`): a bare loader step, or `{"loader": step, "rate_limit": ...}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, and a portfolio waits only for higher-priority portfolios whose tradable set — the securities it can trade on the side the run couples through — overlaps its own. A `solve_order` step replaces the column.'
     )
     datasets: dict[str, DatasetConfig] = Field(
-        description="Named datasets. `constraints` is always required; `holdings`, `universe`, `details`, and `targets` must be declared here unless an assembly step produces them. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known."
+        description="Named datasets, every one a frame. `holdings`, `universe`, `details`, and `targets` must be declared here unless an assembly step produces them; `sector_bounds` is engine-known but optional, and a run that omits it bounds no sector. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known."
     )
     rate_limits: dict[str, RateLimitConfig] = Field(
         default_factory=dict,
@@ -263,12 +263,11 @@ class RunConfig(StrictModel):
 
     @model_validator(mode="after")
     def _datasets_are_consistent(self) -> Self:
-        required = REQUIRED_DATASETS if not self.assembly else ("constraints",)
-        missing = [name for name in required if name not in self.datasets]
-        if missing:
-            hint = "" if self.assembly else "; a run without assembly steps has nothing else to produce them"
-            msg = f"datasets must declare {list(required)}; missing {missing}{hint}"
-            raise ValueError(msg)
+        if not self.assembly:
+            missing = [name for name in REQUIRED_DATASETS if name not in self.datasets]
+            if missing:
+                msg = f"datasets must declare {list(REQUIRED_DATASETS)}; missing {missing}; a run without assembly steps has nothing else to produce them"
+                raise ValueError(msg)
         inputs = [("portfolios", self.portfolios), *((f"datasets.{name}", dataset) for name, dataset in self.datasets.items())]
         for where, dataset in inputs:
             if isinstance(dataset.rate_limit, str) and dataset.rate_limit not in self.rate_limits:

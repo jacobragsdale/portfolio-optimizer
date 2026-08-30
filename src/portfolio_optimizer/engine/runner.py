@@ -618,7 +618,7 @@ def _manifest(
         run_id=context.io.run_id,
         run_name=config.run.name,
         created_at_utc=created_at(context.io.clock.now()),
-        as_of=config.run.as_of,
+        as_of_date=config.run.as_of_date,
         git_sha=context.git.sha,
         git_dirty=context.git.dirty,
         schedule=executed.schedule.summary() if executed is not None else None,

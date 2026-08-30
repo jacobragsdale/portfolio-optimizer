@@ -15,7 +15,7 @@ from portfolio_optimizer.domain.data import LoadRequest
 from portfolio_optimizer.domain.results import ChainState
 from portfolio_optimizer.domain.types import Params
 
-type StepKind = Literal["loader", "constraints_loader", "assembly", "rule", "solve_order", "term", "constraint", "solve", "sink"]
+type StepKind = Literal["loader", "assembly", "rule", "solve_order", "term", "constraint", "solve", "sink"]
 
 
 @dataclass(frozen=True, slots=True)

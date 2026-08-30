@@ -72,7 +72,7 @@ def test_restricted_names_are_frozen_at_their_current_weight(make: Factories, fr
 
 def test_per_security_bound_columns_only_tighten_the_style_limits(make: Factories, frames: Frames) -> None:
     universe = frames.three_security_universe().assign(max_weight=pd.Series([Decimal("0.3"), None, None], dtype="object"), min_weight=pd.Series([None, Decimal("0.1"), None], dtype="object"))
-    spec = build_problem_spec(make.portfolio_data(universe=universe, style=make.style(max_weight=Decimal("0.6")))).spec
+    spec = build_problem_spec(make.portfolio_data(universe=universe, details=make.details(max_weight=Decimal("0.6")))).spec
     np.testing.assert_array_equal(spec.ub, [0.3, 0.6, 0.6])
     np.testing.assert_array_equal(spec.lb, [0.0, 0.1, 0.0])
 

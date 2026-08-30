@@ -12,6 +12,7 @@ from portfolio_optimizer.domain.frames import ColumnSpec, FrameCheck, FrameSchem
 
 ZERO = Decimal(0)
 ONE = Decimal(1)
+TWO = Decimal(2)
 TARGET_WEIGHT_SUM_TOLERANCE = Decimal("1e-8")
 
 
@@ -20,6 +21,20 @@ def _targets_sum_to_one(frame: pd.DataFrame) -> str | None:
     off = {str(benchmark): total for benchmark, total in sums.items() if abs(total - ONE) > TARGET_WEIGHT_SUM_TOLERANCE}
     if off:
         return f"weights do not sum to 1 for benchmark(s) {off}"
+    return None
+
+
+def _cash_bounds_ordered(frame: pd.DataFrame) -> str | None:
+    off = [str(portfolio) for portfolio, low, high in zip(frame["portfolio_id"], frame["cash_lb"], frame["cash_ub"], strict=True) if low > high]
+    if off:
+        return f"cash_lb exceeds cash_ub for portfolio(s) {off}"
+    return None
+
+
+def _sector_bounds_ordered(frame: pd.DataFrame) -> str | None:
+    off = [f"{portfolio}/{sector}" for portfolio, sector, low, high in zip(frame["portfolio_id"], frame["sector"], frame["lower"], frame["upper"], strict=True) if low > high]
+    if off:
+        return f"lower exceeds upper for {off}"
     return None
 
 
@@ -48,9 +63,26 @@ DETAILS = FrameSchema(
         ColumnSpec("cash", "decimal", ge=ZERO),
         ColumnSpec("nav", "decimal", gt=ZERO),
         ColumnSpec("benchmark_id", "string"),
+        # The account's management-style limits. Every constraint reads its bounds from here or from
+        # `sector_bounds`, so what a run permits is data that changes daily, not config.
+        ColumnSpec("max_weight", "decimal", gt=ZERO, le=ONE),
+        ColumnSpec("max_turnover", "decimal", ge=ZERO, le=TWO),
+        ColumnSpec("max_adv_participation", "decimal", ge=ZERO, le=ONE),
+        ColumnSpec("min_trade_notional", "decimal", ge=ZERO),
+        ColumnSpec("cash_lb", "decimal", ge=ZERO, le=ONE),
+        ColumnSpec("cash_ub", "decimal", ge=ZERO, le=ONE),
     ),
     key=("portfolio_id",),
+    checks=(FrameCheck("cash_bounds_ordered", _cash_bounds_ordered),),
 )
+
+SECTOR_BOUNDS = FrameSchema(
+    name="sector_bounds",
+    columns=(ColumnSpec("portfolio_id", "string"), ColumnSpec("sector", "string"), ColumnSpec("lower", "decimal", ge=ZERO, le=ONE), ColumnSpec("upper", "decimal", ge=ZERO, le=ONE)),
+    key=("portfolio_id", "sector"),
+    checks=(FrameCheck("bounds_ordered", _sector_bounds_ordered),),
+)
+"""Per-account sector limits, one row per portfolio and sector. Optional: a run that declares no such dataset bounds no sector."""
 
 HOLDINGS = FrameSchema(
     name="holdings",
@@ -105,20 +137,20 @@ ORDERS = FrameSchema(
         ColumnSpec("unrounded_shares", "Float64"),
         ColumnSpec("spec_hash", "string"),
         ColumnSpec("run_id", "string"),
-        ColumnSpec("as_of", "datetime_utc"),
+        ColumnSpec("as_of_date", "datetime_utc"),
     ),
     key=("portfolio_id", "security_id"),
     checks=(FrameCheck("notional_matches", _orders_notional_matches),),
 )
 
-DATASET_SCHEMAS: dict[str, FrameSchema] = {"holdings": HOLDINGS, "universe": UNIVERSE, "details": DETAILS, "targets": TARGETS}
+DATASET_SCHEMAS: dict[str, FrameSchema] = {"holdings": HOLDINGS, "universe": UNIVERSE, "details": DETAILS, "targets": TARGETS, "sector_bounds": SECTOR_BOUNDS}
 """Engine-known frames and the schema each must satisfy after assembly. Any other dataset name is an extra."""
 
-REQUIRED_FRAMES: tuple[str, ...] = ("holdings", "universe", "details", "targets")
-"""Frames that must exist after assembly, loaded directly or produced by an assembly step."""
+REQUIRED_DATASETS: tuple[str, ...] = ("holdings", "universe", "details", "targets")
+"""Datasets a run cannot do without, loaded directly or produced by an assembly step. ``sector_bounds`` is engine-known but optional."""
 
-REQUIRED_DATASETS: tuple[str, ...] = (*REQUIRED_FRAMES, "constraints")
-"""Datasets a run cannot do without. ``constraints`` is a dict, not a frame, and must always be declared."""
+REQUIRED_FRAMES: tuple[str, ...] = REQUIRED_DATASETS
+"""Every dataset is a frame, so these are the same names; both spellings are kept because each reads better in its own place."""
 
-RESERVED_DATASET_NAMES: frozenset[str] = frozenset({*DATASET_SCHEMAS, "constraints", "portfolios"})
+RESERVED_DATASET_NAMES: frozenset[str] = frozenset({*DATASET_SCHEMAS, "portfolios"})
 """Names an extra dataset may not use."""

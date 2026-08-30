@@ -22,14 +22,14 @@ Ways to validate a config:
 | `uv run portfolio-optimizer validate-config CONFIG` | Everything: the models, plus importing every step, checking signatures, validating params (including custom steps), checking the solver, and constructing every term and constraint once under the run's side profile. Prints how dependencies between portfolios will be derived, then one line per resolved step. The same resolution runs at the start of `run` and on every worker. |
 | Any draft 2020-12 validator (`check-jsonschema`, `jsonschema`, `ajv`) against the schema file | The schema alone — suitable for CI pipelines that do not install the engine. |
 
-The schema cannot express one rule the models enforce: `as_of` must carry a time zone.
+The schema cannot express one rule the models enforce: `as_of_date` must carry a time zone.
 `validate-config` reports it.
 
 ## Top level
 
 | Key | Type | Required | Description |
 |---|---|---|---|
-| `run` | object | yes | Run identity: `name` (non-empty), `as_of` (timezone-aware ISO-8601 timestamp), `tags` (string map, default `{}`). |
+| `run` | object | yes | Run identity: `name` (non-empty), `as_of_date` (timezone-aware ISO-8601 timestamp), `tags` (string map, default `{}`). |
 | `portfolios` | step or input | yes | Loader returning the `portfolios` frame (`portfolio_id`, optional `solve_order`); a bare step, or `{"loader": step[, "rate_limit": ...]}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, values may repeat. |
 | `datasets` | object | yes | Named inputs, each `{"loader": step[, "scope": ..., "batch_size": n, "rate_limit": name or bound]}`. `constraints` is always required; `holdings`, `universe`, `details`, and `targets` are required unless `assembly` is non-empty, in which case they may be produced by a step and are checked after assembly. Any other name is an extra dataset: visible to every assembly step, and carried into each portfolio's bundle as `data.extras` unless dropped. All dataset loaders run concurrently. |
 | `rate_limits` | object | no | Named pools that inputs on the same backend share; see below. Default `{}`. |
@@ -182,7 +182,7 @@ a scheduler someone else runs — sized by the settings below; they are recorded
 
 Loaders: `csv` (`path`, `dtypes`), `csv_per_portfolio` (`directory`, `dtypes`; reads
 `<directory>/<portfolio_id>.csv` per portfolio under the input's rate limit), `parquet` (`path`,
-`dtypes`), `json_constraints` (`path`). `dtypes` maps a column name to one kind — `string`, `Int64`,
+`dtypes`). `dtypes` maps a column name to one kind — `string`, `Int64`,
 `Float64`, `bool`, `decimal` (an exact `Decimal`), or `datetime_utc` (a timezone-aware timestamp) —
 and applies to extra datasets only; engine-known datasets are typed by their schema, and a column no
 kind is declared for arrives as pandas inferred it. Assembly steps: `join`, `union`, `select`, `drop` (parameters above). Rules:
@@ -195,18 +195,31 @@ Solve-order steps: `furthest_from_target_first`. Terms: `tracking_error`, `alpha
 `cumulative_adv_participation` (`chain`: `trade ≤ adv_capacity` and `coupled ≤ adv_capacity − predecessors' trades on the side the run couples through`).
 Solve steps: `cvxpy` (default), `pro_rata_fill`. Sinks: `orders_to_parquet`, `orders_to_csv` (`subdir`, default `orders`).
 
-## Style constraints (the `constraints` dataset)
+## Style limits (columns of `details`, and the `sector_bounds` dataset)
 
-Per portfolio id, an object validated into `StyleConstraints`:
+Every bounded constraint reads its limits from the data, not from the config. The per-account scalars
+are columns of the `details` frame:
 
-| Key | Type | Description |
+| Column | Type | Description |
 |---|---|---|
 | `max_weight` | decimal in (0, 1] | Single-name cap. |
 | `max_turnover` | decimal in [0, 2] | Two-way turnover as a fraction of NAV. |
-| `min_trade_notional` | decimal ≥ 0 | Orders below this notional are dropped. |
-| `cash_bounds` | `[low, high]`, 0 ≤ low ≤ high ≤ 1 | Bounds on `1 − Σw`; `["0", "0"]` is full investment. |
 | `max_adv_participation` | decimal in [0, 1] | Fraction of each name's ADV the portfolio may trade. |
-| `sector_bounds` | map of sector → `[low, high]` | Default `{}`; every sector must exist in the universe. |
+| `min_trade_notional` | decimal ≥ 0 | Orders below this notional are dropped. Not a constraint: the order step applies it after the solve. |
+| `cash_lb` | decimal in [0, 1] | Lower bound on `1 − Σw`. |
+| `cash_ub` | decimal in [0, 1] | Upper bound on `1 − Σw`; `cash_lb = cash_ub = 0` is full investment. Must be at least `cash_lb`. |
+
+Per-sector limits do not fit a row, so they are their own dataset, `sector_bounds` — engine-known but
+optional, and a run that omits it bounds no sector:
+
+| Column | Type | Description |
+|---|---|---|
+| `portfolio_id` | string | The account the bound applies to. |
+| `sector` | string | Must exist in the universe. |
+| `lower` | decimal in [0, 1] | Lower bound on the sector's weight; must not exceed `upper`. |
+| `upper` | decimal in [0, 1] | Upper bound on the sector's weight. |
+
+Key is (`portfolio_id`, `sector`). A sector with no row is unbounded — `[0, 1]`.
 
 ## Environment
 

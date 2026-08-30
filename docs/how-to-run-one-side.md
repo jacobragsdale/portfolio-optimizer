@@ -2,7 +2,7 @@
 
 A desk that decides sells in a separate process wants the optimizer to do one side at a time. This
 guide turns a working two-sided config into a buy-only or sell-only run: it sets `sides`, removes what
-the missing side takes with it, sets `cash_bounds` for the direction cash can move, and shows what the
+the missing side takes with it, sets the cash bounds for the direction cash can move, and shows what the
 run refuses and why. A one-sided run has one variable per name instead of three, so it is also the
 faster problem — Clarabel is 2–3.5× quicker at 100,000 names (`IDEAS.md`).
 
@@ -46,20 +46,22 @@ included. When you write your own, do the same unless the term means one side sp
 The shipped `pro_rata_fill` solve step spends cash into the underweights and so fits `buy` (or `both`);
 under `sell` its answer fails the profile's `no_buys` check.
 
-## 3. Set `cash_bounds` for the direction cash moves
+## 3. Set `cash_lb` and `cash_ub` for the direction cash moves
 
-`cash_bounds` keeps its meaning — bounds on the cash *after* the run — but the side fixes which way
-cash can go, so the starting cash has to be on the right side of the bound:
+The account's `cash_lb` and `cash_ub` columns keep their meaning — bounds on the cash *after* the
+run — but the side fixes which way cash can go, so the starting cash has to be on the right side of
+the bound:
 
 | Run | Cash can only | So the start must satisfy | What the bounds mean |
 |---|---|---|---|
 | `buy` | fall | starting cash ≥ `cash_lb` | `cash_lb` is the floor the run may spend down to; `cash_ub` above the start is irrelevant. |
 | `sell` | rise | starting cash ≤ `cash_ub` | `cash_ub` is the most it may raise; `cash_lb` above the start is the least it must raise. |
 
-Two shapes are common. A buy run that invests the cash it starts with: `["0", "0"]` or `["0", "0.02"]`
-to leave a small buffer. A sell run that raises cash to a target: `["0.1", "0.2"]` raises at least 10%
-of NAV and at most 20%; `["0", "1"]` lets the objective decide. A sell run with `["0", "0"]` on a fully
-invested book is feasible and trades nothing — every sell would raise cash above the cap.
+Two shapes are common. A buy run that invests the cash it starts with: `cash_lb` and `cash_ub` both
+`0`, or `0` and `0.02` to leave a small buffer. A sell run that raises cash to a target: `0.1` and
+`0.2` raises at least 10% of NAV and at most 20%; `0` and `1` lets the objective decide. A sell run
+with both at `0` on a fully invested book is feasible and trades nothing — every sell would raise cash
+above the cap.
 
 ## 4. Validate, then run
 

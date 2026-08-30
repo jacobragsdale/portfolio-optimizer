@@ -119,10 +119,6 @@ async def async_rule(data: PortfolioData) -> PortfolioData:  # async is the case
     return data
 
 
-def constraints_loader(request: LoadRequest) -> dict[str, dict[str, object]]:  # noqa: ARG001  # never invoked here
-    return {}
-
-
 def assembly_step(frames: Frames) -> Frames:
     return frames
 
@@ -203,14 +199,7 @@ def test_convention_violations_are_reported(fake_steps: str, name: str, kind: St
 
 
 def test_every_contract_kind_accepts_its_canonical_signature(fake_steps: str) -> None:
-    pairs: list[tuple[str, StepKind]] = [
-        ("loader", "loader"),
-        ("constraints_loader", "constraints_loader"),
-        ("assembly_step", "assembly"),
-        ("term", "term"),
-        ("chained_constraint", "constraint"),
-        ("sink", "sink"),
-    ]
+    pairs: list[tuple[str, StepKind]] = [("loader", "loader"), ("assembly_step", "assembly"), ("term", "term"), ("chained_constraint", "constraint"), ("sink", "sink")]
     for name, kind in pairs:
         assert resolve_step(step_spec(f"{fake_steps}:{name}"), kind).kind == kind
 
@@ -220,7 +209,7 @@ def test_loaders_may_be_async_and_invoke_async_runs_both_styles(fake_steps: str)
     synchronous = resolve_step(step_spec(f"{fake_steps}:loader"), "loader")
     assert asynchronous.is_async
     assert not synchronous.is_async
-    request = LoadRequest(dataset="holdings", portfolio_ids=(), as_of=AS_OF, data_root=Path(), run_id="r")
+    request = LoadRequest(dataset="holdings", portfolio_ids=(), as_of_date=AS_OF, data_root=Path(), run_id="r")
 
     async def both() -> tuple[object, object]:
         return await asynchronous.invoke_async(request=request), await synchronous.invoke_async(request=request)
@@ -243,7 +232,7 @@ def test_invoke_supplies_params_and_the_chain(fake_steps: str) -> None:
     assert result.applied_rules == ("tilt:0.5",)
     with pytest.raises(ValueError, match="reads the chain but none was supplied"):
         chained.invoke(x=None, spec=None)
-    frame = plain_loader.invoke(request=LoadRequest(dataset="holdings", portfolio_ids=(), as_of=data.as_of, data_root=Path(), run_id="r"))
+    frame = plain_loader.invoke(request=LoadRequest(dataset="holdings", portfolio_ids=(), as_of_date=data.as_of_date, data_root=Path(), run_id="r"))
     assert isinstance(frame, pd.DataFrame)
 
 
@@ -270,9 +259,9 @@ def fake_config(
     terms: list[str] | None = None,
 ) -> RunConfig:
     body: dict[str, object] = {
-        "run": {"name": "r", "as_of": "2026-01-01T00:00:00Z"},
+        "run": {"name": "r", "as_of_date": "2026-01-01T00:00:00Z"},
         "portfolios": f"{fake_steps}:loader",
-        "datasets": {name: {"loader": f"{fake_steps}:loader"} for name in ("holdings", "universe", "details", "targets")} | {"constraints": {"loader": f"{fake_steps}:constraints_loader"}},
+        "datasets": {name: {"loader": f"{fake_steps}:loader"} for name in ("holdings", "universe", "details", "targets")},
         "rules": rules if rules is not None else [f"{fake_steps}:plain_rule"],
         "objective": {"terms": terms if terms is not None else [f"{fake_steps}:term"]},
         "constraints": constraints if constraints is not None else [],
@@ -290,10 +279,10 @@ def fake_config(
 
 def test_resolve_config_resolves_every_step(fake_steps: str) -> None:
     resolved = resolve_config(fake_config(fake_steps, constraints=[f"{fake_steps}:chained_constraint"], solve_order=f"{fake_steps}:solve_order_step"))
-    assert [step.kind for step in resolved.all_steps] == ["loader", "loader", "loader", "loader", "loader", "constraints_loader", "rule", "solve_order", "term", "constraint", "solve", "sink"]
+    assert [step.kind for step in resolved.all_steps] == ["loader", "loader", "loader", "loader", "loader", "rule", "solve_order", "term", "constraint", "solve", "sink"]
     assert resolved.config_sha256 == config_sha256(resolved.config)
     assert resolved.solve.qualname == "portfolio_optimizer.solvers:cvxpy", "the default solve step is the shipped cvxpy one"
-    assert resolved.loaders["constraints"].kind == "constraints_loader"
+    assert {step.kind for step in resolved.loaders.values()} == {"loader"}, "every dataset is a frame, so every loader resolves under the one contract"
     assert resolved.solve_order is not None and resolved.solve_order.qualname == "fake_steps:solve_order_step"
     assert [step.qualname for step in resolved.chain_aware_steps] == ["fake_steps:chained_constraint"]
     assert resolve_config(fake_config(fake_steps)).solve_order is None

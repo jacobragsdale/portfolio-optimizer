@@ -152,6 +152,15 @@ def validate_frame(frame: pd.DataFrame, schema: FrameSchema) -> pd.DataFrame:
     return frame
 
 
+def empty_frame(schema: FrameSchema) -> pd.DataFrame:
+    """A zero-row frame with every column the schema declares, at its declared dtype.
+
+    What an optional dataset looks like when a run does not declare it: the code that reads it needs
+    no special case, because an absent dataset and one that loaded no rows mean the same thing.
+    """
+    return pd.DataFrame({spec.name: pd.Series(dtype=spec.dtype) for spec in schema.columns})
+
+
 def coerce_frame(frame: pd.DataFrame, schema: FrameSchema) -> pd.DataFrame:
     """Cast raw input columns to the schema's dtypes; the loader-side counterpart of validation.
 

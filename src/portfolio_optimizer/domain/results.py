@@ -85,7 +85,7 @@ class ProblemSpec:
     """
 
     portfolio_id: str
-    as_of: datetime
+    as_of_date: datetime
     security_ids: tuple[str, ...]
     sector_names: tuple[str, ...]
     nav: float
@@ -247,7 +247,7 @@ class ProblemSpec:
     def _metadata(self) -> dict[str, object]:
         return {
             "portfolio_id": self.portfolio_id,
-            "as_of": self.as_of.isoformat(),
+            "as_of_date": self.as_of_date.isoformat(),
             "security_ids": list(self.security_ids),
             "sector_names": list(self.sector_names),
             "column_names": list(self.columns),
@@ -277,7 +277,7 @@ class ProblemSpec:
         shape = (len(meta["sector_names"]), len(meta["security_ids"]))
         return cls(
             portfolio_id=str(meta["portfolio_id"]),
-            as_of=datetime.fromisoformat(str(meta["as_of"])),
+            as_of_date=datetime.fromisoformat(str(meta["as_of_date"])),
             security_ids=tuple(str(s) for s in meta["security_ids"]),
             sector_names=tuple(str(s) for s in meta["sector_names"]),
             nav=float(meta["nav"]),

@@ -21,10 +21,10 @@ from distributed import LocalCluster
 
 from portfolio_optimizer.config.models import RunConfig, StepSpec, load_run_config
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
-from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails, StyleConstraints
+from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails
 from portfolio_optimizer.domain.frames import FrameSchema
 from portfolio_optimizer.domain.results import F64, ProblemSpec, Solution, SolveStatus, StepRef
-from portfolio_optimizer.domain.schemas import DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
+from portfolio_optimizer.domain.schemas import DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, SECTOR_BOUNDS, TARGETS, UNIVERSE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
@@ -59,7 +59,14 @@ _DEFAULTS: dict[str, Row] = {
         "cash": Decimal(0),
         "nav": Decimal(1000000),
         "benchmark_id": "B1",
+        "max_weight": Decimal(1),
+        "max_turnover": Decimal(2),
+        "max_adv_participation": Decimal(1),
+        "min_trade_notional": Decimal(0),
+        "cash_lb": Decimal(0),
+        "cash_ub": Decimal(0),
     },
+    SECTOR_BOUNDS.name: {"portfolio_id": "P1", "sector": "TECH", "lower": Decimal(0), "upper": Decimal(1)},
     HOLDINGS.name: {"portfolio_id": "P1", "security_id": "A", "quantity": 5000, "avg_cost": Decimal(90), "acquired_on": ACQUIRED},
     UNIVERSE.name: {"security_id": "A", "price": Decimal(100), "sector": "TECH", "adv_shares": 1_000_000, "lot_size": 1, "restricted": False},
     TARGETS.name: {"benchmark_id": "B1", "security_id": "A", "weight": Decimal(1)},
@@ -74,7 +81,7 @@ _DEFAULTS: dict[str, Row] = {
         "unrounded_shares": 10.0,
         "spec_hash": "0" * 64,
         "run_id": "run-1",
-        "as_of": AS_OF,
+        "as_of_date": AS_OF,
     },
 }
 
@@ -112,6 +119,10 @@ class Frames:
         """Build a ``targets`` frame."""
         return build(TARGETS, *rows)
 
+    def sector_bounds(self, *rows: Row) -> pd.DataFrame:
+        """Build a ``sector_bounds`` frame; with no rows, the empty frame that bounds no sector."""
+        return build(SECTOR_BOUNDS, *rows) if rows else empty_frame(SECTOR_BOUNDS)
+
     def orders(self, *rows: Row) -> pd.DataFrame:
         """Build an ``orders`` frame."""
         return build(ORDERS, *rows)
@@ -135,27 +146,14 @@ def make_details(**overrides: object) -> PortfolioDetails:
     return PortfolioDetails.model_validate(dict(_DEFAULTS[DETAILS.name]) | overrides)
 
 
-def make_style(**overrides: object) -> StyleConstraints:
-    """A permissive ``StyleConstraints`` with optional field overrides."""
-    base: dict[str, object] = {
-        "max_weight": Decimal(1),
-        "max_turnover": Decimal(2),
-        "min_trade_notional": Decimal(0),
-        "cash_bounds": (Decimal(0), Decimal(0)),
-        "max_adv_participation": Decimal(1),
-        "sector_bounds": {},
-    }
-    return StyleConstraints.model_validate(base | overrides)
-
-
 def make_portfolio_data(
     *,
     details: PortfolioDetails | None = None,
     holdings: pd.DataFrame | None = None,
     universe: pd.DataFrame | None = None,
     targets: pd.DataFrame | None = None,
-    style: StyleConstraints | None = None,
-    as_of: datetime = AS_OF,
+    sector_bounds: pd.DataFrame | None = None,
+    as_of_date: datetime = AS_OF,
     extras: Mapping[str, pd.DataFrame] | None = None,
     prevalidated: frozenset[str] = frozenset(),
 ) -> PortfolioData:
@@ -166,8 +164,8 @@ def make_portfolio_data(
         holdings=holdings if holdings is not None else frames.holdings({"security_id": "A", "quantity": 5000}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(60)}),
         universe=universe if universe is not None else frames.three_security_universe(),
         targets=targets if targets is not None else frames.equal_weight_targets(),
-        style=style if style is not None else make_style(),
-        as_of=as_of,
+        sector_bounds=sector_bounds if sector_bounds is not None else frames.sector_bounds(),
+        as_of_date=as_of_date,
         extras=extras if extras is not None else {},
         prevalidated=prevalidated,
     )
@@ -179,7 +177,7 @@ def make_spec(n: int = 3, **overrides: object) -> ProblemSpec:
     zeros: F64 = np.zeros(n)
     base: dict[str, object] = {
         "portfolio_id": "P1",
-        "as_of": AS_OF,
+        "as_of_date": AS_OF,
         "security_ids": ids,
         "sector_names": ("TECH",),
         "nav": 1_000_000.0,
@@ -226,7 +224,6 @@ class Factories:
     """Domain-object factories handed to tests as one fixture."""
 
     details: Callable[..., PortfolioDetails]
-    style: Callable[..., StyleConstraints]
     portfolio_data: Callable[..., PortfolioData]
     spec: Callable[..., ProblemSpec]
     solution: Callable[..., Solution]
@@ -241,7 +238,7 @@ def frames() -> Frames:
 @pytest.fixture
 def make() -> Factories:
     """Domain-object factories."""
-    return Factories(details=make_details, style=make_style, portfolio_data=make_portfolio_data, spec=make_spec, solution=make_solution)
+    return Factories(details=make_details, portfolio_data=make_portfolio_data, spec=make_spec, solution=make_solution)
 
 
 # --- the shipped constraints, and the example config with its steps swapped for no-ops or kept real ---

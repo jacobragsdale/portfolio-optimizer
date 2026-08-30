@@ -7,11 +7,10 @@ dependency.
 ## Prerequisites
 
 - You know the dataset's shape. Engine-known datasets (`portfolios`, `holdings`, `universe`, `details`,
-  `targets`) must satisfy the schemas in `src/portfolio_optimizer/domain/schemas.py` after assembly
-  (`holdings` and `universe` may carry any further columns); any other dataset only needs the columns
-  your assembly steps and rules use, typed the way you want them to arrive — declare `dtypes` for its
-  key columns (`{"security_id": "string"}`) so a join never has to guess.
-- The `constraints` dataset is a dict per portfolio, not a frame.
+  `targets`, `sector_bounds`) must satisfy the schemas in `src/portfolio_optimizer/domain/schemas.py`
+  after assembly (`holdings` and `universe` may carry any further columns); any other dataset only
+  needs the columns your assembly steps and rules use, typed the way you want them to arrive — declare
+  `dtypes` for its key columns (`{"security_id": "string"}`) so a join never has to guess.
 
 ## Add a loader
 
@@ -27,13 +26,13 @@ class SqlParams(Params):
 
 
 def holdings_from_sql(request: LoadRequest, params: SqlParams) -> pd.DataFrame:
-    """Read holdings for the requested portfolios as of ``request.as_of``."""
-    frame = my_gateway.query(params.query, portfolio_ids=request.portfolio_ids, as_of=request.as_of)
+    """Read holdings for the requested portfolios as of ``request.as_of_date``."""
+    frame = my_gateway.query(params.query, portfolio_ids=request.portfolio_ids, as_of_date=request.as_of_date)
     return coerce_frame(frame, DATASET_SCHEMAS[request.dataset])
 ```
 
 - `request: LoadRequest` carries `dataset` (the config key being loaded), `portfolio_ids` in solve
-  order, `as_of`, `data_root`, `run_id`, and `rate_limiter` (see below).
+  order, `as_of_date`, `data_root`, `run_id`, and `rate_limiter` (see below).
 - Return `pd.DataFrame` with every dtype declared. `coerce_frame` casts to the dataset's schema and turns
   money written as strings, ints, or floats into `Decimal` — do this at the read boundary, not later.
 - The `constraints` loader returns `dict[str, dict[str, object]]` keyed by portfolio id; money inside may
@@ -71,7 +70,7 @@ async def holdings_from_api(request: LoadRequest, params: ApiParams) -> pd.DataF
     client = build_client(params)
 
     async def one(portfolio_id: PortfolioId) -> pd.DataFrame:
-        return await client.holdings(portfolio_id, as_of=request.as_of)
+        return await client.holdings(portfolio_id, as_of_date=request.as_of_date)
 
     parts = await fan_out(request.portfolio_ids, one, limiter=request.rate_limiter)
     return coerce_frame(pd.concat(parts, ignore_index=True), DATASET_SCHEMAS[request.dataset])

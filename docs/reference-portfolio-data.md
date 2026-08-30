@@ -28,27 +28,27 @@ raises `PortfolioDataError` listing all failures.
 
 | Field | Type | Description |
 |---|---|---|
-| `details` | `PortfolioDetails` | This portfolio's `details` row: `portfolio_id`, `name`, `state`, `st_tax_rate`, `lt_tax_rate`, `cash`, `nav`, `benchmark_id`. |
+| `details` | `PortfolioDetails` | This portfolio's `details` row: `portfolio_id`, `name`, `state`, `st_tax_rate`, `lt_tax_rate`, `cash`, `nav`, `benchmark_id`, and the style limits `max_weight`, `max_turnover`, `max_adv_participation`, `min_trade_notional`, `cash_lb`, `cash_ub`. |
 | `holdings` | frame | This portfolio's rows of `holdings`. Schema columns `portfolio_id`, `security_id`, `quantity`, `avg_cost`, `acquired_on`; any further columns allowed. |
 | `universe` | frame | The whole `universe`, identical for every portfolio. Schema columns `security_id`, `price`, `sector`, `adv_shares`, `lot_size`, `restricted`; optional `alpha`, `tcost_bps`, `min_weight`, `max_weight`; any further columns allowed. |
 | `targets` | frame | The rows of `targets` for `details.benchmark_id`. Schema columns only. |
-| `style` | `StyleConstraints` | This portfolio's entry of `constraints`, typed. |
-| `as_of` | `datetime` | The run's `as_of`, timezone-aware UTC. |
+| `sector_bounds` | frame | This portfolio's rows of `sector_bounds`. Schema columns `portfolio_id`, `sector`, `lower`, `upper`; empty when the run declares no such dataset. |
+| `as_of_date` | `datetime` | The run's `as_of_date`, timezone-aware UTC. |
 | `extras` | `Mapping[str, frame]` | Every non-engine dataset that remained after assembly. A dataset with a `portfolio_id` column is reduced to this portfolio's rows; one without is passed whole. Default `{}`. |
 | `applied_rules` | `tuple[str, ...]` | Qualified names of the rules applied so far; maintained by the pipeline. |
 | `portfolio_id` | property | `details.portfolio_id`. |
 
 ### Checks on construction
 
-1. `holdings`, `universe`, and `targets` satisfy their frame schemas (columns, dtypes, nullability,
-   bounds, unique key, target weights summing to one).
+1. `holdings`, `universe`, `targets`, and `sector_bounds` satisfy their frame schemas (columns,
+   dtypes, nullability, bounds, unique key, target weights summing to one, sector bounds ordered).
 2. `extras` values are frames, and no extra is named `holdings`, `universe`, `details`, `targets`,
-   `constraints`, or `portfolios`.
-3. `as_of` is timezone-aware UTC.
+   `sector_bounds`, or `portfolios`.
+3. `as_of_date` is timezone-aware UTC.
 4. `holdings.portfolio_id` contains only this portfolio.
 5. `targets.benchmark_id` contains only `details.benchmark_id`.
 6. Every target security is in `holdings` or `universe`.
-7. Every sector in `style.sector_bounds` occurs in `universe.sector`.
+7. Every sector in `sector_bounds` occurs in `universe.sector`, and its rows name only this portfolio.
 8. Every column present in both `holdings` and `universe` has the same dtype in both.
 9. Every extra with a `portfolio_id` column contains only this portfolio.
 
@@ -59,7 +59,7 @@ A held security need not be in the universe. The shipped build requires it (a `B
 
 | Method | Description |
 |---|---|
-| `with_changes(*, holdings=None, universe=None, targets=None, style=None, extras=None)` | A re-validated copy with the given parts replaced. |
+| `with_changes(*, details=None, holdings=None, universe=None, targets=None, sector_bounds=None, extras=None)` | A re-validated copy with the given parts replaced. |
 | `with_rule_applied(qualname)` | A copy recording that a rule ran; called by the pipeline. |
 | `optimizer_frame(*, source_column="source")` | Holdings and universe stacked into one frame; see below. |
 

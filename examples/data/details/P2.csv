@@ -1,2 +1,2 @@
-portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id
-P2,Beta Income,CA,0.37,0.20,0,1000000,B1
+portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id,max_weight,max_turnover,max_adv_participation,min_trade_notional,cash_lb,cash_ub
+P2,Beta Income,CA,0.37,0.20,0,1000000,B1,1,2,0.25,0,0,0

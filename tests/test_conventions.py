@@ -3,7 +3,6 @@
 import inspect
 from types import ModuleType
 
-import pandas as pd
 import pytest
 
 from portfolio_optimizer import loaders, rules, sinks, terms
@@ -18,7 +17,7 @@ def _kind_for(fn: object, module: ModuleType) -> StepKind:
     hints = inspect.get_annotations(fn, eval_str=True)  # ty: ignore[invalid-argument-type]  # every public attribute checked here is a function
     returns = hints.get("return")
     if module is loaders:
-        return "constraints_loader" if returns is not pd.DataFrame else "loader"
+        return "loader"
     if module is rules:
         return "rule"
     if module is sinks:

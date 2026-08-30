@@ -60,12 +60,12 @@ def _loaded_with(example_loaded: LoadedDatasets, **frames: object) -> LoadedData
 def test_example_data_loads_in_solve_order_with_audit_records(example_loaded: LoadedDatasets) -> None:
     assert example_loaded.portfolio_ids == ("P1", "P2")
     assert example_loaded.solve_orders == {"P1": 0, "P2": 1}
-    assert set(example_loaded.frames) == {"universe", "targets", "prices"}
+    assert set(example_loaded.frames) == {"universe", "targets", "prices", "sector_bounds"}
     assert set(example_loaded.per_portfolio) == {"details", "holdings"}, "the example loads both per account, and assembly never sees either"
     audit = {record.name: record for record in example_loaded.audits}
     assert (audit["holdings"].rows, audit["holdings"].batches) == (4, 2), "batch_size 1 is one call per portfolio"
     assert (audit["details"].rows, audit["details"].batches) == (2, 1), "batch_size 2 puts this two-account book in a single call"
-    assert audit["constraints"].rows == 2
+    assert audit["sector_bounds"].rows == 4, "two sectors bounded for each of the two accounts"
     assert len(audit["prices"].content_sha256) == 64
     assert audit["universe"].loader_qualname == "portfolio_optimizer.loaders:csv"
 
@@ -77,7 +77,7 @@ def test_assembly_joins_prices_into_universe_drops_them_and_slices_each_portfoli
     assert [audit.qualname for audit in assembled.audits] == ["portfolio_optimizer.assembly:join", "portfolio_optimizer.assembly:drop"]
     assert assembled.audits[0].columns_added == {"universe": ("price",)}
     assert assembled.audits[1].rows_in["prices"] == 3
-    assert assembled.audits[1].rows_out == {"universe": 3, "targets": 3}, "the per-account holdings and details are merged back in after the steps have run"
+    assert assembled.audits[1].rows_out == {"universe": 3, "targets": 3, "sector_bounds": 4}, "the per-account holdings and details are merged back in after the steps have run"
     assert (len(assembled.holdings), len(assembled.details)) == (4, 2)
     p1 = slice_portfolio(assembled, PortfolioId("P1"))
     p2 = slice_portfolio(assembled, PortfolioId("P2"))
@@ -87,8 +87,9 @@ def test_assembly_joins_prices_into_universe_drops_them_and_slices_each_portfoli
     assert p1.details.state == "NY"
     assert p2.details.name == "Beta Income"
     assert len(p1.targets) == 3
-    assert p1.style.max_adv_participation == Decimal("0.25")
-    assert p1.as_of == AS_OF
+    assert p1.details.max_adv_participation == Decimal("0.25")
+    assert p1.sector_bounds["sector"].tolist() == ["TECH", "HEALTH"], "each portfolio gets its own sector rows and no other's"
+    assert p1.as_of_date == AS_OF
 
 
 def test_a_custom_step_attaches_analytics_to_holdings_and_universe_and_is_audited() -> None:
@@ -138,7 +139,7 @@ def test_join_refuses_to_overwrite_existing_columns_unless_told_to(example_loade
 
 def test_a_step_naming_an_unknown_dataset_is_told_what_exists(example_loaded: LoadedDatasets) -> None:
     resolved = _with_assembly({"name": "join", "params": {**JOIN_PRICES_PARAMS, "source": "sectors"}})
-    with pytest.raises(AssemblyError, match=r"assembly\[0\] portfolio_optimizer.assembly:join: no dataset 'sectors'; available: \['prices', 'targets', 'universe'\]"):
+    with pytest.raises(AssemblyError, match=r"assembly\[0\] portfolio_optimizer.assembly:join: no dataset 'sectors'; available: \['prices', 'sector_bounds', 'targets', 'universe'\]"):
         assemble(example_loaded, resolved, run_id="test")
 
 
@@ -171,12 +172,13 @@ def test_analytics_dtype_conflicts_between_holdings_and_universe_fail_at_slice(e
         slice_portfolio(assembled, PortfolioId("P1"))
 
 
-def test_a_portfolio_without_constraints_is_rejected_alone(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
-    partial = replace(example_loaded, constraints={"P1": example_loaded.constraints["P1"]})
+def test_a_portfolio_without_details_is_rejected_alone(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
+    details = example_loaded.per_portfolio["details"]
+    partial = replace(example_loaded, per_portfolio={**example_loaded.per_portfolio, "details": details[details["portfolio_id"] == "P1"]})
     assembled = assemble(partial, example_resolved, run_id="test")
     assert set(assembled.rejected) == {P2}, "a portfolio the inputs do not cover fails alone; P1 still has everything it needs"
     assert (assembled.rejected[P2].stage, assembled.rejected[P2].error_type) == ("load", "MissingInput")
-    assert "no constraints for this portfolio" in assembled.rejected[P2].message
+    assert "no details for this portfolio" in assembled.rejected[P2].message
     assert assembled.portfolio_ids == ("P1", "P2"), "the book is unchanged; the rejection travels beside it"
 
 
@@ -234,7 +236,7 @@ def test_an_unreachable_backend_keeps_its_exception_type_so_the_exit_code_is_inf
 
 def test_audits_record_how_long_each_dataset_took(example_loaded: LoadedDatasets) -> None:
     assert all(record.load_time_s >= 0.0 for record in example_loaded.audits)
-    assert {record.name for record in example_loaded.audits} == {"portfolios", "holdings", "universe", "details", "constraints", "targets", "prices"}
+    assert {record.name for record in example_loaded.audits} == {"portfolios", "holdings", "universe", "details", "sector_bounds", "targets", "prices"}
 
 
 def test_the_sync_entry_point_refuses_to_nest_inside_a_running_loop() -> None:

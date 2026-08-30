@@ -11,27 +11,55 @@ whole-share orders, publishes them, and writes a manifest that lets anyone repro
 ## The run config, block by block
 
 The quickest way to see what the engine does is to read the run it ships with,
-[`configs/example_run.json`](configs/example_run.json):
+[`configs/example_run.json`](configs/example_run.json), annotated here:
 
-```json
+```jsonc
+// The run that ships with the template, annotated. The real file is strict JSON with no comments —
+// these lines are stripped and the rest is compared against it by a test, so this copy cannot drift.
 {
+  // For your editor only: live validation and completion of key and step names. The engine ignores it,
+  // and the config hash excludes it, so adding or removing it never makes two runs look different.
   "$schema": "./run-config.schema.json",
-  "run": {"name": "example_rebalance", "as_of": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}},
+
+  // Identity. `name` and `tags` are recorded in the manifest and used for nothing else. `as_of_date`
+  // is the one field here that changes results: every loader receives it, and it decides whether each
+  // tax lot is long- or short-term. It must carry a zone.
+  "run": {"name": "example_rebalance", "as_of_date": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}},
+
+  // The one loader that runs first and alone: it returns the portfolio ids every other loader is told
+  // to fetch, and optionally a `solve_order` priority (lower solves first).
   "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}},
+
+  // Everything else to load; all of these start at once, as soon as the portfolio list is known.
   "datasets": {
+    // `scope: per_portfolio` is the engine's fan-out: it calls the loader once per batch of accounts
+    // rather than once for the book. `batch_size: 1` is a call per account — a custodian that answers
+    // one at a time. A per-portfolio dataset is never passed to assembly.
     "holdings": {
       "loader": {"name": "csv_per_portfolio", "params": {"directory": "holdings"}},
       "scope": "per_portfolio",
       "batch_size": 1
     },
+
+    // No `scope` means `global`: one call for the whole book, and the only datasets assembly sees.
     "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
+
+    // The account master: NAV, cash, tax rates, benchmark, and the account's style limits
+    // (`max_weight`, `max_turnover`, `max_adv_participation`, `min_trade_notional`, `cash_lb`,
+    // `cash_ub`). `batch_size: 2` hands the loader two ids per call — a source that takes a list.
     "details": {
       "loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
       "scope": "per_portfolio",
       "batch_size": 2
     },
-    "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
+
+    // Engine-known but optional: one row per portfolio and sector. Omit the dataset to bound no sector.
+    "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
+
     "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
+
+    // Any name the engine does not know is an extra dataset. It cannot be typed from a schema, so
+    // `dtypes` declares each column's kind — `price` as `decimal` arrives as an exact `Decimal`.
     "prices": {
       "loader": {
         "name": "csv",
@@ -39,6 +67,9 @@ The quickest way to see what the engine does is to read the run it ships with,
       }
     }
   },
+
+  // Steps run once over every loaded dataset, before the engine-known frames are validated — which is
+  // what lets a step supply a required column, as this join supplies the universe's `price`.
   "assembly": [
     {
       "name": "join",
@@ -46,17 +77,30 @@ The quickest way to see what the engine does is to read the run it ships with,
         "into": "universe",
         "source": "prices",
         "on": ["security_id"],
+        // Claims each security appears once on both sides; pandas enforces it, so a duplicated price
+        // row aborts the run instead of silently doubling a universe row.
         "cardinality": "one_to_one",
+        // Claims every universe security has a price; an unmatched key is reported and the run refused.
         "require_all_matched": true
       }
     },
+    // Any dataset still present after the last step is carried into every portfolio's bundle, which is
+    // wasteful for a price file that has done its job.
     {"name": "drop", "params": {"datasets": ["prices"]}}
   ],
+
+  // Business logic, applied in order to each portfolio's bundle. A rule never sees another portfolio.
   "rules": [
+    // Freezing a name shrinks the tradable set, which is what lets portfolios solve concurrently.
     {"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}},
     "add_zero_alpha",
+    // The per-portfolio counterpart of an assembly `join`, needed here because `holdings` is
+    // per-portfolio and so never reaches assembly.
     "attach_universe_columns"
   ],
+
+  // The sum of these terms is minimized; express a reward as a negative term. Weights are strings so
+  // the manifest records an exact Decimal.
   "objective": {
     "sense": "minimize",
     "terms": [
@@ -65,17 +109,32 @@ The quickest way to see what the engine does is to read the run it ships with,
       {"name": "transaction_cost", "params": {"weight": "1.0"}}
     ]
   },
+
+  // *Which* constraints apply; *how tight* they are comes from the data. Note that a constraint often
+  // shares a name with the column it reads without being the same thing: `cash_bounds` is the function
+  // this list turns on, `cash_lb`/`cash_ub` are the numbers in `details` it reads.
   "constraints": [
     "long_only",
     "max_weight",
     "cash_bounds",
     "turnover_cap",
     "sector_bounds",
+    // The only chain-aware constraint: it reads what higher-priority portfolios already traded, and
+    // its presence is the only reason one portfolio ever waits for another.
     "cumulative_adv_participation"
   ],
+
+  // Checked when the config resolves and on every worker; there is no silent fallback to another solver.
   "solver": {"name": "CLARABEL", "options": {"max_iter": 200}, "time_limit_s": 60.0, "verbose": false},
+
+  // Tolerances for the independent, cvxpy-free re-verification of every solution.
   "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9},
+
   "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},
+
+  // `fail_fast` stops at the first failed portfolio; `continue` isolates it. *Where* the work runs and
+  // how many workers there are are environment settings, not config, so the same config hashes the
+  // same on a laptop and on a cluster.
   "execution": {"on_error": "fail_fast"}
 }
 ```
@@ -86,18 +145,19 @@ that kind of step, or by `package.module:function`, with optional `params` (see
 
 - **`$schema`** — for your editor, not the engine: live validation and completion of key and step names
   from the generated schema. The engine ignores it.
-- **`run`** — the run's identity. `name` and `tags` go into the manifest; `as_of` is the timezone-aware
+- **`run`** — the run's identity. `name` and `tags` go into the manifest; `as_of_date` is the timezone-aware
   instant the run is *as of* — every loader receives it, and it decides whether each tax lot is long- or
   short-term.
 - **`portfolios`** — the one loader that runs first and alone. It returns the portfolio ids and,
   optionally, a `solve_order` priority; every other loader is told which ids to fetch.
-- **`datasets`** — everything else to load, all at once. Five names belong to the engine and are
-  validated against fixed schemas: `holdings`, `universe`, `details`, `targets`, and `constraints` (each
-  portfolio's style limits). Any other name — `prices` here — is an extra dataset the engine does not
-  interpret: assembly steps see it, and whatever survives assembly reaches each portfolio's rules as
-  `data.extras`. Each entry also says how its loader is called. `universe`, `targets`, `prices`, and
-  `constraints` say nothing and are `global`: one call for the whole book, and the only datasets
-  assembly sees. `holdings` and `details` are `per_portfolio`, so the engine calls their loaders per
+- **`datasets`** — everything else to load, all at once, every one a frame. Four names are required and
+  validated against fixed schemas: `holdings`, `universe`, `details` (the account's facts *and* its
+  style limits), and `targets`; `sector_bounds` is engine-known but optional, since a per-sector limit
+  is the one style limit that does not fit in an account's row. Any other name — `prices` here — is an
+  extra dataset the engine does not interpret: assembly steps see it, and whatever survives assembly
+  reaches each portfolio's rules as `data.extras`. Each entry also says how its loader is called.
+  `universe`, `targets`, `prices`, and `sector_bounds` say nothing and are `global`: one call for the
+  whole book, and the only datasets assembly sees. `holdings` and `details` are `per_portfolio`, so the engine calls their loaders per
   account rather than once for the book, and `batch_size` says how finely: `1` is a call per account,
   the shape of a custodian that answers one at a time; `2` hands the loader two ids per call, the shape
   of an account master that takes a list. It is also why a portfolio whose own inputs are missing fails
@@ -113,7 +173,8 @@ that kind of step, or by `package.module:function`, with optional `params` (see
   is a function returning a convex expression, and its `weight` is a string so the manifest records an
   exact `Decimal`.
 - **`constraints`** — *which* constraints apply; *how tight* they are comes from the data (the style
-  object in the `constraints` dataset, and per-security columns in the universe). The last one is
+  limits on each account's `details` row, the `sector_bounds` dataset, and per-security columns in the
+  universe). The last one is
   chain-aware — it reads what higher-priority portfolios have already traded — and that is the only
   reason one portfolio ever waits for another.
 - **`solver`** — the cvxpy solver and its options. Its presence is checked when the config resolves, its

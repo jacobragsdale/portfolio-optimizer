@@ -26,7 +26,7 @@ def resolved_with(terms: Sequence[object], constraints: Sequence[object], **over
 def hand_case(make: Factories, frames: Frames) -> ProblemSpec:
     """P1 holds A 5000 @100 and B 10000 @50 (no gains), targets a third each, may trade a quarter of ADV."""
     holdings = frames.holdings({"security_id": "A", "quantity": 5000, "avg_cost": Decimal(100)}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(50)})
-    return build_problem_spec(make.portfolio_data(holdings=holdings, style=make.style(max_adv_participation=Decimal("0.25")))).spec
+    return build_problem_spec(make.portfolio_data(holdings=holdings, details=make.details(max_adv_participation=Decimal("0.25")))).spec
 
 
 def test_hand_case_matches_the_analytic_optimum(make: Factories, frames: Frames) -> None:
@@ -68,8 +68,8 @@ def test_a_portfolio_whose_predecessors_spent_a_names_budget_cannot_buy_it(make:
 
 def test_a_buy_only_solve_only_buys_and_verifies(make: Factories, frames: Frames) -> None:
     holdings = frames.holdings({"security_id": "A", "quantity": 2500, "avg_cost": Decimal(100)}, {"security_id": "B", "quantity": 5000, "avg_cost": Decimal(50)})
-    details = make.details(cash=Decimal(500_000))
-    spec = build_problem_spec(make.portfolio_data(holdings=holdings, details=details, style=make.style(max_adv_participation=Decimal("0.25")))).spec
+    details = make.details(cash=Decimal(500_000), max_adv_participation=Decimal("0.25"))
+    spec = build_problem_spec(make.portfolio_data(holdings=holdings, details=details)).spec
     resolved = resolved_with(["tracking_error"], SHIPPED_CONSTRAINTS, sides="buy")
     solution = solve(spec, ChainState.empty(spec.security_ids), resolved)
     np.testing.assert_allclose(solution.w, HAND_OPTIMUM, atol=1e-6)
@@ -84,11 +84,11 @@ def test_a_buy_only_solve_only_buys_and_verifies(make: Factories, frames: Frames
 
 def test_a_buy_only_run_cannot_sell_its_way_back_inside_a_cap_and_says_so(make: Factories, frames: Frames) -> None:
     resolved = resolved_with(["tracking_error"], SHIPPED_CONSTRAINTS, sides="buy")
-    over_cap = build_problem_spec(make.portfolio_data(holdings=frames.holdings({"security_id": "A", "quantity": 8000, "avg_cost": Decimal(100)}), style=make.style(max_weight=Decimal("0.6")))).spec
+    over_cap = build_problem_spec(make.portfolio_data(holdings=frames.holdings({"security_id": "A", "quantity": 8000, "avg_cost": Decimal(100)}), details=make.details(max_weight=Decimal("0.6")))).spec
     with pytest.raises(InfeasibleError, match=r"names whose cap is below their holding, which this side cannot trade out of: \['A'\]"):
         solve(over_cap, ChainState.empty(over_cap.security_ids), resolved)
     fully_invested = build_problem_spec(
-        make.portfolio_data(holdings=frames.holdings({"security_id": "A", "quantity": 10000, "avg_cost": Decimal(100)}), style=make.style(cash_bounds=(Decimal("0.1"), Decimal("0.2"))))
+        make.portfolio_data(holdings=frames.holdings({"security_id": "A", "quantity": 10000, "avg_cost": Decimal(100)}), details=make.details(cash_lb=Decimal("0.1"), cash_ub=Decimal("0.2")))
     ).spec
     with pytest.raises(InfeasibleError, match=r"the book starts with cash 0\.000000 below cash_lb 0\.100000, and a buy-only run can only lower cash"):
         solve(fully_invested, ChainState.empty(fully_invested.security_ids), resolved)
@@ -97,7 +97,7 @@ def test_a_buy_only_run_cannot_sell_its_way_back_inside_a_cap_and_says_so(make: 
 def test_a_sell_only_solve_only_sells_and_couples_through_sells(make: Factories, frames: Frames) -> None:
     holdings = frames.holdings({"security_id": "A", "quantity": 5000, "avg_cost": Decimal(100)}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(50)})
     universe = frames.three_security_universe().assign(adv_shares=pd.Series([4000, 1_000_000, 100_000], dtype="Int64"))
-    spec = build_problem_spec(make.portfolio_data(holdings=holdings, universe=universe, style=make.style(max_adv_participation=Decimal("0.25"), cash_bounds=(Decimal(0), Decimal(1))))).spec
+    spec = build_problem_spec(make.portfolio_data(holdings=holdings, universe=universe, details=make.details(max_adv_participation=Decimal("0.25"), cash_lb=Decimal(0), cash_ub=Decimal(1)))).spec
     resolved = resolved_with(["tracking_error"], SHIPPED_CONSTRAINTS, sides="sell")
     solution = solve(spec, ChainState.empty(spec.security_ids), resolved)
     np.testing.assert_allclose(solution.w, [0.4, 1 / 3, 0.0], atol=1e-6, err_msg="A sells its whole ADV budget (0.1), B to target, C is not held")
@@ -132,7 +132,7 @@ def reflect(spec: ProblemSpec) -> ProblemSpec:
     rowsum = np.asarray(spec.sector_matrix @ ones, dtype=np.float64)
     return ProblemSpec(
         portfolio_id=spec.portfolio_id,
-        as_of=spec.as_of,
+        as_of_date=spec.as_of_date,
         security_ids=spec.security_ids,
         sector_names=spec.sector_names,
         nav=spec.nav,

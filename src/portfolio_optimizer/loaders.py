@@ -1,9 +1,8 @@
 """Dataset loaders — yours to edit.
 
 A loader is an ordinary function ``(request: LoadRequest, params: P) -> pd.DataFrame`` named in
-the run config; it may be ``async def``. The ``constraints`` dataset's loader returns
-``dict[str, dict[str, object]]`` keyed by portfolio id instead. Loaders are the only place file,
-database, or network access belongs; everything downstream is pure.
+the run config; it may be ``async def``. Every dataset is a frame, so that is the only shape.
+Loaders are the only place file, database, or network access belongs; everything downstream is pure.
 
 The engine loads every dataset concurrently: an async loader runs on the event loop, a plain one
 in a worker thread. A loader that makes many calls — one per portfolio, say — wraps each call in
@@ -18,7 +17,6 @@ client.
 """
 
 import asyncio
-import json
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -93,21 +91,6 @@ def parquet(request: LoadRequest, params: ParquetParams) -> pd.DataFrame:
     """Read a Parquet file; Arrow decimal columns arrive as ``Decimal`` already."""
     raw = pd.read_parquet(request.data_root / params.path)
     return coerce_frame(raw, _schema_for(request.dataset, params))
-
-
-class JsonConstraintsParams(Params):
-    """Parameters for :func:`json_constraints`."""
-
-    path: str = Field(min_length=1)
-
-
-def json_constraints(request: LoadRequest, params: JsonConstraintsParams) -> dict[str, dict[str, object]]:
-    """Read ``{"<portfolio_id>": {<style constraints>}, ...}`` from a JSON file."""
-    loaded = json.loads((request.data_root / params.path).read_text())
-    if not isinstance(loaded, dict) or not all(isinstance(value, dict) for value in loaded.values()):
-        msg = f"{params.path}: expected an object mapping portfolio ids to constraint objects"
-        raise ValueError(msg)
-    return {str(portfolio_id): {str(key): value for key, value in constraints.items()} for portfolio_id, constraints in loaded.items()}
 
 
 def _read_csv(path: Path, dataset: str, columns: ExtraColumns) -> pd.DataFrame:

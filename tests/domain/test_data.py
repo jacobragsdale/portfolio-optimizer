@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError, details_from_frame, style_constraints_from_mapping
+from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError, details_from_frame
 from portfolio_optimizer.domain.types import PortfolioId
 from tests.conftest import AS_OF, Factories, Frames
 
@@ -40,10 +40,22 @@ def test_targets_for_another_benchmark_are_rejected(make: Factories, frames: Fra
         make.portfolio_data(targets=frames.targets({"benchmark_id": "B9"}))
 
 
-def test_sector_bound_for_unknown_sector_is_rejected(make: Factories) -> None:
-    style = make.style(sector_bounds={"ENERGY": (Decimal(0), Decimal("0.5"))})
+def test_sector_bound_for_unknown_sector_is_rejected(make: Factories, frames: Frames) -> None:
+    bounds = frames.sector_bounds({"sector": "ENERGY", "lower": Decimal(0), "upper": Decimal("0.5")})
     with pytest.raises(PortfolioDataError, match="sectors absent from universe \\['ENERGY'\\]"):
-        make.portfolio_data(style=style)
+        make.portfolio_data(sector_bounds=bounds)
+
+
+def test_sector_bounds_for_another_portfolio_are_rejected(make: Factories, frames: Frames) -> None:
+    bounds = frames.sector_bounds({"portfolio_id": "P9", "sector": "TECH"})
+    with pytest.raises(PortfolioDataError, match="sector_bounds contain other portfolios \\['P9'\\]"):
+        make.portfolio_data(sector_bounds=bounds)
+
+
+def test_unordered_sector_bounds_are_rejected(make: Factories, frames: Frames) -> None:
+    bounds = frames.sector_bounds({"sector": "TECH", "lower": Decimal("0.5"), "upper": Decimal("0.1")})
+    with pytest.raises(PortfolioDataError, match="lower exceeds upper"):
+        make.portfolio_data(sector_bounds=bounds)
 
 
 def test_shared_analytics_column_must_agree_on_dtype_between_holdings_and_universe(make: Factories, frames: Frames) -> None:
@@ -82,9 +94,9 @@ def test_frame_schema_failures_are_reported_with_their_frame_name(make: Factorie
         make.portfolio_data(universe=frames.universe({"price": Decimal(0)}))
 
 
-def test_naive_as_of_is_rejected(make: Factories) -> None:
+def test_naive_as_of_date_is_rejected(make: Factories) -> None:
     with pytest.raises(PortfolioDataError, match="timezone-aware UTC"):
-        make.portfolio_data(as_of=datetime(2026, 8, 28))  # noqa: DTZ001  # the naive datetime is the case under test
+        make.portfolio_data(as_of_date=datetime(2026, 8, 28))  # noqa: DTZ001  # the naive datetime is the case under test
 
 
 def test_with_changes_revalidates_and_records_the_rule(make: Factories, frames: Frames) -> None:
@@ -100,9 +112,11 @@ def test_with_changes_revalidates_and_records_the_rule(make: Factories, frames: 
 
 def test_prevalidated_frames_are_trusted_until_a_rule_replaces_them(make: Factories, frames: Frames) -> None:
     invalid = frames.universe({"price": Decimal(0)})  # fails the universe schema; the bundle would normally refuse it
-    trusted = PortfolioData(details=make.details(), holdings=frames.holdings(), universe=invalid, targets=frames.targets(), style=make.style(), as_of=AS_OF, prevalidated=frozenset({"universe"}))
+    trusted = PortfolioData(
+        details=make.details(), holdings=frames.holdings(), universe=invalid, targets=frames.targets(), sector_bounds=frames.sector_bounds(), as_of_date=AS_OF, prevalidated=frozenset({"universe"})
+    )
     assert trusted.universe is invalid
-    assert trusted.with_changes(style=make.style()).prevalidated == frozenset({"universe"})  # untouched frames keep their standing
+    assert trusted.with_changes(details=make.details()).prevalidated == frozenset({"universe"})  # untouched frames keep their standing
     with pytest.raises(PortfolioDataError, match="universe: column 'price'"):
         trusted.with_changes(universe=invalid)  # a replaced frame is validated even when it is the same object
     with pytest.raises(PortfolioDataError, match="prevalidated names unknown frames \\['details'\\]"):
@@ -125,34 +139,24 @@ def test_details_from_frame_requires_exactly_one_row(frames: Frames) -> None:
     ("field", "value"),
     [("max_weight", Decimal(0)), ("max_weight", Decimal("1.0001")), ("max_turnover", Decimal("2.01")), ("max_adv_participation", Decimal("-0.01")), ("min_trade_notional", Decimal(-1))],
 )
-def test_style_constraints_reject_values_just_past_their_limits(make: Factories, field: str, value: Decimal) -> None:
+def test_style_limits_reject_values_just_past_their_limits(make: Factories, field: str, value: Decimal) -> None:
     with pytest.raises(ValidationError):
-        make.style(**{field: value})
+        make.details(**{field: value})
 
 
 @pytest.mark.parametrize(("field", "value"), [("max_weight", Decimal(1)), ("max_turnover", Decimal(2)), ("max_adv_participation", Decimal(0)), ("min_trade_notional", Decimal(0))])
-def test_style_constraints_accept_values_at_their_limits(make: Factories, field: str, value: Decimal) -> None:
-    assert getattr(make.style(**{field: value}), field) == value
+def test_style_limits_accept_values_at_their_limits(make: Factories, field: str, value: Decimal) -> None:
+    assert getattr(make.details(**{field: value}), field) == value
 
 
-def test_style_constraints_reject_unordered_bounds(make: Factories) -> None:
-    with pytest.raises(ValidationError, match="cash_bounds"):
-        make.style(cash_bounds=(Decimal("0.5"), Decimal("0.1")))
-    with pytest.raises(ValidationError, match="sector_bounds"):
-        make.style(sector_bounds={"TECH": (Decimal("0.5"), Decimal("0.1"))})
+def test_details_reject_unordered_cash_bounds(make: Factories) -> None:
+    with pytest.raises(ValidationError, match="cash_lb must not exceed cash_ub"):
+        make.details(cash_lb=Decimal("0.5"), cash_ub=Decimal("0.1"))
 
 
-def test_style_constraints_from_mapping_reads_money_as_strings_and_rejects_unknown_keys() -> None:
-    raw: dict[str, object] = {
-        "max_weight": "0.05",
-        "max_turnover": "0.2",
-        "min_trade_notional": "100",
-        "cash_bounds": ["0.01", "0.03"],
-        "max_adv_participation": "0.1",
-        "sector_bounds": {"TECH": ["0", "0.4"]},
-    }
-    style = style_constraints_from_mapping(raw)
-    assert style.max_weight == Decimal("0.05")
-    assert style.sector_bounds == {"TECH": (Decimal(0), Decimal("0.4"))}
+def test_details_from_frame_reads_money_exactly_and_rejects_unknown_columns(frames: Frames) -> None:
+    details = details_from_frame(frames.details({"max_weight": Decimal("0.05"), "cash_lb": Decimal("0.01"), "cash_ub": Decimal("0.03")}), PortfolioId("P1"))
+    assert details.max_weight == Decimal("0.05")
+    assert (details.cash_lb, details.cash_ub) == (Decimal("0.01"), Decimal("0.03"))
     with pytest.raises(ValidationError, match="extra_forbidden"):
-        style_constraints_from_mapping(raw | {"max_leverage": "2"})
+        details_from_frame(frames.details().assign(max_leverage=pd.Series([Decimal(2)], dtype="object")), PortfolioId("P1"))

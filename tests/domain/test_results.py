@@ -73,7 +73,7 @@ def test_npz_round_trip_preserves_hash(make: Factories, tmp_path: Path) -> None:
     assert not loaded.flag("esg").flags.writeable
     assert isinstance(loaded.sector_matrix, csr_array) and not loaded.sector_matrix.data.flags.writeable
     assert loaded.security_ids == spec.security_ids
-    assert loaded.as_of == spec.as_of
+    assert loaded.as_of_date == spec.as_of_date
 
 
 def test_sector_matrix_is_stored_sparse_whatever_form_it_arrives_in(make: Factories) -> None:

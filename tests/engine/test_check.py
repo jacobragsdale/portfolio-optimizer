@@ -121,7 +121,7 @@ def test_every_shipped_term_and_constraint_has_a_twin() -> None:
 
 def test_true_optimum_verifies_including_the_objective(make: Factories, frames: Frames) -> None:
     holdings = frames.holdings({"security_id": "A", "quantity": 5000, "avg_cost": Decimal(50)}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(50)})
-    spec = build_problem_spec(make.portfolio_data(holdings=holdings, style=make.style(max_adv_participation=Decimal("0.25")))).spec
+    spec = build_problem_spec(make.portfolio_data(holdings=holdings, details=make.details(max_adv_participation=Decimal("0.25")))).spec
     terms = [{"name": "tracking_error", "params": {"weight": "1"}}, {"name": "tax_cost", "params": {"weight": "1"}}, {"name": "transaction_cost", "params": {"weight": "1", "cost_bps": "10"}}]
     resolved = resolved_example(objective={"terms": terms}, constraints=SHIPPED_CONSTRAINTS)
     chain = ChainState.empty(spec.security_ids)

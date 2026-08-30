@@ -15,7 +15,7 @@ version. Read it when you have a config in front of you and want it to make sens
 | Block | What it tells the engine | When the engine consumes it |
 |---|---|---|
 | [`$schema`](#schema) | Nothing — it points your editor at the generated schema | Never; excluded from the config hash |
-| [`run`](#run) | The run's name and tags, and the instant it is *as of* | `as_of` at load and at build (tax-lot terms) |
+| [`run`](#run) | The run's name and tags, and the instant it is *as of* | `as_of_date` at load and at build (tax-lot terms) |
 | [`portfolios`](#portfolios) | How to load the list of portfolio ids and their priorities | First, alone, before any other loader |
 | [`datasets`](#datasets) | How to load every other input, engine-known or extra, and how its calls are partitioned | All at once, after the portfolio list |
 | [`rate_limits`](#rate_limit-on-a-dataset-and-rate_limits) | Named request budgets that inputs on one backend share | During loading |
@@ -37,7 +37,7 @@ The engine reads the config twice, and the split explains most of what follows.
 
 The **first pass** happens before any data is touched. `config/models.py` parses the JSON strictly —
 an unknown key anywhere is an error, money and weights must be strings so they become exact
-`Decimal`, and `as_of` must carry a time zone. Then `config/resolve.py` takes every *step* in the
+`Decimal`, and `as_of_date` must carry a time zone. Then `config/resolve.py` takes every *step* in the
 document (the loaders, the assembly steps, the rules, the solve-order step, the terms, the constraints,
 the solve step, and the sink), imports the function it names, checks that its signature matches the
 contract for its kind, and validates its `params` against the function's own `Params` model. It checks
@@ -49,7 +49,7 @@ collected and reported together. `portfolio-optimizer validate-config` runs exac
 stops; `run` runs it before asking for a cluster, and every worker runs it before it does any work, so
 all three apply identical checks.
 
-The **second pass** is the run itself: each block is consumed at the stage that needs it. `run.as_of`
+The **second pass** is the run itself: each block is consumed at the stage that needs it. `run.as_of_date`
 goes to every loader and to the tax calculation; `assembly` runs once after loading; `rules` run per
 portfolio; `solve`, `solver`, and `post_solve` are read once per solve; `sink` runs once at the end. So the
 config is not a script the engine executes top to bottom — it is a description of a pipeline, and the
@@ -84,14 +84,14 @@ pointer never makes two runs look different.
 ## `run`
 
 ```json
-"run": {"name": "example_rebalance", "as_of": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}}
+"run": {"name": "example_rebalance", "as_of_date": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}}
 ```
 
 `name` and `tags` are identity: they are copied into the manifest and used for nothing else. Pick a
 name that will still mean something when you are comparing two manifests a month later.
 
-`as_of` is the one field here that changes results. It is the moment the run is *as of*, and it is
-threaded through the whole pipeline: every loader receives it as `request.as_of` so a source can be
+`as_of_date` is the one field here that changes results. It is the moment the run is *as of*, and it is
+threaded through the whole pipeline: every loader receives it as `request.as_of_date` so a source can be
 asked for data at that instant; the build uses it to decide whether each tax lot is long- or
 short-term (held longer than 365 days as of this timestamp means the long-term rate applies); every
 order row carries it; and the manifest records it. It must be timezone-aware, because a naive
@@ -131,7 +131,7 @@ of reading this column.
   "universe":    {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
   "details":     {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
                   "scope": "per_portfolio", "batch_size": 1},
-  "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
+  "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
   "targets":     {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
   "prices":      {"loader": {"name": "csv", "params": {"path": "prices.csv",
                                                       "dtypes": {"security_id": "string", "price": "decimal"}}}}
@@ -141,19 +141,21 @@ of reading this column.
 Each key is a dataset name and each value says how to load it. The names fall into three groups, and
 the engine treats them differently.
 
-**Five names are required**, because the build cannot produce a problem without them: `holdings`
+**Four names are required**, because the build cannot produce a problem without them: `holdings`
 (what each portfolio owns, with cost basis and acquisition date), `universe` (every security the
 portfolio may buy, with its sector, ADV, lot size, and restricted flag), `details` (per-portfolio NAV,
-cash, tax rates, and benchmark), `targets` (per-benchmark target weights), and `constraints`
-(per-portfolio style limits). `constraints` must always be declared here. The four frames must be
-declared here too unless the config has assembly steps, in which case a step may produce them — two
-custodians' files stacked into one `holdings`, say — and their presence is checked after assembly
-instead. Each frame is validated against a fixed schema after assembly — column set, dtypes,
-nullability, bounds, unique key, and invariants such as "target weights sum to one" — with one
+cash, tax rates, benchmark, and the account's style limits), and `targets` (per-benchmark target
+weights). They must be declared here unless the config has assembly steps, in which case a step may
+produce them — two custodians' files stacked into one `holdings`, say — and their presence is checked
+after assembly instead. Each frame is validated against a fixed schema after assembly — column set,
+dtypes, nullability, bounds, unique key, and invariants such as "target weights sum to one" — with one
 deliberate opening: `holdings` and `universe` accept any columns beyond their schemas, because that is
-where security analytics go. `constraints` is the odd one out: its loader returns a mapping of
-portfolio id to a style-constraint object rather than a frame, which is why it has its own step kind
-and its own shipped loader, `json_constraints`.
+where security analytics go.
+
+**`sector_bounds` is engine-known but optional.** It is one row per portfolio and sector
+(`portfolio_id`, `sector`, `lower`, `upper`), validated against its own schema when present; a run
+that declares no such dataset bounds no sector. It exists as its own dataset because a per-sector limit
+is the one style limit that does not fit in an account's row.
 
 **Any other name is an extra dataset.** The engine knows nothing about its columns. It is visible to
 every assembly step by name, and whatever is still present after the last step is carried into each
@@ -167,7 +169,7 @@ arrives as an exact `Decimal` rather than a float — in the same vocabulary the
 are written in.
 
 Once the portfolio list is known, **every dataset loader starts at once**, called with a `LoadRequest`
-carrying the dataset name, portfolio ids, `as_of`, the data root, the run id, and a rate limiter. An
+carrying the dataset name, portfolio ids, `as_of_date`, the data root, the run id, and a rate limiter. An
 `async def` loader runs on the event loop; a plain `def` loader runs in a worker thread so a blocking
 driver cannot stall the others. Each loaded frame is recorded in the manifest with its loader, params
 hash, row count, and an order-insensitive content hash, which is what lets `diff-manifests` say "the
@@ -184,13 +186,13 @@ sees such a dataset; attach its columns in a rule instead.
 
 The example is deliberately mixed, because a real book is. `holdings` and `details` are the two
 account-shaped inputs — a custodian says what an account owns, an account master says its NAV, cash,
-tax rates, and benchmark — so both are `per_portfolio`, and their `batch_size` records the difference
+tax rates, benchmark, and style limits — so both are `per_portfolio`, and their `batch_size` records the difference
 between the two kinds of source. `holdings` asks for `1`: a call per account, for a backend that
 answers one at a time. `details` asks for `2`: the engine hands its loader two ids per call, for a
 backend that takes a list — one call on this two-account book, two hundred and fifty on a book of five
 hundred, and the number to tune when a source has a maximum request size or charges per call.
-`universe`, `targets`, and `prices` are book-wide by nature and `constraints` arrives as one document,
-so those four are global.
+`universe`, `targets`, `prices`, and `sector_bounds` are book-wide by nature, so those four are
+global.
 
 Making `holdings` per-account has a consequence worth understanding before you copy it, because
 `holdings` is also one of the two tables security analytics are attached to, and assembly never sees a
@@ -213,8 +215,8 @@ dataset 'details' loaded: 2 row(s) in 1 batch(es), 0.02s
 **A structural problem rejects the run; a coverage problem fails a portfolio.** A required dataset
 missing, a schema violated, a global loader that raised, or a per-portfolio dataset no batch of which
 came back — the run stops, because nothing can be built. One batch that raised, or a portfolio with no
-`details` row or no `constraints` entry — that portfolio alone is recorded as failed at stage `load`
-and the rest of the book runs. In the example that is the difference between deleting
+`details` row — that portfolio alone is recorded as failed at stage `load` and the rest of the book
+runs. In the example that is the difference between deleting
 `examples/data/universe.csv`, which stops the run, and deleting `examples/data/holdings/P2.csv`, after
 which P1 still solves and P2 alone is reported as failed at `load`. A portfolio rejected here never
 entered the run, so it traded nothing and couples to nobody in the schedule. Loading failures are
@@ -338,7 +340,7 @@ one-sided, a third the size, with the trade an expression of the one variable `w
 the *side profile*, the one object in the engine that knows what a side means, and it fixes which side
 portfolios couple through — buys under `both` and `buy`, sells under `sell`. Two things follow for the
 rest of the config: a term or constraint that reads a side the run lacks (the shipped `tax_cost` reads
-`sell`) is refused at `validate-config`, and `cash_bounds` keeps its meaning as the cash *after* the
+`sell`) is refused at `validate-config`, and the cash bounds keep their meaning as the cash *after* the
 run while the side fixes the direction cash can move. [How to run one side](how-to-run-one-side.md)
 walks through both; [the architecture explanation](explanation-architecture.md#the-side-a-run-trades-is-one-object)
 covers what the profile owns and why the side is a config value rather than a pair of bounds.
@@ -383,12 +385,14 @@ rebuy a name for free.
 ```
 
 This list says *which* constraints apply; *how tight* they are comes from the data. `max_weight`,
-`cash_bounds`, `turnover_cap`, `sector_bounds`, and `cumulative_adv_participation` each read their
-limits from the portfolio's style object in the `constraints` dataset (`max_weight`, `cash_bounds`,
-`max_turnover`, `sector_bounds`, `max_adv_participation`), tightened where the universe carries
+`cash_bounds`, and `turnover_cap` read their limits from the account's `details` row (`max_weight`,
+`cash_lb`/`cash_ub`, `max_turnover`), `cumulative_adv_participation` from its `max_adv_participation`,
+and `sector_bounds` from the `sector_bounds` dataset — all tightened where the universe carries
 per-security `min_weight`/`max_weight` columns or a restricted flag. That split is the reason the
 config almost never changes between daily runs while the numbers inside the data do: the config is
-wiring, the data is policy.
+wiring, the data is policy. Note that a constraint and the column it reads often share a name but are
+not the same thing: `cash_bounds` is a function this list turns on, `cash_lb`/`cash_ub` are the numbers
+it reads.
 
 The trade identity is not on this list, and cannot be. What `buy` and `sell` *mean* — for a two-sided
 run, `w − w0 = buy − sell`, both non-negative, `sell ≤ w0`; for a one-sided run, `w ≥ w0` or `w ≤ w0`

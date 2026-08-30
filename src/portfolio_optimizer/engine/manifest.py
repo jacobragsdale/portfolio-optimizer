@@ -142,7 +142,7 @@ class RunManifest(StrictModel):
     run_id: str
     run_name: str
     created_at_utc: AwareDatetime
-    as_of: AwareDatetime
+    as_of_date: AwareDatetime
     git_sha: str
     git_dirty: bool
     schedule: ScheduleSummary | None = None

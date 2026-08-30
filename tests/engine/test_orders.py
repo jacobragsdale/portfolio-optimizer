@@ -56,7 +56,7 @@ def test_lots_round_down_to_a_multiple(make: Factories, frames: Frames) -> None:
 
 
 def test_trades_below_the_minimum_notional_are_dropped(make: Factories) -> None:
-    output = built(make, style=make.style(min_trade_notional=Decimal(200_000)))
+    output = built(make, details=make.details(min_trade_notional=Decimal(200_000)))
     orders = solution_to_orders(output.spec, solution_at(output.spec, HAND_OPTIMUM), output.order_inputs, run_id="r")
     assert orders["security_id"].tolist() == ["C"]
 
@@ -75,7 +75,7 @@ def test_no_change_yields_an_empty_but_valid_frame(make: Factories) -> None:
     orders = solution_to_orders(output.spec, solution_at(output.spec, output.spec.w0), output.order_inputs, run_id="r")
     assert len(orders) == 0
     validate_frame(orders, ORDERS)
-    assert str(orders["as_of"].dtype) == "datetime64[ns, UTC]"
+    assert str(orders["as_of_date"].dtype) == "datetime64[ns, UTC]"
 
 
 def test_orders_are_deterministic(make: Factories) -> None:
@@ -129,7 +129,7 @@ def test_drift_is_zero_for_exact_orders_and_bounded_for_lots(make: Factories, fr
 
 
 def test_drift_counts_orders_dropped_by_the_dust_filter(make: Factories) -> None:
-    output = built(make, style=make.style(min_trade_notional=Decimal(200_000)))
+    output = built(make, details=make.details(min_trade_notional=Decimal(200_000)))
     solution = solution_at(output.spec, HAND_OPTIMUM)
     report = rounding_drift(output.spec, solution, solution_to_orders(output.spec, solution, output.order_inputs, run_id="r"), output.order_inputs)
     assert report.dropped_orders == 2

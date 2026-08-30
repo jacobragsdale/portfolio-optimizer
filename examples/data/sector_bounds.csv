@@ -1,0 +1,5 @@
+portfolio_id,sector,lower,upper
+P1,TECH,0.5,1
+P1,HEALTH,0,0.5
+P2,TECH,0.5,1
+P2,HEALTH,0,0.5

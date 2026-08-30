@@ -49,7 +49,7 @@ def solution_to_orders(spec: ProblemSpec, solution: Solution, inputs: OrderInput
                 "unrounded_shares": unrounded,
                 "spec_hash": solution.spec_hash,
                 "run_id": run_id,
-                "as_of": spec.as_of,
+                "as_of_date": spec.as_of_date,
             }
         )
     return validate_frame(_orders_frame(rows), ORDERS)

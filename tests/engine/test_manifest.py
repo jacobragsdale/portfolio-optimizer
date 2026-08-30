@@ -16,7 +16,7 @@ def manifest(**overrides: object) -> RunManifest:
         "run_id": "run-1",
         "run_name": "r",
         "created_at_utc": AS_OF,
-        "as_of": AS_OF,
+        "as_of_date": AS_OF,
         "git_sha": "abc",
         "git_dirty": False,
         "schedule": ScheduleSummary(coupling="overlap", portfolios=1, edges=0, components=1, largest_component=1, critical_path=1),

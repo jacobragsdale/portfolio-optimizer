@@ -1,6 +1,5 @@
 """Tier 1/2: the backend seam — workers probed before data is shared, builds first, solves along the schedule with dependencies, fail-fast cancellation, dead and stale workers, and a cluster that never comes up."""
 
-import json
 from pathlib import Path
 
 from pandas.testing import assert_frame_equal
@@ -11,7 +10,7 @@ from portfolio_optimizer.engine.environment import environment_for
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, RunReport
 from tests.conftest import BUY_ONLY_OBJECTIVE, NO_CHAIN_CONSTRAINTS, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
-from tests.engine.support import HALF_CASH_ORDERS_P1, HALF_CASH_ORDERS_P2, SELL_BOOK_ORDERS_P1, SELL_BOOK_ORDERS_P2, constraints_json, example_book, execute, half_cash_book, sell_book
+from tests.engine.support import HALF_CASH_ORDERS_P1, HALF_CASH_ORDERS_P2, SELL_BOOK_ORDERS_P1, SELL_BOOK_ORDERS_P2, example_book, execute, half_cash_book, no_details_csv, sell_book
 
 
 def test_the_runner_submits_every_build_first_then_solves_along_the_schedule(tmp_path: Path) -> None:
@@ -49,7 +48,7 @@ def test_a_solve_is_submitted_before_the_builds_behind_it_are_read(tmp_path: Pat
 
 def test_a_portfolio_the_load_stage_rejected_is_never_built_and_does_not_hold_up_the_others(tmp_path: Path) -> None:
     backend = LazyBackend()
-    data_root = example_book(tmp_path, **{"constraints.json": json.dumps({"P2": json.loads(constraints_json())["P2"]})})
+    data_root = example_book(tmp_path, **{"details/P1.csv": no_details_csv("P1")})
     report = execute(tmp_path, backend_factory=factory_for(backend), data_root=data_root, on_error="continue")
     assert report.exit_code == EXIT_PORTFOLIO_FAILED
     assert not any(key.startswith("run-test/P1/") for key in backend.submitted), "P1 has no inputs, so nothing is submitted for it at all"

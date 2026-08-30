@@ -6,7 +6,6 @@ buy-universe filter), and ``solve_order`` values that tie. The run goes through 
 twice, with ``dependencies`` ``overlap`` and ``all``.
 """
 
-import json
 import random
 from pathlib import Path
 
@@ -15,7 +14,7 @@ from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.results import PortfolioResult
 from portfolio_optimizer.engine.runner import EXIT_OK, RunReport
-from tests.conftest import EXAMPLE_DATA, example_body
+from tests.conftest import example_body
 from tests.engine.fakes import LazyBackend, factory_for
 from tests.engine.support import execute
 
@@ -24,11 +23,12 @@ PRICES = {"A": 100, "B": 50, "C": 10, "D": 20, "E": 40}
 
 
 def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
-    """Write a random book: per-account holdings and details, per-portfolio buy lists, tying priorities; universe, prices, targets, and styles shared."""
+    """Write a random book: per-account holdings and details, per-portfolio buy lists, tying priorities; universe, prices, and targets shared."""
     root.mkdir()
     portfolio_ids = [f"P{index}" for index in range(1, portfolios + 1)]
     holdings_header = "portfolio_id,security_id,quantity,avg_cost,acquired_on"
-    details_header = "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id"
+    details_header = "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id,max_weight,max_turnover,max_adv_participation,min_trade_notional,cash_lb,cash_ub"
+    style = "1,2,0.25,0,0,0"  # the example's limits, which bind nothing here: the schedule is what this test is about
     (root / "holdings").mkdir()
     (root / "details").mkdir()
     buy_list = ["portfolio_id,security_id"]
@@ -40,15 +40,14 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
             rows.append(f"{portfolio_id},{security},{quantity},{PRICES[security]},2024-01-15T00:00:00Z")
             nav += quantity * PRICES[security]
         (root / "holdings" / f"{portfolio_id}.csv").write_text("\n".join(rows) + "\n")
-        (root / "details" / f"{portfolio_id}.csv").write_text(f"{details_header}\n{portfolio_id},{portfolio_id} book,NY,0.40,0.20,0,{nav},B1\n")
+        (root / "details" / f"{portfolio_id}.csv").write_text(f"{details_header}\n{portfolio_id},{portfolio_id} book,NY,0.40,0.20,0,{nav},B1,{style}\n")
         buy_list.extend(f"{portfolio_id},{security}" for security in sorted(rng.sample(SECURITIES, k=rng.randint(1, 3))))
-    style = {**json.loads((EXAMPLE_DATA / "constraints.json").read_text())["P1"], "sector_bounds": {}}  # one sector, no bounds: the schedule is what this test is about
     (root / "portfolios.csv").write_text("\n".join(["portfolio_id,solve_order", *(f"{portfolio_id},{rng.randint(0, 1)}" for portfolio_id in portfolio_ids)]) + "\n")
     (root / "buy_list.csv").write_text("\n".join(buy_list) + "\n")
     (root / "universe.csv").write_text("\n".join(["security_id,sector,adv_shares,lot_size,restricted", *(f"{security},TECH,20000,1,false" for security in SECURITIES)]) + "\n")
     (root / "prices.csv").write_text("\n".join(["security_id,price", *(f"{security},{PRICES[security]}" for security in SECURITIES)]) + "\n")
     (root / "targets.csv").write_text("\n".join(["benchmark_id,security_id,weight", *(f"B1,{security},0.2" for security in SECURITIES)]) + "\n")
-    (root / "constraints.json").write_text(json.dumps(dict.fromkeys(portfolio_ids, style)))
+    (root / "sector_bounds.csv").write_text("portfolio_id,sector,lower,upper\n")  # one sector and no rows: nothing is bounded
 
 
 def run_book(tmp_path: Path, root: Path, dependencies: str, run_id: str) -> RunReport:

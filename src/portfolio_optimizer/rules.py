@@ -28,10 +28,15 @@ class CapSingleNameParams(Params):
 
 
 def cap_single_name(data: PortfolioData, params: CapSingleNameParams) -> PortfolioData:
-    """Tighten the style's single-name limit to ``max_weight`` when it is looser."""
-    if params.max_weight >= data.style.max_weight:
+    """Tighten the account's single-name limit to ``max_weight`` when it is looser.
+
+    The limits are ordinary fields of ``data.details``, loaded with the rest of the account's row, so
+    a rule adjusts one the same way it would adjust any other input: by returning a bundle that holds
+    the new value.
+    """
+    if params.max_weight >= data.details.max_weight:
         return data.with_changes()
-    return data.with_changes(style=data.style.model_copy(update={"max_weight": params.max_weight}))
+    return data.with_changes(details=data.details.model_copy(update={"max_weight": params.max_weight}))
 
 
 def add_zero_alpha(data: PortfolioData) -> PortfolioData:

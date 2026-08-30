@@ -17,10 +17,10 @@ from tests.conftest import Factories, Frames, make_portfolio_data
 
 @pytest.mark.parametrize(("style_limit", "param", "expected"), [("0.10", "0.05", "0.05"), ("0.10", "0.10", "0.10"), ("0.10", "0.20", "0.10")])
 def test_cap_single_name_only_tightens(make: Factories, style_limit: str, param: str, expected: str) -> None:
-    data = make.portfolio_data(style=make.style(max_weight=Decimal(style_limit)))
+    data = make.portfolio_data(details=make.details(max_weight=Decimal(style_limit)))
     result = cap_single_name(data, CapSingleNameParams(max_weight=Decimal(param)))
-    assert result.style.max_weight == Decimal(expected)
-    assert data.style.max_weight == Decimal(style_limit)
+    assert result.details.max_weight == Decimal(expected)
+    assert data.details.max_weight == Decimal(style_limit)
 
 
 # --- add_zero_alpha ---

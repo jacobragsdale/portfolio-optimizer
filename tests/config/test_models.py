@@ -68,16 +68,20 @@ def test_missing_required_dataset_is_rejected(example_dict: dict[str, object]) -
         load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": []}))
 
 
-def test_engine_frames_may_come_from_assembly_steps_but_constraints_must_be_loaded(example_dict: dict[str, object]) -> None:
+def test_engine_frames_may_come_from_assembly_steps(example_dict: dict[str, object]) -> None:
     datasets = section(example_dict, "datasets")
     del datasets["holdings"]
     with pytest.raises(ValidationError, match="missing \\['holdings'\\]; a run without assembly steps has nothing else to produce them"):
         load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": []}))
     config = load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": [{"name": "union", "params": {"into": "holdings", "sources": ["prices"]}}]}))
     assert [step.name for step in config.assembly] == ["union"]
-    del datasets["constraints"]
-    with pytest.raises(ValidationError, match="missing \\['constraints'\\]"):
-        load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": ["my_pkg.assembly:everything"]}))
+
+
+def test_sector_bounds_is_optional(example_dict: dict[str, object]) -> None:
+    datasets = section(example_dict, "datasets")
+    del datasets["sector_bounds"]
+    config = load_run_config(json.dumps(example_dict | {"datasets": datasets}))
+    assert "sector_bounds" not in config.datasets, "a run that bounds no sector simply does not declare the dataset"
 
 
 @pytest.mark.parametrize("mechanic", [{"executor": "thread"}, {"max_workers": 2}])
@@ -86,8 +90,8 @@ def test_execution_mechanics_are_settings_not_config(example_dict: dict[str, obj
         load_run_config(json.dumps(example_dict | {"execution": section(example_dict, "execution") | mechanic}))
 
 
-def test_naive_as_of_is_rejected(example_dict: dict[str, object]) -> None:
-    run = section(example_dict, "run") | {"as_of": "2026-08-28T00:00:00"}
+def test_naive_as_of_date_is_rejected(example_dict: dict[str, object]) -> None:
+    run = section(example_dict, "run") | {"as_of_date": "2026-08-28T00:00:00"}
     with pytest.raises(ValidationError, match="timezone"):
         load_run_config(json.dumps(example_dict | {"run": run}))
 
@@ -114,7 +118,7 @@ def test_config_hash_ignores_source_whitespace_but_not_values(example_text: str,
 
 def test_defaults_fill_optional_sections() -> None:
     minimal = {
-        "run": {"name": "r", "as_of": "2026-01-01T00:00:00Z"},
+        "run": {"name": "r", "as_of_date": "2026-01-01T00:00:00Z"},
         "portfolios": "csv",
         "datasets": {name: {"loader": "csv"} for name in ("holdings", "universe", "details", "constraints", "targets")},
         "objective": {"terms": ["tracking_error"]},

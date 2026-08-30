@@ -9,15 +9,15 @@ import pytest
 
 from portfolio_optimizer.domain.data import LoadRequest
 from portfolio_optimizer.domain.frames import validate_frame
-from portfolio_optimizer.domain.schemas import HOLDINGS, UNIVERSE
+from portfolio_optimizer.domain.schemas import HOLDINGS, SECTOR_BOUNDS, UNIVERSE
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.loaders import CsvParams, CsvPerPortfolioParams, JsonConstraintsParams, ParquetParams, csv, csv_per_portfolio, json_constraints, parquet
+from portfolio_optimizer.loaders import CsvParams, CsvPerPortfolioParams, ParquetParams, csv, csv_per_portfolio, parquet
 from portfolio_optimizer.ratelimit import RateLimit, RateLimiter
 from tests.conftest import AS_OF, EXAMPLE_DATA, Frames
 
 
 def request(dataset: str, root: Path = EXAMPLE_DATA) -> LoadRequest:
-    return LoadRequest(dataset=dataset, portfolio_ids=(PortfolioId("P1"),), as_of=AS_OF, data_root=root, run_id="test")
+    return LoadRequest(dataset=dataset, portfolio_ids=(PortfolioId("P1"),), as_of_date=AS_OF, data_root=root, run_id="test")
 
 
 def test_csv_loads_an_engine_dataset_with_schema_dtypes() -> None:
@@ -66,16 +66,10 @@ def test_parquet_extra_dataset_converts_float_columns_to_decimal(tmp_path: Path)
     assert loaded["price"].iloc[0] == Decimal("0.1")
 
 
-def test_json_constraints_loads_the_example_file() -> None:
-    loaded = json_constraints(request("constraints"), JsonConstraintsParams(path="constraints.json"))
-    assert set(loaded) == {"P1", "P2"}
-    assert loaded["P1"]["max_adv_participation"] == "0.25"
-
-
-def test_json_constraints_rejects_a_list(tmp_path: Path) -> None:
-    (tmp_path / "constraints.json").write_text('[{"max_weight": "1"}]')
-    with pytest.raises(ValueError, match="expected an object mapping portfolio ids"):
-        json_constraints(request("constraints", tmp_path), JsonConstraintsParams(path="constraints.json"))
+def test_csv_loads_the_example_sector_bounds_with_schema_dtypes() -> None:
+    bounds = csv(request("sector_bounds"), CsvParams(path="sector_bounds.csv"))
+    validate_frame(bounds, SECTOR_BOUNDS)
+    assert bounds.loc[bounds["sector"] == "TECH", "lower"].iloc[0] == Decimal("0.5")
 
 
 def _per_portfolio_files(root: Path) -> None:
@@ -89,7 +83,7 @@ def test_csv_per_portfolio_fans_out_under_the_rate_limit_and_keeps_portfolio_ord
 
     async def scenario() -> tuple[pd.DataFrame, RateLimiter]:
         limiter = RateLimiter(RateLimit(max_in_flight=1), name="files")
-        request = LoadRequest(dataset="holdings", portfolio_ids=(PortfolioId("P2"), PortfolioId("P1")), as_of=AS_OF, data_root=tmp_path, run_id="test", rate_limiter=limiter)
+        request = LoadRequest(dataset="holdings", portfolio_ids=(PortfolioId("P2"), PortfolioId("P1")), as_of_date=AS_OF, data_root=tmp_path, run_id="test", rate_limiter=limiter)
         return await csv_per_portfolio(request, CsvPerPortfolioParams(directory="holdings")), limiter
 
     holdings, limiter = asyncio.run(scenario())
@@ -100,7 +94,7 @@ def test_csv_per_portfolio_fans_out_under_the_rate_limit_and_keeps_portfolio_ord
 
 
 def test_csv_per_portfolio_with_no_portfolios_returns_an_empty_frame_with_the_schema_columns(tmp_path: Path) -> None:
-    request = LoadRequest(dataset="holdings", portfolio_ids=(), as_of=AS_OF, data_root=tmp_path, run_id="test")
+    request = LoadRequest(dataset="holdings", portfolio_ids=(), as_of_date=AS_OF, data_root=tmp_path, run_id="test")
     holdings = asyncio.run(csv_per_portfolio(request, CsvPerPortfolioParams(directory="holdings")))
     assert len(holdings) == 0
     assert list(holdings.columns) == [column.name for column in HOLDINGS.columns]
@@ -108,7 +102,7 @@ def test_csv_per_portfolio_with_no_portfolios_returns_an_empty_frame_with_the_sc
 
 def test_csv_per_portfolio_names_the_portfolio_whose_file_is_missing(tmp_path: Path) -> None:
     _per_portfolio_files(tmp_path)
-    request = LoadRequest(dataset="holdings", portfolio_ids=(PortfolioId("P1"), PortfolioId("P9")), as_of=AS_OF, data_root=tmp_path, run_id="test")
+    request = LoadRequest(dataset="holdings", portfolio_ids=(PortfolioId("P1"), PortfolioId("P9")), as_of_date=AS_OF, data_root=tmp_path, run_id="test")
     with pytest.raises(ExceptionGroup) as info:
         asyncio.run(csv_per_portfolio(request, CsvPerPortfolioParams(directory="holdings")))
     assert info.group_contains(FileNotFoundError, match="P9.csv")

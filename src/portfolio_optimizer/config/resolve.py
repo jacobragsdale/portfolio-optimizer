@@ -40,7 +40,6 @@ from portfolio_optimizer.solving import SolveRequest, SolveResult
 
 TEMPLATE_MODULES: Mapping[StepKind, str] = {
     "loader": "portfolio_optimizer.loaders",
-    "constraints_loader": "portfolio_optimizer.loaders",
     "assembly": "portfolio_optimizer.assembly",
     "rule": "portfolio_optimizer.rules",
     "solve_order": "portfolio_optimizer.solve_order",
@@ -49,8 +48,6 @@ TEMPLATE_MODULES: Mapping[StepKind, str] = {
     "solve": "portfolio_optimizer.solvers",
     "sink": "portfolio_optimizer.sinks",
 }
-
-type ConstraintsMapping = Mapping[str, Mapping[str, object]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +62,6 @@ class Contract:
 
 CONTRACTS: Mapping[StepKind, Contract] = {
     "loader": Contract({"request": LoadRequest}, (pd.DataFrame,), allows_async=True),
-    "constraints_loader": Contract({"request": LoadRequest}, (ConstraintsMapping.__value__, dict[str, dict[str, object]]), allows_async=True),
     "assembly": Contract({"frames": Frames}, (Frames,)),
     "rule": Contract({"data": PortfolioData}, (PortfolioData,)),
     "solve_order": Contract({"data": PortfolioData}, (Decimal,)),
@@ -130,7 +126,7 @@ def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] 
             return None
 
     portfolios = resolve(config.portfolios.loader, "loader", "portfolios")
-    loaders = {name: resolve(dataset.loader, "constraints_loader" if name == "constraints" else "loader", f"datasets.{name}") for name, dataset in config.datasets.items()}
+    loaders = {name: resolve(dataset.loader, "loader", f"datasets.{name}") for name, dataset in config.datasets.items()}
     assembly = [resolve(spec, "assembly", f"assembly[{i}]") for i, spec in enumerate(config.assembly)]
     rules = [resolve(spec, "rule", f"rules[{i}]") for i, spec in enumerate(config.rules)]
     solve_order = resolve(config.solve_order, "solve_order", "solve_order") if config.solve_order is not None else None
@@ -204,7 +200,7 @@ def _dry_run_spec() -> ProblemSpec:
     one = np.ones(1)
     return ProblemSpec(
         portfolio_id="dry-run",
-        as_of=datetime(2000, 1, 1, tzinfo=UTC),
+        as_of_date=datetime(2000, 1, 1, tzinfo=UTC),
         security_ids=("DRY",),
         sector_names=("DRY",),
         nav=1.0,

@@ -1,6 +1,6 @@
 {
   "$schema": "./run-config.schema.json",
-  "run": {"name": "example_rebalance", "as_of": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}},
+  "run": {"name": "example_rebalance", "as_of_date": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}},
   "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}},
   "datasets": {
     "holdings": {
@@ -14,7 +14,7 @@
       "scope": "per_portfolio",
       "batch_size": 2
     },
-    "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
+    "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
     "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
     "prices": {
       "loader": {

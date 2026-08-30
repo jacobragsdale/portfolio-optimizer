@@ -1,6 +1,7 @@
 """Tier 2/3: the published JSON Schema is current, accepts the example, and refuses what the models refuse."""
 
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -110,7 +111,7 @@ def test_every_shipped_step_is_described(schema: dict[str, object]) -> None:
     assert "tracking_error" in str(as_object(defs["TermStep"])["$comment"])
     assert "orders_to_parquet" in str(as_object(defs["SinkStep"])["$comment"])
     assert "union" in str(as_object(defs["AssemblyStep"])["$comment"])
-    assert "json_constraints" in str(as_object(defs["ConstraintsLoaderStep"])["$comment"])
+    assert "csv_per_portfolio" in str(as_object(defs["LoaderStep"])["$comment"])
 
 
 def test_schema_file_is_valid_json_with_sorted_keys() -> None:
@@ -123,3 +124,20 @@ def test_schema_ref_does_not_change_the_config_hash() -> None:
     without_pointer = load_run_config(json.dumps({key: value for key, value in example_body().items() if key != "$schema"}))
     assert config_sha256(with_pointer) == config_sha256(without_pointer)
     assert Path(EXAMPLE_CONFIG).exists()
+
+
+README = REPO_ROOT / "README.md"
+ANNOTATED_BLOCK = re.compile(r"^```jsonc\n(.*?)^```$", re.DOTALL | re.MULTILINE)
+
+
+def test_the_readme_annotated_config_is_the_real_one_with_comments() -> None:
+    """The README carries the example config annotated; the shipped file stays strict JSON with no comments.
+
+    Only whole-line ``//`` comments are used, so stripping them is unambiguous — a trailing comment
+    could otherwise be inside a string. The two are compared parsed, not as text, so the annotated copy
+    is free to break lines wherever it reads best.
+    """
+    blocks = ANNOTATED_BLOCK.findall(README.read_text())
+    assert len(blocks) == 1, "the README should carry exactly one annotated jsonc config block"
+    stripped = "\n".join(line for line in blocks[0].splitlines() if not line.lstrip().startswith("//"))
+    assert json.loads(stripped) == json.loads(EXAMPLE_CONFIG.read_text()), "the README's annotated config has drifted from configs/example_run.json; update the annotated copy"

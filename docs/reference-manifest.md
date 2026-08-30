@@ -46,7 +46,7 @@ Files are written to a sibling temp file and renamed, so a crash leaves no parti
 | `unrounded_shares` | `Float64` | The signed share delta before rounding. |
 | `spec_hash` | `string` | Hash of the problem the order came from. |
 | `run_id` | `string` | |
-| `as_of` | `datetime64[ns, UTC]` | |
+| `as_of_date` | `datetime64[ns, UTC]` | |
 
 Rounding: nearest whole share (half-even), then down to a lot multiple, then a sell is clamped to the
 shares held; orders below the style's `min_trade_notional` are dropped.
@@ -58,7 +58,7 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 
 | Field | Description |
 |---|---|
-| `run_id`, `run_name`, `created_at_utc`, `as_of` | Identity. `created_at_utc` comes from the injected clock. |
+| `run_id`, `run_name`, `created_at_utc`, `as_of_date` | Identity. `created_at_utc` comes from the injected clock. |
 | `git_sha`, `git_dirty` | The code revision, or `unknown` outside a repository. |
 | `schedule` | The dependency graph the run derived: `coupling` (`none` when nothing read the chain, `overlap`, or `all`), `portfolios`, `edges`, `components` (independent groups that never waited on each other), `largest_component`, `critical_path` (the longest chain of solves that had to run one after another). Absent when the cluster never came up. |
 | `cluster` | The cluster's lifetime: `kind` (`local`, `kubernetes`, `address`), `min_workers`, `max_workers`, `workers_ready` (workers joined when the first task could run), `scheduler_address`, `provision_started_at` (before the load stage), `first_worker_ready_at` (after assembly), `closed_at`. |

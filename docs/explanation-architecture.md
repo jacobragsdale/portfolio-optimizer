@@ -111,7 +111,7 @@ the answers coincide. That symmetry test is what the design asked for, and it is
 profile is one object.
 
 A one-sided run can move cash one way only — a buy-only run lowers it, a sell-only run raises it — and
-`cash_bounds` keeps its meaning as the cash after the run, so a book that starts on the wrong side of
+The cash bounds keep their meaning as the cash after the run, so a book that starts on the wrong side of
 its bound is infeasible, and the infeasibility diagnosis says so in words. The same holds for a name
 held past a bound the side cannot move it back inside (over its cap in a buy-only run, under its floor
 in a sell-only one): the profile lists the names, and a per-constraint policy for accepting such a

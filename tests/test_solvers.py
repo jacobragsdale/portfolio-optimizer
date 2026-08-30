@@ -57,8 +57,8 @@ def test_pro_rata_fill_refuses_a_book_below_its_cash_floor(make: Factories) -> N
 
 
 def test_pro_rata_fill_verifies_like_a_solve(make: Factories) -> None:
-    details = make.details(nav=Decimal(1_250_000), cash=Decimal(250_000))
-    output = build_problem_spec(make.portfolio_data(details=details, style=make.style(max_weight=Decimal("0.6"))))
+    details = make.details(nav=Decimal(1_250_000), cash=Decimal(250_000), max_weight=Decimal("0.6"))
+    output = build_problem_spec(make.portfolio_data(details=details))
     resolved = resolved_example_real(solve="pro_rata_fill")
     chain = ChainState.empty(output.spec.security_ids)
     result = pro_rata_fill(SolveRequest(spec=output.spec, chain=chain, profile=TWO_SIDED, terms=resolved.terms, constraints=resolved.constraints, solver=resolved.config.solver))

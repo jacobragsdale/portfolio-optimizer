@@ -1,8 +1,6 @@
 """Run helpers shared by the engine and CLI tests: a fixed clock and ids, the example book with files swapped, the hand-checked answers, and one ``execute``."""
 
-import json
 import shutil
-from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -69,12 +67,17 @@ def example_book(tmp_path: Path, **files: str) -> Path:
     return root
 
 
-def constraints_json(**per_portfolio: Mapping[str, object]) -> str:
-    """The example's ``constraints.json`` with per-portfolio style fields overridden."""
-    base = json.loads((EXAMPLE_DATA / "constraints.json").read_text())
-    for portfolio_id, overrides in per_portfolio.items():
-        base[portfolio_id] = {**base[portfolio_id], **overrides}
-    return json.dumps(base)
+def details_csv(portfolio_id: str, **overrides: str) -> str:
+    """The example's ``details`` row for one portfolio with named columns overridden."""
+    header, row = (EXAMPLE_DATA / "details" / f"{portfolio_id}.csv").read_text().splitlines()[:2]
+    names = header.split(",")
+    values = dict(zip(names, row.split(","), strict=True)) | overrides
+    return f"{header}\n" + ",".join(values[name] for name in names) + "\n"
+
+
+def no_details_csv(portfolio_id: str) -> str:
+    """A ``details`` file with its header and no row: the dataset loads, but this portfolio has no row in it."""
+    return (EXAMPLE_DATA / "details" / f"{portfolio_id}.csv").read_text().splitlines()[0] + "\n"
 
 
 HALF_CASH_ORDERS_P1: Orders = [{"security_id": "A", "side": "BUY", "quantity": 1250}, {"security_id": "B", "side": "BUY", "quantity": 2500}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
@@ -88,8 +91,7 @@ def half_cash_book(tmp_path: Path) -> Path:
     1,250 A, 2,500 B, and 25,000 C (C is capped at 0.25, the rest splits evenly), and P2 — C's budget
     spent by P1 — buys 2,500 A and 5,000 B: ``HALF_CASH_ORDERS_P1`` and ``HALF_CASH_ORDERS_P2``.
     """
-    header = "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id\n"
-    details = {"details/P1.csv": header + "P1,Alpha Growth,NY,0.40,0.20,500000,1000000,B1\n", "details/P2.csv": header + "P2,Beta Income,CA,0.37,0.20,500000,1000000,B1\n"}
+    details = {f"details/{pid}.csv": details_csv(pid, cash="500000") for pid in ("P1", "P2")}
     header = "portfolio_id,security_id,quantity,avg_cost,acquired_on\n"
     holdings = {
         "holdings/P1.csv": header + "P1,A,2500,100,2024-01-15T00:00:00Z\nP1,B,5000,50,2024-01-15T00:00:00Z\n",
@@ -103,15 +105,15 @@ SELL_BOOK_ORDERS_P2: Orders = [{"security_id": "B", "side": "SELL", "quantity": 
 
 
 def sell_book(tmp_path: Path) -> Path:
-    """The example data allowed to raise cash (``cash_bounds`` ``[0, 1]``) with A's ADV budget cut to 1,000 shares: what a sell-only run trims.
+    """The example data allowed to raise cash (``cash_ub`` of ``1``) with A's ADV budget cut to 1,000 shares: what a sell-only run trims.
 
     Each portfolio holds A 0.5 and B 0.5 against a target of a third each, so the hand answer for P1 is
     sell 1,000 A (its whole ADV budget, a 0.1 weight) and 3,333 B (to a third); P2, with A's budget spent
     by P1, sells 3,333 B alone: ``SELL_BOOK_ORDERS_P1`` and ``SELL_BOOK_ORDERS_P2``.
     """
-    raise_cash: dict[str, object] = {"cash_bounds": ["0", "1"]}
+    raise_cash = {f"details/{pid}.csv": details_csv(pid, cash_ub="1") for pid in ("P1", "P2")}
     universe = "security_id,sector,adv_shares,lot_size,restricted\nA,TECH,4000,1,false\nB,TECH,1000000,1,false\nC,HEALTH,100000,1,false\n"
-    return example_book(tmp_path, **{"constraints.json": constraints_json(P1=raise_cash, P2=raise_cash), "universe.csv": universe})
+    return example_book(tmp_path, **raise_cash, **{"universe.csv": universe})
 
 
 # --- one run helper: a cluster run connects by address, a fake run supplies its backend ---

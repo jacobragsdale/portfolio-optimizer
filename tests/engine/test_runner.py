@@ -1,6 +1,5 @@
 """Tier 2: on the real cluster — the golden orders, the line equals the overlap schedule, failures skip only what depended on them (or everything under fail_fast), and nothing partial is published."""
 
-import json
 from pathlib import Path
 
 import pytest
@@ -10,9 +9,9 @@ from portfolio_optimizer.domain.results import PortfolioFailure, PortfolioResult
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError
 from tests.conftest import EXAMPLE_DATA, NO_CHAIN_CONSTRAINTS, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
-from tests.engine.support import EXAMPLE_ORDERS_P1, GIT, constraints_json, example_book, execute
+from tests.engine.support import EXAMPLE_ORDERS_P1, GIT, details_csv, example_book, execute, no_details_csv
 
-CAPPED_P1 = constraints_json(P1={"max_weight": "0.3"})
+CAPPED_P1 = details_csv("P1", max_weight="0.3")
 """P1's cap below a third: with three names it cannot invest its NAV, so its solve is infeasible."""
 
 
@@ -48,7 +47,7 @@ def test_every_earlier_portfolio_as_a_predecessor_matches_the_overlap_schedule(t
 
 
 def test_fail_fast_skips_every_lower_priority_portfolio_and_publishes_nothing(tmp_path: Path, scheduler_address: str) -> None:
-    data_root = example_book(tmp_path, **{"constraints.json": CAPPED_P1})
+    data_root = example_book(tmp_path, **{"details/P1.csv": CAPPED_P1})
     report = execute(tmp_path, scheduler_address=scheduler_address, data_root=data_root)
     assert report.exit_code == EXIT_PORTFOLIO_FAILED
     p1, p2 = report.outcomes
@@ -64,7 +63,7 @@ def test_fail_fast_skips_every_lower_priority_portfolio_and_publishes_nothing(tm
 
 
 def test_continue_isolates_a_failure_nothing_depended_on(tmp_path: Path, scheduler_address: str) -> None:
-    data_root = example_book(tmp_path, **{"constraints.json": CAPPED_P1})
+    data_root = example_book(tmp_path, **{"details/P1.csv": CAPPED_P1})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, constraints=NO_CHAIN_CONSTRAINTS)
     assert report.exit_code == EXIT_PORTFOLIO_FAILED
     assert [type(o).__name__ for o in report.outcomes] == ["PortfolioFailure", "PortfolioResult"]
@@ -73,7 +72,7 @@ def test_continue_isolates_a_failure_nothing_depended_on(tmp_path: Path, schedul
 
 
 def test_continue_skips_the_portfolios_that_depended_on_the_failure_and_names_it(tmp_path: Path, scheduler_address: str) -> None:
-    data_root = example_book(tmp_path, **{"constraints.json": CAPPED_P1})
+    data_root = example_book(tmp_path, **{"details/P1.csv": CAPPED_P1})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioFailure) and p1.stage == "solve"
@@ -127,14 +126,14 @@ def test_sink_failure_is_infrastructure_and_the_manifest_still_records_it(tmp_pa
 
 
 def test_a_portfolio_the_inputs_do_not_cover_fails_alone_and_the_rest_of_the_book_solves(tmp_path: Path, scheduler_address: str) -> None:
-    data_root = example_book(tmp_path, **{"constraints.json": json.dumps({"P1": json.loads(constraints_json())["P1"]})})
+    data_root = example_book(tmp_path, **{"details/P2.csv": no_details_csv("P2")})
     report = execute(tmp_path, scheduler_address=scheduler_address, data_root=data_root, on_error="continue")
     assert report.exit_code == EXIT_PORTFOLIO_FAILED
     solved, failed = report.solved, report.failed
     assert [outcome.portfolio_id for outcome in solved] == ["P1"], "P1 has everything it needs and is not held back by P2"
     assert [(o.portfolio_id, o.stage, o.error_type) for o in failed] == [("P2", "load", "MissingInput")]
     record = {r.portfolio_id: r for r in report.manifest.portfolios}["P2"]
-    assert record.error is not None and "no constraints for this portfolio" in record.error
+    assert record.error is not None and "no details for this portfolio" in record.error
 
 
 def test_a_required_dataset_that_does_not_load_at_all_still_rejects_the_run(tmp_path: Path, scheduler_address: str) -> None:
@@ -147,7 +146,7 @@ def test_manifest_records_provenance_for_every_stage(tmp_path: Path, scheduler_a
     manifest = execute(tmp_path, scheduler_address=scheduler_address).manifest
     assert manifest.git_sha == GIT.sha
     assert manifest.config.sha256 == resolved_example_real(sink="orders_to_parquet").config_sha256
-    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "constraints", "targets", "prices"}
+    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "sector_bounds", "targets", "prices"}
     p1 = manifest.portfolios[0]
     assert [r.qualname for r in p1.rules] == ["portfolio_optimizer.rules:restrict_low_liquidity", "portfolio_optimizer.rules:add_zero_alpha", "portfolio_optimizer.rules:attach_universe_columns"]
     assert p1.solve is not None

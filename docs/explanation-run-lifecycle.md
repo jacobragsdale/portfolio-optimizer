@@ -28,7 +28,7 @@ fails loudly instead of being ignored. `PORTFOLIO_OPTIMIZER_CLUSTER=auto` is res
 `kubernetes` inside a pod and `local` anywhere else, so what the manifest records is what happened.
 
 **The config** (`config/models.py`) is a strict pydantic model: unknown keys are errors, money is written
-as strings (`"0.05"`) so it becomes exact `Decimal`, and `as_of` must carry a timezone. The validated
+as strings (`"0.05"`) so it becomes exact `Decimal`, and `as_of_date` must carry a timezone. The validated
 config is hashed on its canonical JSON form, so whitespace and the `$schema` pointer never change the
 hash.
 
@@ -72,7 +72,7 @@ first, ties break on the id, and the column may be omitted or repeated — and t
 the order builds are submitted in and the fallback key when no `solve_order` step is configured. The
 tuple of ids is part of every other request, which is why this one loader cannot overlap with the rest. Then
 **every dataset loader starts at once**, called with a `LoadRequest` (dataset name, portfolio ids,
-`as_of`, `data_root`, `run_id`, and a rate limiter): an `async def` loader runs as a task on the event
+`as_of_date`, `data_root`, `run_id`, and a rate limiter): an `async def` loader runs as a task on the event
 loop, a plain `def` loader in a worker thread so a blocking driver never stalls the loop.
 
 How many times each loader is called is the dataset's `scope`. A **global** dataset is one call for the
@@ -103,8 +103,8 @@ the keys are in [the reference](reference-run-config.md#rate-limits).
 The shipped loaders (`loaders.py`) are the only place I/O happens. The CSV loader deliberately reads
 decimal and timestamp columns as strings, then `coerce_frame` turns them into `Decimal` exactly; a float
 only ever becomes `Decimal(repr(value))`, the shortest round-tripping form. `csv_per_portfolio` is the
-fan-out pattern with files in place of a client. The `constraints` dataset is different: its loader
-returns a mapping of portfolio id to style-constraint object, not a frame.
+fan-out pattern with files in place of a client. Every dataset is a frame, so every loader has the one
+shape.
 
 `assemble` runs the config's **assembly steps** in order. Each is a function `Frames → Frames` over
 every loaded dataset by name; the example's first step joins the `prices` dataset into `universe` and
@@ -117,28 +117,28 @@ row counts, and the columns it added go into the manifest. After the last step, 
 `details`, and `targets` must exist, and **every engine-known frame is validated against its schema** —
 column set, dtype, nullability, bounds, unique key, and frame-level invariants such as "target weights
 sum to one" — with all failures across all frames reported at once. `holdings` and `universe` may carry
-any further columns; that is where security analytics live. Finally, `details` and `constraints` must
-have an entry for every portfolio. Whatever datasets remain that the engine does not know become the
-run's extras.
+any further columns; that is where security analytics live. `sector_bounds` is engine-known but
+optional — a run that omits it bounds no sector. Finally, `details` must have a row for every
+portfolio. Whatever datasets remain that the engine does not know become the run's extras.
 
 Anything failing here raises `InputRejectedError` and the run exits with code 2. Nothing was solved.
 
 ## 3. Slice per portfolio: validation, second layer
 
 `slice_portfolio` builds a `PortfolioData` bundle: this portfolio's `details` row typed into a
-`PortfolioDetails` model, its holdings, the full universe, its benchmark's targets, its style
-constraints typed into `StyleConstraints` (round-tripped through JSON so money strings become
-`Decimal`), and its share of the extras — a dataset with a `portfolio_id` column reduced to this
-portfolio's rows, one without passed whole. This happens *in the worker*, which received the assembled
+`PortfolioDetails` model — which carries the account's style limits alongside its facts — its holdings,
+the full universe, its benchmark's targets, its own rows of `sector_bounds`, and its share of the
+extras — a dataset with a `portfolio_id` column reduced to this portfolio's rows, one without passed
+whole. This happens *in the worker*, which received the assembled
 datasets once: a task carries a portfolio id and nothing else.
 
-The three frames the slice produces are marked `prevalidated`: assembly already checked them against
-their schemas, the universe is passed whole, and a row subset of validated holdings or targets keeps
-every per-column check, the key's uniqueness, and — because targets are sliced by whole benchmark — the
-sum-to-one invariant. So the bundle does not check them again, here or after a rule that leaves them
+The frames the slice produces are marked `prevalidated`: assembly already checked them against their
+schemas, the universe is passed whole, and a row subset of validated holdings, targets, or sector
+bounds keeps every per-column check, the key's uniqueness, the bounds' ordering, and — because targets
+are sliced by whole benchmark — the sum-to-one invariant. So the bundle does not check them again, here or after a rule that leaves them
 untouched. A rule that returns a *new* frame loses that standing for it, and the new frame is validated.
 
-`PortfolioData.__post_init__` (`domain/data.py`) holds the cross-frame invariants: `as_of` is UTC,
+`PortfolioData.__post_init__` (`domain/data.py`) holds the cross-frame invariants: `as_of_date` is UTC,
 holdings contain only this portfolio, targets belong to this benchmark and every target name is held or
 buyable, every sector named in `sector_bounds` exists, every extra with a `portfolio_id` column belongs
 to this portfolio, and — because the two tables will be stacked into one optimizer frame — every column
@@ -149,8 +149,8 @@ failure at stage `slice`, not a run-level rejection; other portfolios proceed ac
 `PortfolioData.optimizer_frame()` is the bundle's view for an optimizer that wants one table: the
 holdings rows followed by the universe rows, tagged by a `source` column, over the union of both tables'
 columns with typed nulls where a side lacks a column. The shipped build does not use it — it aligns
-everything to the universe — but a custom build that takes "one optimizer frame plus the style
-constraints" gets exactly that from `data.optimizer_frame()` and `data.style`.
+everything to the universe — but a custom build that takes "one optimizer frame plus the account's
+limits" gets exactly that from `data.optimizer_frame()` and `data.details`.
 
 ## 4. Rules: validation, third layer
 
@@ -250,7 +250,7 @@ step reported no objective. A failed check raises `VerificationError`; the portf
 lot multiple, then sells are clamped to what is held, then trades below `min_trade_notional` are
 dropped. `notional = quantity × reference_price` is computed in `Decimal` from `OrderInputs`, never from
 the float copies inside the spec, and the `ORDERS` schema's `notional_matches` invariant confirms it.
-Each order also carries the spec hash, run id, `as_of`, the float target weight, and the unrounded share
+Each order also carries the spec hash, run id, `as_of_date`, the float target weight, and the unrounded share
 count for audit.
 
 `rounding_drift` rebuilds the executed weights from the orders and measures the worst deviation from the
