@@ -358,7 +358,7 @@ class Solution:
     w: F64
     buy: F64
     sell: F64
-    objective: float
+    objective: float | None
     status: SolveStatus
     solver: str
     solver_version: str
@@ -386,7 +386,7 @@ class Solution:
             w=w,
             buy=buy,
             sell=sell,
-            objective=float(meta["objective"]),
+            objective=None if meta["objective"] is None else float(meta["objective"]),
             status=SolveStatus(str(meta["status"])),
             solver=str(meta["solver"]),
             solver_version=str(meta["solver_version"]),
@@ -426,7 +426,7 @@ class ConstraintReport:
     checks: tuple[ConstraintCheck, ...]
     objective_terms: tuple[tuple[str, float], ...]
     recomputed_objective: float
-    solver_objective: float
+    solver_objective: float | None
     objective_gap: float
     objective_passed: bool
     unverified: tuple[str, ...]

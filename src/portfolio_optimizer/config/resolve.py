@@ -12,7 +12,6 @@ because every process that will solve resolves the config first: the client at `
 and at the start of ``run``, and each worker before it does any work.
 """
 
-import asyncio
 import hashlib
 import importlib
 import inspect
@@ -20,19 +19,21 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal, get_type_hints
+from typing import get_type_hints
 
 import pandas as pd
 from pydantic import ValidationError
 
-from portfolio_optimizer.config.models import ConstraintStep, RunConfig, StepSpec
+from portfolio_optimizer.config.models import RunConfig, StepSpec
+from portfolio_optimizer.config.steps import ResolvedConstraint, ResolvedStep, StepKind
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, installed_solvers, solver_failures
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec
 from portfolio_optimizer.domain.sides import SideProfile, profile_for
 from portfolio_optimizer.domain.types import Params
+from portfolio_optimizer.solving import SolveRequest, SolveResult
 
-type StepKind = Literal["portfolios", "loader", "constraints_loader", "assembly", "rule", "solve_order", "term", "constraint", "sink"]
+__all__ = ["CONTRACTS", "TEMPLATE_MODULES", "ConfigResolutionError", "Contract", "ResolvedConfig", "ResolvedConstraint", "ResolvedStep", "StepKind", "resolve_config", "resolve_step"]
 
 TEMPLATE_MODULES: Mapping[StepKind, str] = {
     "portfolios": "portfolio_optimizer.loaders",
@@ -43,6 +44,7 @@ TEMPLATE_MODULES: Mapping[StepKind, str] = {
     "solve_order": "portfolio_optimizer.solve_order",
     "term": "portfolio_optimizer.terms",
     "constraint": "portfolio_optimizer.terms",
+    "solve": "portfolio_optimizer.solvers",
     "sink": "portfolio_optimizer.sinks",
 }
 
@@ -68,6 +70,7 @@ CONTRACTS: Mapping[StepKind, Contract] = {
     "solve_order": Contract({"data": PortfolioData}, None, (Decimal,)),
     "term": Contract({"x": DecisionVars, "spec": ProblemSpec}, ("chain", ChainState), (ObjectiveTerm,)),
     "constraint": Contract({"x": DecisionVars, "spec": ProblemSpec}, ("chain", ChainState), (ConstraintSet,)),
+    "solve": Contract({"request": SolveRequest}, None, (SolveResult,)),
     "sink": Contract({"orders": pd.DataFrame, "io": IoContext}, None, (tuple[Artifact, ...],)),
 }
 
@@ -78,71 +81,6 @@ class ConfigResolutionError(ValueError):
     def __init__(self, failures: list[str]) -> None:
         self.failures = tuple(failures)
         super().__init__(f"{len(failures)} config resolution failure(s): " + "; ".join(failures))
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedStep:
-    """A step whose function, parameters, and provenance have been checked."""
-
-    kind: StepKind
-    name: str
-    qualname: str
-    fn: Callable[..., object]
-    params: Params | None
-    context_name: str | None
-    source_sha256: str
-    params_sha256: str
-    is_external: bool
-    is_async: bool = False
-
-    @property
-    def needs_context(self) -> bool:
-        """True when the function declares the optional context argument for its kind."""
-        return self.context_name is not None
-
-    def invoke(self, *, context: object | None = None, **engine_args: object) -> object:
-        """Call the function with the engine arguments, its validated params, and its context.
-
-        For an async step this returns the coroutine; :meth:`invoke_async` awaits it.
-        """
-        kwargs: dict[str, object] = dict(engine_args)
-        if self.params is not None:
-            kwargs["params"] = self.params
-        if self.context_name is not None:
-            if context is None:
-                msg = f"step {self.qualname!r} requires {self.context_name!r} but none was supplied"
-                raise ValueError(msg)
-            kwargs[self.context_name] = context
-        return self.fn(**kwargs)
-
-    async def invoke_async(self, *, context: object | None = None, **engine_args: object) -> object:
-        """Await an async step, or run a sync step in a worker thread so it cannot block the event loop."""
-        if not self.is_async:
-            return await asyncio.to_thread(self.invoke, context=context, **engine_args)
-        result = self.invoke(context=context, **engine_args)
-        if not inspect.isawaitable(result):
-            msg = f"async step {self.qualname!r} returned {type(result).__name__} instead of an awaitable"
-            raise TypeError(msg)
-        return await result
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedConstraint:
-    """A constraint as the engine consumes it: its label, the model as configured, and the resolved step behind it."""
-
-    label: str
-    spec: ConstraintStep
-    step: ResolvedStep
-
-    @property
-    def reads_chain(self) -> bool:
-        """True when the constraint reads what higher-priority portfolios traded; what the dependency graph is derived from."""
-        return self.step.needs_context
-
-    @property
-    def qualname(self) -> str:
-        """The step's qualified name."""
-        return self.step.qualname
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +96,7 @@ class ResolvedConfig:
     solve_order: ResolvedStep | None
     terms: tuple[ResolvedStep, ...]
     constraints: tuple[ResolvedConstraint, ...]
+    solve: ResolvedStep
     sink: ResolvedStep
     profile: SideProfile
 
@@ -170,7 +109,7 @@ class ResolvedConfig:
     def all_steps(self) -> tuple[ResolvedStep, ...]:
         """Every resolved step, in pipeline order."""
         ordering = () if self.solve_order is None else (self.solve_order,)
-        return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *ordering, *self.terms, *(constraint.step for constraint in self.constraints), self.sink)
+        return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *ordering, *self.terms, *(constraint.step for constraint in self.constraints), self.solve, self.sink)
 
 
 def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable[[], Sequence[str]] = installed_solvers) -> ResolvedConfig:
@@ -206,9 +145,10 @@ def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable
         labels.setdefault(label, i)
         step = resolve(spec, "constraint", f"constraints[{i}]")
         constraints.append(ResolvedConstraint(label=label, spec=spec, step=step) if step is not None else None)
+    solve = resolve(config.solve, "solve", "solve")
     sink = resolve(config.sink, "sink", "sink")
     resolved_loaders = {name: step for name, step in loaders.items() if step is not None}
-    if failures or portfolios is None or sink is None or len(resolved_loaders) != len(loaders):
+    if failures or portfolios is None or solve is None or sink is None or len(resolved_loaders) != len(loaders):
         raise ConfigResolutionError(failures)
     return ResolvedConfig(
         config=config,
@@ -220,6 +160,7 @@ def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable
         solve_order=solve_order,
         terms=tuple(step for step in terms if step is not None),
         constraints=tuple(constraint for constraint in constraints if constraint is not None),
+        solve=solve,
         sink=sink,
         profile=profile_for(config.sides),
     )

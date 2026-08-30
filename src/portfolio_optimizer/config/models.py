@@ -220,7 +220,11 @@ class RunConfig(StrictModel):
     constraints: tuple[ConstraintStep, ...] = Field(
         default=(), description="Constraints: steps from `terms.py`, each with an optional `label`. The trade identity (`w = w0 + buy - sell`) is not a constraint; `sides` supplies it."
     )
-    solver: SolverConfig = Field(default_factory=SolverConfig, description="Solver selection and options.")
+    solve: StepSpec = Field(
+        default_factory=lambda: StepSpec(name="cvxpy"),
+        description="The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`. `cvxpy` (default) builds and solves the cvxpy problem from the terms and constraints; a qualified name plugs in a firm's own library or a pure function for one side.",
+    )
+    solver: SolverConfig = Field(default_factory=SolverConfig, description="cvxpy solver selection and options, read by the `cvxpy` solve step.")
     post_solve: PostSolveConfig = Field(default_factory=PostSolveConfig, description="Verification tolerances.")
     sink: StepSpec = Field(description="Sink step from `sinks.py`, called once with every solved portfolio's orders.")
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig, description="Failure semantics and how dependencies between portfolios are derived.")

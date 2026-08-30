@@ -188,8 +188,9 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
         f"  {'ok  ' if check.passed else 'FAIL'} {check.name:32} violation {check.violation:.3e} (tol {check.tolerance:.1e}){' worst ' + check.worst_security if check.worst_security else ''}\n"
         for check in report.checks
     )
+    solver_objective = "none (the solve step minimized nothing)" if report.solver_objective is None else f"{report.solver_objective:.9g}"
     stdout.write(
-        f"  objective recomputed {report.recomputed_objective:.9g} vs solver {report.solver_objective:.9g} (gap {report.objective_gap:.3e}){' unverified: ' + ', '.join(report.unverified) if report.unverified else ''}\n"
+        f"  objective recomputed {report.recomputed_objective:.9g} vs solver {solver_objective} (gap {report.objective_gap:.3e}){' unverified: ' + ', '.join(report.unverified) if report.unverified else ''}\n"
     )
     stdout.write(f"{'VERIFIED' if report.passed else 'VERIFICATION FAILED'} {portfolio_id} (spec {spec.content_hash()[:12]})\n")
     return EXIT_OK if report.passed else EXIT_PORTFOLIO_FAILED

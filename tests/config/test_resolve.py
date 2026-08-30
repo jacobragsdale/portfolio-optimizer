@@ -18,6 +18,7 @@ from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, Objecti
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec
 from portfolio_optimizer.domain.types import Params
+from portfolio_optimizer.solving import SolveRequest, SolveResult
 from tests.conftest import AS_OF
 
 # --- functions that follow the convention (and ones that break it), registered as module "fake_steps" ---
@@ -65,6 +66,14 @@ def rule_no_return_annotation(data: PortfolioData):  # noqa: ANN201  # the missi
 
 
 def rule_untyped_params(data: PortfolioData, params: dict[str, object]) -> PortfolioData:  # see above
+    raise NotImplementedError
+
+
+def solve_step(request: SolveRequest) -> SolveResult:
+    return SolveResult(w=request.spec.w0)
+
+
+def solve_wrong_args(spec: ProblemSpec) -> SolveResult:  # the missing `request` is the case under test
     raise NotImplementedError
 
 
@@ -241,7 +250,14 @@ def test_source_hash_is_stable_and_function_specific(fake_steps: str) -> None:
 
 
 def fake_config(
-    fake_steps: str, *, on_error: str = "fail_fast", rules: list[str] | None = None, constraints: list[object] | None = None, solve_order: str | None = None, solver: dict[str, object] | None = None
+    fake_steps: str,
+    *,
+    on_error: str = "fail_fast",
+    rules: list[str] | None = None,
+    constraints: list[object] | None = None,
+    solve_order: str | None = None,
+    solver: dict[str, object] | None = None,
+    solve: str | None = None,
 ) -> RunConfig:
     body: dict[str, object] = {
         "run": {"name": "r", "as_of": "2026-01-01T00:00:00Z"},
@@ -257,12 +273,15 @@ def fake_config(
         body["solve_order"] = solve_order
     if solver is not None:
         body["solver"] = solver
+    if solve is not None:
+        body["solve"] = solve
     return RunConfig.model_validate_json(json.dumps(body))
 
 
 def test_resolve_config_resolves_every_step(fake_steps: str) -> None:
     resolved = resolve_config(fake_config(fake_steps, constraints=[f"{fake_steps}:chained_constraint"], solve_order=f"{fake_steps}:solve_order_step"), config_sha256="abc")
-    assert [step.kind for step in resolved.all_steps] == ["portfolios", "loader", "loader", "loader", "loader", "constraints_loader", "rule", "solve_order", "term", "constraint", "sink"]
+    assert [step.kind for step in resolved.all_steps] == ["portfolios", "loader", "loader", "loader", "loader", "constraints_loader", "rule", "solve_order", "term", "constraint", "solve", "sink"]
+    assert resolved.solve.qualname == "portfolio_optimizer.solvers:cvxpy", "the default solve step is the shipped cvxpy one"
     assert resolved.loaders["constraints"].kind == "constraints_loader"
     assert resolved.solve_order is not None and resolved.solve_order.qualname == "fake_steps:solve_order_step"
     assert [step.qualname for step in resolved.chain_aware_steps] == ["fake_steps:chained_constraint"]
@@ -301,6 +320,13 @@ def test_resolve_config_checks_the_solver_against_what_this_process_has_installe
     with pytest.raises(ConfigResolutionError) as info:
         resolve_config(config, config_sha256="abc", installed=lambda: installed)
     assert info.value.failures == (failure,)
+
+
+def test_the_solve_step_is_resolved_against_its_contract(fake_steps: str) -> None:
+    resolved = resolve_config(fake_config(fake_steps, solve=f"{fake_steps}:solve_step"), config_sha256="abc")
+    assert resolved.solve.qualname == "fake_steps:solve_step" and resolved.solve.is_external
+    with pytest.raises(ConfigResolutionError, match=r"solve: fake_steps:solve_wrong_args: unexpected parameter 'spec'.*missing required parameter 'request'"):
+        resolve_config(fake_config(fake_steps, solve=f"{fake_steps}:solve_wrong_args"), config_sha256="abc")
 
 
 def test_constraints_resolve_under_unique_labels_that_default_to_the_bare_name(fake_steps: str) -> None:

@@ -133,7 +133,7 @@ class SolveRecord(StrictModel):
     cvxpy_version: str
     status: str
     iterations: int | None
-    objective_value: float
+    objective_value: float | None
     solve_time_s: float
 
 

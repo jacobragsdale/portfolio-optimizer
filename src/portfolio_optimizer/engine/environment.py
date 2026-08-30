@@ -71,7 +71,16 @@ def environment_for(config: RunConfig, *, cwd: Path, image_digest: str | None) -
 
 def external_modules(config: RunConfig) -> tuple[str, ...]:
     """The modules of every qualified step name in ``config``, sorted; what ``packages`` is computed over."""
-    specs = [config.portfolios.loader, *(dataset.loader for dataset in config.datasets.values()), *config.assembly, *config.rules, *config.objective.terms, *config.constraints, config.sink]
+    specs = [
+        config.portfolios.loader,
+        *(dataset.loader for dataset in config.datasets.values()),
+        *config.assembly,
+        *config.rules,
+        *config.objective.terms,
+        *config.constraints,
+        config.solve,
+        config.sink,
+    ]
     if config.solve_order is not None:
         specs.append(config.solve_order)
     return tuple(sorted({spec.name.partition(":")[0] for spec in specs if spec.is_qualified}))

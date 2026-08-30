@@ -31,6 +31,7 @@ from portfolio_optimizer.domain.results import F64, Artifact, ProblemSpec
 from portfolio_optimizer.domain.schemas import DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
 from portfolio_optimizer.domain.types import Clock, IdFactory
 from portfolio_optimizer.settings import ExecutionSettings
+from portfolio_optimizer.solving import SolveRequest, SolveResult
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
@@ -250,6 +251,16 @@ def lying_term(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:
     """Annotated as a term but returns a constraint set; solve must catch it."""
     del x, spec
     return ConstraintSet("lie", ())  # ty: ignore[invalid-return-type]  # the lie is the case under test
+
+
+def hold_still(request: SolveRequest) -> SolveResult:
+    """A solve step that is not an optimizer: the resting portfolio is the answer, and the terms are never touched."""
+    return SolveResult(w=request.spec.w0)
+
+
+def wrong_shape(request: SolveRequest) -> SolveResult:
+    """A solve step whose weights are not aligned to the spec; the engine must refuse it."""
+    return SolveResult(w=np.zeros(request.spec.n + 1))
 
 
 def noop_sink(orders: pd.DataFrame, io: IoContext) -> tuple[Artifact, ...]:

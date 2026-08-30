@@ -32,4 +32,4 @@ def test_solutions_verify_and_never_do_worse_than_resting(spec: ProblemSpec) -> 
     report = verify(spec, solution, chain, terms, constraints)
     assert report.passed, (report.violated, report.objective_gap)
     resting = float(((spec.w0 - spec.w_target) ** 2).sum())
-    assert solution.objective <= resting + 1e-7
+    assert solution.objective is not None and solution.objective <= resting + 1e-7

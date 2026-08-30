@@ -9,7 +9,9 @@ import pytest
 from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedConfig
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, SolveStatus, derive_chain_state
 from portfolio_optimizer.engine.build import build_problem_spec
+from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.solve import InfeasibleError, SolveSetupError, solve
+from portfolio_optimizer.engine.tasks import step_refs
 from tests.conftest import Factories, Frames, resolved_example
 
 CORE_CONSTRAINTS = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation"]
@@ -73,6 +75,27 @@ def test_empty_universe_solves_trivially(make: Factories) -> None:
     solution = solve(spec, ChainState.empty(()), resolved_with(["tracking_error"], CORE_CONSTRAINTS))
     assert solution.w.shape == (0,)
     assert solution.status is SolveStatus.OPTIMAL
+
+
+def test_a_solve_step_that_is_not_an_optimizer_returns_weights_and_no_objective(make: Factories) -> None:
+    spec = make.spec()
+    chain = ChainState.empty(spec.security_ids)
+    solution = solve(spec, chain, resolved_with(["tracking_error"], CORE_CONSTRAINTS, solve="tests.conftest:hold_still"))
+    np.testing.assert_array_equal(solution.w, spec.w0)
+    assert solution.buy.tolist() == solution.sell.tolist() == [0.0, 0.0, 0.0]
+    assert (solution.objective, solution.iterations, solution.cvxpy_version) == (None, None, "n/a")
+    assert (solution.solver, solution.solver_version) == ("tests.conftest:hold_still", "unknown"), "the step's qualified name, and the version of its distribution — which a test module has none of"
+    report = verify(spec, solution, chain, step_refs(resolved_with(["tracking_error"], CORE_CONSTRAINTS).terms), [])
+    assert report.passed and report.objective_passed and report.solver_objective is None
+    assert report.objective_terms == (("portfolio_optimizer.terms:tracking_error", pytest.approx(float(((spec.w0 - spec.w_target) ** 2).sum()))),), (
+        "the configured terms are still evaluated, as a report line"
+    )
+
+
+def test_a_solve_step_returning_the_wrong_shape_is_a_setup_error(make: Factories) -> None:
+    spec = make.spec()
+    with pytest.raises(SolveSetupError, match="returned weights of shape"):
+        solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], CORE_CONSTRAINTS, solve="tests.conftest:wrong_shape"))
 
 
 def test_a_solver_this_process_cannot_run_is_refused_when_the_config_resolves_not_when_it_solves() -> None:

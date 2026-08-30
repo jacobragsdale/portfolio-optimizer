@@ -14,9 +14,9 @@ from typing import get_type_hints
 
 import pandas as pd
 
-from portfolio_optimizer import assembly, loaders, rules, sinks, solve_order, terms
+from portfolio_optimizer import assembly, loaders, rules, sinks, solve_order, solvers, terms
 from portfolio_optimizer.config.models import STEP_NAME_DESCRIPTION, STEP_NAME_PATTERN, RunConfig
-from portfolio_optimizer.config.resolve import StepKind
+from portfolio_optimizer.config.steps import StepKind
 from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm
 from portfolio_optimizer.domain.schemas import REQUIRED_DATASETS, REQUIRED_FRAMES
 from portfolio_optimizer.domain.types import Params
@@ -45,6 +45,7 @@ _STEP_DEFINITIONS: Mapping[StepKind, tuple[str, str, ModuleType]] = {
     "solve_order": ("SolveOrderStep", "A solve-order step from `solve_order.py`: `(data: PortfolioData[, params]) -> Decimal`; lower keys solve first, ties break on `portfolio_id`.", solve_order),
     "term": ("TermStep", "An objective term from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ObjectiveTerm`.", terms),
     "constraint": ("ConstraintStep", "A constraint from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ConstraintSet`.", terms),
+    "solve": ("SolveStep", "The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`; `cvxpy` is the default.", solvers),
     "sink": ("SinkStep", "An order sink from `sinks.py`: `(orders: DataFrame, io: IoContext[, params]) -> tuple[Artifact, ...]`.", sinks),
 }
 
@@ -66,6 +67,7 @@ def run_config_schema() -> JsonObject:
     properties["rules"] = _with_items(properties["rules"], "RuleStep")
     properties["solve_order"] = _with_nullable_ref(properties["solve_order"], "SolveOrderStep")
     properties["constraints"] = _with_items(properties["constraints"], "ConstraintStep")
+    properties["solve"] = _with_ref(properties["solve"], "SolveStep")
     properties["sink"] = _with_ref(properties["sink"], "SinkStep")
     properties["datasets"] = _datasets_schema(properties["datasets"])
     dataset_config = _object(defs["DatasetConfig"])
@@ -121,6 +123,8 @@ def _kind_of(module: ModuleType, returns: object) -> StepKind | None:
         return "solve_order"
     if module is sinks:
         return "sink"
+    if module is solvers:
+        return "solve"
     if returns is ObjectiveTerm:
         return "term"
     if returns is ConstraintSet:

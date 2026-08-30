@@ -137,9 +137,9 @@ def verify(
             continue
         objective_terms.append((ref.qualname, twin_term(spec, solution, ref.params)))
     recomputed = float(sum(value for _, value in objective_terms))
-    all_terms_verified = all(ref.qualname in TERM_TWINS for ref in terms)
-    gap = abs(recomputed - solution.objective) if all_terms_verified else 0.0
-    objective_passed = (gap <= tolerances.obj_abs + tolerances.obj_rel * abs(recomputed)) if all_terms_verified else True
+    comparable = solution.objective is not None and all(ref.qualname in TERM_TWINS for ref in terms)  # a step that minimized nothing has no objective to agree with
+    gap = abs(recomputed - solution.objective) if comparable and solution.objective is not None else 0.0
+    objective_passed = (gap <= tolerances.obj_abs + tolerances.obj_rel * abs(recomputed)) if comparable else True
     return ConstraintReport(
         checks=tuple(checks),
         objective_terms=tuple(objective_terms),

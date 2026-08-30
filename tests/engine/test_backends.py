@@ -172,6 +172,17 @@ def test_the_runner_builds_everything_first_then_solves_along_the_schedule(tmp_p
     assert worker.portfolios == 2 and worker.environment == environment_for(same_config, cwd=Path.cwd(), image_digest=None)
 
 
+def test_a_pure_function_solve_step_runs_the_whole_pipeline_and_is_verified(tmp_path: Path) -> None:
+    report = execute(tmp_path, LazyBackend(), solve="tests.conftest:hold_still")
+    assert report.exit_code == EXIT_OK
+    for outcome in report.outcomes:
+        assert isinstance(outcome, PortfolioResult)
+        assert len(outcome.orders) == 0 and outcome.solution.objective is None and outcome.report.passed
+    record = report.manifest.portfolios[0]
+    assert record.solve is not None and record.solve.solver == "tests.conftest:hold_still" and record.solve.objective_value is None
+    assert record.check is not None and record.check.objective_passed
+
+
 def test_nothing_reading_the_chain_means_no_portfolio_waits(tmp_path: Path) -> None:
     report = execute(tmp_path, LazyBackend(), constraints=NO_CHAIN_CONSTRAINTS)
     assert report.exit_code == EXIT_OK

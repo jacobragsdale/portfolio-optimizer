@@ -1,18 +1,21 @@
-"""Construct the cvxpy problem from the configured terms and constraints, solve it, and classify the outcome."""
+"""Hand one portfolio to the configured solve step and classify what comes back.
+
+The step — the shipped cvxpy one, a firm's library, a pure function — returns weights; this module
+turns them into a :class:`~portfolio_optimizer.domain.results.Solution` through the side profile's
+split, explains an infeasibility with arithmetic, and raises for everything else.
+"""
 
 from dataclasses import dataclass
 
 import numpy as np
 
-from portfolio_optimizer.config.resolve import ResolvedConfig, ResolvedStep
-from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm, RawSolve, solve_problem, solver_version, variables
-from portfolio_optimizer.cvx.sides import identity_constraints
+from portfolio_optimizer.config.resolve import ResolvedConfig
+from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus
-from portfolio_optimizer.domain.sides import SideProfile
+from portfolio_optimizer.engine.environment import package_versions
+from portfolio_optimizer.solving import SolveRequest, SolveResult, SolveSetupError
 
-
-class SolveSetupError(ValueError):
-    """A term or constraint did not produce what its contract promises."""
+__all__ = ["InfeasibilityReport", "InfeasibleError", "SolveSetupError", "SolverFailureError", "UnboundedError", "diagnose_infeasibility", "solve"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,13 +40,13 @@ class UnboundedError(RuntimeError):
 
 
 class SolverFailureError(RuntimeError):
-    """The solver raised or returned an unrecognized status."""
+    """The solve step raised, or returned a status the engine cannot act on."""
 
 
 def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig) -> Solution:
-    """Solve one portfolio. Raises on infeasible, unbounded, or solver error; never returns ``w0`` as a default."""
+    """Solve one portfolio with the configured step. Raises on infeasible, unbounded, or failure; never returns ``w0`` as a default."""
     spec_hash = spec.content_hash()
-    solver = resolved.config.solver
+    step = resolved.solve
     if spec.n == 0:
         empty = np.zeros(0)
         return Solution(
@@ -52,64 +55,59 @@ def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig) -> Sol
             sell=empty,
             objective=0.0,
             status=SolveStatus.OPTIMAL,
-            solver=solver.name,
-            solver_version=solver_version(solver.name),
+            solver=step.qualname,
+            solver_version=_step_version(step),
             cvxpy_version="n/a",
             solve_time_s=0.0,
             iterations=0,
             spec_hash=spec_hash,
         )
-    x = variables(spec.n)
-    terms = [_term(step, x, spec, chain) for step in resolved.terms]
-    constraints = [identity_constraints(resolved.profile.sides, x, spec.w0), *(_constraint_set(constraint.step, x, spec, chain) for constraint in resolved.constraints)]
-    raw = solve_problem(x, terms, constraints, solver=solver.name, options=solver.options, time_limit_s=solver.time_limit_s, verbose=solver.verbose)
-    return _classify(raw, spec, chain, spec_hash, resolved.profile)
-
-
-def _term(step: ResolvedStep, x: object, spec: ProblemSpec, chain: ChainState) -> ObjectiveTerm:
-    result = step.invoke(x=x, spec=spec, context=chain if step.needs_context else None)
-    if not isinstance(result, ObjectiveTerm):
-        msg = f"term {step.qualname!r} returned {type(result).__name__}, expected ObjectiveTerm"
+    request = SolveRequest(spec=spec, chain=chain, profile=resolved.profile, terms=resolved.terms, constraints=resolved.constraints, solver=resolved.config.solver)
+    result = step.invoke(request=request)
+    if not isinstance(result, SolveResult):
+        msg = f"solve step {step.qualname!r} returned {type(result).__name__}, expected SolveResult"
         raise SolveSetupError(msg)
-    return result
+    return _classify(result, spec, chain, spec_hash, resolved)
 
 
-def _constraint_set(step: ResolvedStep, x: object, spec: ProblemSpec, chain: ChainState) -> ConstraintSet:
-    result = step.invoke(x=x, spec=spec, context=chain if step.needs_context else None)
-    if not isinstance(result, ConstraintSet):
-        msg = f"constraint {step.qualname!r} returned {type(result).__name__}, expected ConstraintSet"
-        raise SolveSetupError(msg)
-    return result
-
-
-def _classify(raw: RawSolve, spec: ProblemSpec, chain: ChainState, spec_hash: str, profile: SideProfile) -> Solution:
-    if raw.status in (SolveStatus.OPTIMAL, SolveStatus.OPTIMAL_INACCURATE):
-        if raw.w is None or raw.buy is None or raw.sell is None or raw.objective is None:
-            msg = f"solver reported {raw.status} but returned no values ({raw.detail})"
+def _classify(result: SolveResult, spec: ProblemSpec, chain: ChainState, spec_hash: str, resolved: ResolvedConfig) -> Solution:
+    step = resolved.solve
+    solver = result.solver if result.solver is not None else step.qualname
+    if result.status in (SolveStatus.OPTIMAL, SolveStatus.OPTIMAL_INACCURATE):
+        if result.w is None:
+            msg = f"solve step {step.qualname!r} reported {result.status} but returned no weights ({result.detail})"
             raise SolverFailureError(msg)
-        # The profile decides the split the engine reports for the solver's weights; verification
-        # then re-checks the identity and the objective against it.
-        buy, sell = profile.split(raw.w, spec.w0)
+        if result.w.shape != (spec.n,):
+            msg = f"solve step {step.qualname!r} returned weights of shape {result.w.shape}, expected {(spec.n,)}"
+            raise SolveSetupError(msg)
+        # The profile decides the split the engine reports for the step's weights; verification
+        # then re-checks the identity and, when the step minimized one, the objective against it.
+        buy, sell = resolved.profile.split(result.w, spec.w0)
         return Solution(
-            w=raw.w,
+            w=result.w,
             buy=buy,
             sell=sell,
-            objective=raw.objective,
-            status=raw.status,
-            solver=raw.solver,
-            solver_version=raw.solver_version,
-            cvxpy_version=raw.cvxpy_version,
-            solve_time_s=raw.solve_time_s,
-            iterations=raw.iterations,
+            objective=result.objective,
+            status=result.status,
+            solver=solver,
+            solver_version=result.solver_version if result.solver_version is not None else _step_version(step),
+            cvxpy_version=result.cvxpy_version,
+            solve_time_s=result.solve_time_s,
+            iterations=result.iterations,
             spec_hash=spec_hash,
         )
-    if raw.status is SolveStatus.INFEASIBLE:
+    if result.status is SolveStatus.INFEASIBLE:
         raise InfeasibleError(spec_hash, diagnose_infeasibility(spec, chain))
-    if raw.status is SolveStatus.UNBOUNDED:
+    if result.status is SolveStatus.UNBOUNDED:
         msg = f"unbounded problem (spec {spec_hash[:12]}): a custom term or constraint removed a bound"
         raise UnboundedError(msg)
-    msg = f"solver {raw.solver} failed (spec {spec_hash[:12]}): {raw.detail}"
+    msg = f"solver {solver} failed (spec {spec_hash[:12]}): {result.detail}"
     raise SolverFailureError(msg)
+
+
+def _step_version(step: ResolvedStep) -> str:
+    """The version of the distribution behind a solve step, for the manifest when the step names none itself."""
+    return next(iter(package_versions([step.qualname.partition(":")[0]]).values()), "unknown")
 
 
 def diagnose_infeasibility(spec: ProblemSpec, chain: ChainState) -> InfeasibilityReport:
