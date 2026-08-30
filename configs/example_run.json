@@ -12,7 +12,7 @@
     "details": {
       "loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
       "scope": "per_portfolio",
-      "batch_size": 1
+      "batch_size": 2
     },
     "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
     "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},

@@ -28,7 +28,7 @@ The quickest way to see what the engine does is to read the run it ships with,
     "details": {
       "loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
       "scope": "per_portfolio",
-      "batch_size": 1
+      "batch_size": 2
     },
     "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
     "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
@@ -97,10 +97,11 @@ that kind of step, or by `package.module:function`, with optional `params` (see
   interpret: assembly steps see it, and whatever survives assembly reaches each portfolio's rules as
   `data.extras`. Each entry also says how its loader is called. `universe`, `targets`, `prices`, and
   `constraints` say nothing and are `global`: one call for the whole book, and the only datasets
-  assembly sees. `holdings` and `details` are `per_portfolio` with `batch_size: 1`, so the engine calls
-  their loaders once per account — a custodian and an account master answer one portfolio at a time —
-  which is also why a portfolio whose own inputs are missing fails alone instead of stopping the run.
-  An input from a throttled source adds a `rate_limit`.
+  assembly sees. `holdings` and `details` are `per_portfolio`, so the engine calls their loaders per
+  account rather than once for the book, and `batch_size` says how finely: `1` is a call per account,
+  the shape of a custodian that answers one at a time; `2` hands the loader two ids per call, the shape
+  of an account master that takes a list. It is also why a portfolio whose own inputs are missing fails
+  alone instead of stopping the run. An input from a throttled source adds a `rate_limit`.
 - **`assembly`** — steps that run once over all loaded datasets to make the tables the build expects.
   Here: join prices into the universe, checking every security matched exactly once, then drop the price
   file. This is where per-security analytics get attached to `holdings` and `universe`.

@@ -89,10 +89,20 @@ dataset 'holdings' loaded: 4 row(s) in 2 batch(es), 0.02s
 
 The universe is book-wide, so its loader was called once. `holdings` is not: `examples/data/holdings/`
 holds one file per account — `P1.csv` and `P2.csv` — and the config asks for that dataset with
-`"scope": "per_portfolio", "batch_size": 1`, so the engine called its loader once per portfolio.
-`details` is loaded the same way. That is how a source that answers one account at a time — a
-custodian, an account master — is wired up, and it is why a single account whose data is missing fails
-on its own instead of stopping the book.
+`"scope": "per_portfolio", "batch_size": 1`, so the engine called its loader once per portfolio. That
+is how a custodian that answers one account per call is wired up, and it is why a single account whose
+data is missing fails on its own instead of stopping the book.
+
+`details` is per-account too but asks for `"batch_size": 2`, which is the other shape: a source that
+takes a *list* of accounts. The engine hands it two ids per call, so this two-account book is one call
+— on a book of five hundred it would be two hundred and fifty. Both numbers are in the manifest:
+
+```bash
+uv run --env-file .env python -c "import json, glob; print(*[(d['name'], d['batches']) for d in json.load(open(glob.glob('out/*/manifest.json')[0]))['datasets']], sep='\n')"
+```
+
+Expected: `('holdings', 2)` and `('details', 1)`, the rest 1 — every dataset's call count, recorded
+beside its content hash.
 
 P1 and P2 each hold $500,000 of A and $500,000 of B against an equal-weight target and may trade at
 most a quarter of each name's daily volume. C's daily volume is 100,000 shares at 10, so a portfolio can

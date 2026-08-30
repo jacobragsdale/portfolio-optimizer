@@ -184,9 +184,13 @@ sees such a dataset; attach its columns in a rule instead.
 
 The example is deliberately mixed, because a real book is. `holdings` and `details` are the two
 account-shaped inputs — a custodian says what an account owns, an account master says its NAV, cash,
-tax rates, and benchmark, and both answer one account at a time — so both are `per_portfolio` with
-`batch_size: 1`, one call per account. `universe`, `targets`, and `prices` are book-wide by nature and
-`constraints` arrives as one document, so those four are global.
+tax rates, and benchmark — so both are `per_portfolio`, and their `batch_size` records the difference
+between the two kinds of source. `holdings` asks for `1`: a call per account, for a backend that
+answers one at a time. `details` asks for `2`: the engine hands its loader two ids per call, for a
+backend that takes a list — one call on this two-account book, two hundred and fifty on a book of five
+hundred, and the number to tune when a source has a maximum request size or charges per call.
+`universe`, `targets`, and `prices` are book-wide by nature and `constraints` arrives as one document,
+so those four are global.
 
 Making `holdings` per-account has a consequence worth understanding before you copy it, because
 `holdings` is also one of the two tables security analytics are attached to, and assembly never sees a
@@ -200,7 +204,7 @@ the split in the run's log —
 ```text
 dataset 'universe' loaded: 3 row(s) in 1 batch(es), 0.01s
 dataset 'holdings' loaded: 4 row(s) in 2 batch(es), 0.02s
-dataset 'details' loaded: 2 row(s) in 2 batch(es), 0.02s
+dataset 'details' loaded: 2 row(s) in 1 batch(es), 0.02s
 ```
 
 — and in the manifest, where each dataset's audit records its `batches` and how many portfolios it
