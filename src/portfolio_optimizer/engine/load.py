@@ -24,7 +24,7 @@ from portfolio_optimizer.domain.data import PREVALIDATED_FRAMES, Frames, LoadReq
 from portfolio_optimizer.domain.frames import FrameSchemaError, validate_frame
 from portfolio_optimizer.domain.results import AssemblyAuditRecord
 from portfolio_optimizer.domain.schemas import DATASET_SCHEMAS, PORTFOLIOS, REQUIRED_FRAMES
-from portfolio_optimizer.domain.types import PortfolioId
+from portfolio_optimizer.domain.types import PortfolioId, StrictModel
 from portfolio_optimizer.engine.hashing import frame_sha256, json_sha256
 from portfolio_optimizer.ratelimit import RateLimiter
 
@@ -39,9 +39,8 @@ class AssemblyError(ValueError):
     """An assembly step refused its input or returned something other than ``Frames``."""
 
 
-@dataclass(frozen=True, slots=True)
-class DatasetAudit:
-    """Provenance of one loaded dataset for the manifest."""
+class DatasetAudit(StrictModel):
+    """Provenance of one loaded dataset, recorded in the manifest as is: which loader, its hashes, what came back, and how long it took."""
 
     name: str
     loader_qualname: str
@@ -175,7 +174,16 @@ async def _load_dataset(name: str, step: ResolvedStep, request: LoadRequest) -> 
         if name == "constraints":
             constraints = await _load_constraints(step, request)
             elapsed = time.perf_counter() - started
-            audit = DatasetAudit(name, step.qualname, step.source_sha256, step.params_sha256, len(constraints), (), json_sha256(constraints), elapsed)
+            audit = DatasetAudit(
+                name=name,
+                loader_qualname=step.qualname,
+                loader_source_sha256=step.source_sha256,
+                params_sha256=step.params_sha256,
+                rows=len(constraints),
+                columns=(),
+                content_sha256=json_sha256(constraints),
+                load_time_s=elapsed,
+            )
             log.info("dataset %r loaded: %d portfolio(s) in %.2fs", name, len(constraints), elapsed, extra={"run_id": request.run_id, "stage": "load"})
             return _Loaded(name, None, constraints, audit)
         frame = await _load_frame(step, request)
@@ -218,7 +226,16 @@ async def _load_constraints(step: ResolvedStep, request: LoadRequest) -> Mapping
 
 
 def _audit(name: str, step: ResolvedStep, frame: pd.DataFrame, key: tuple[str, ...], load_time_s: float) -> DatasetAudit:
-    return DatasetAudit(name, step.qualname, step.source_sha256, step.params_sha256, len(frame), tuple(str(column) for column in frame.columns), frame_sha256(frame, key), load_time_s)
+    return DatasetAudit(
+        name=name,
+        loader_qualname=step.qualname,
+        loader_source_sha256=step.source_sha256,
+        params_sha256=step.params_sha256,
+        rows=len(frame),
+        columns=tuple(str(column) for column in frame.columns),
+        content_sha256=frame_sha256(frame, key),
+        load_time_s=load_time_s,
+    )
 
 
 def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -> AssembledDatasets:

@@ -16,7 +16,7 @@ from portfolio_optimizer.config.models import load_run_config
 from portfolio_optimizer.config.resolve import ConfigResolutionError, resolve_config
 from portfolio_optimizer.config.schema import run_config_schema, schema_json
 from portfolio_optimizer.domain.data import IoContext
-from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec, Solution, StepRef, Tolerances
+from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec, Solution, Tolerances
 from portfolio_optimizer.domain.sides import profile_for
 from portfolio_optimizer.domain.types import Clock, IdFactory
 from portfolio_optimizer.engine.check import verify
@@ -178,10 +178,8 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
     if chain.content_hash() != record.chain_inputs_sha256:
         stderr.write("persisted chain state does not match the manifest's chain hash\n")
         return EXIT_PORTFOLIO_FAILED
-    terms = [StepRef(t.qualname, t.params, t.label) for t in manifest.terms]
-    constraints = [StepRef(c.qualname, c.params, c.label) for c in manifest.constraints]
     profile = profile_for(str(manifest.config.resolved.get("sides", "both")))
-    report = verify(spec, solution, chain, terms, constraints, profile=profile, tolerances=Tolerances(violation=record.check.tolerance))
+    report = verify(spec, solution, chain, manifest.terms, manifest.constraints, profile=profile, tolerances=Tolerances(violation=record.check.tolerance))
     stdout.writelines(
         f"  {'ok  ' if check.passed else 'FAIL'} {check.name:32} violation {check.violation:.3e} (tol {check.tolerance:.1e}){' worst ' + check.worst_security if check.worst_security else ''}\n"
         for check in report.checks

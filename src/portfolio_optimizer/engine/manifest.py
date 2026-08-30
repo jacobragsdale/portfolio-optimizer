@@ -1,4 +1,8 @@
-"""The run manifest: everything needed to reproduce a run and localize any drift between two runs."""
+"""The run manifest: everything needed to reproduce a run and localize any drift between two runs.
+
+The manifest carries the engine's own audit records — dataset, assembly, rule, step, artifact,
+schedule — as they are; the models here are the per-portfolio summaries and the envelope.
+"""
 
 import json
 import platform
@@ -66,62 +70,12 @@ class ClusterRecord(StrictModel):
     closed_at: AwareDatetime | None
 
 
-class ScheduleRecord(StrictModel):
-    """The schedule the run derived: how coupled the book was, and how long its longest chain of solves is.
-
-    ``coupling`` is ``none`` when no step read the chain, ``overlap`` when portfolios waited only for
-    higher-priority portfolios with a shared buyable security, ``all`` when every higher-priority
-    portfolio was a predecessor. ``critical_path`` counts solves that had to run one after another.
-    """
-
-    coupling: Literal["none", "overlap", "all"]
-    portfolios: int
-    edges: int
-    components: int
-    largest_component: int
-    critical_path: int
-
-
 class ConfigInfo(StrictModel):
     """The resolved run config and its hash."""
 
     path: str
     sha256: str
     resolved: dict[str, object]
-
-
-class DatasetRecord(StrictModel):
-    """Provenance of one loaded dataset."""
-
-    name: str
-    loader_qualname: str
-    loader_source_sha256: str
-    params_sha256: str
-    rows: int
-    columns: tuple[str, ...]
-    content_sha256: str
-    load_time_s: float
-
-
-class AssemblyRecord(StrictModel):
-    """What one assembly step did to the run's datasets."""
-
-    qualname: str
-    source_sha256: str
-    params_sha256: str
-    rows_in: dict[str, int]
-    rows_out: dict[str, int]
-    columns_added: dict[str, tuple[str, ...]]
-
-
-class RuleRecord(StrictModel):
-    """What one rule did."""
-
-    qualname: str
-    source_sha256: str
-    params_sha256: str
-    rows_in: dict[str, int]
-    rows_out: dict[str, int]
 
 
 class SolveRecord(StrictModel):
@@ -164,14 +118,6 @@ class OrdersRecord(StrictModel):
     gross_notional: str
 
 
-class StepRecord(StrictModel):
-    """A term or constraint as configured, for cvxpy-free re-verification; ``label`` is what the report keys on."""
-
-    qualname: str
-    params: dict[str, object]
-    label: str
-
-
 class PortfolioRecord(StrictModel):
     """Everything recorded about one portfolio."""
 
@@ -179,7 +125,7 @@ class PortfolioRecord(StrictModel):
     status: Literal["solved", "failed"]
     solve_order: str | None = None
     predecessors: int | None = None
-    rules: tuple[RuleRecord, ...] = ()
+    rules: tuple[RuleAuditRecord, ...] = ()
     problem_spec_sha256: str | None = None
     chain_inputs_sha256: str | None = None
     solve: SolveRecord | None = None
@@ -188,14 +134,6 @@ class PortfolioRecord(StrictModel):
     orders: OrdersRecord | None = None
     failure_stage: str | None = None
     error: str | None = None
-
-
-class ArtifactRecord(StrictModel):
-    """A file written during the run."""
-
-    path: str
-    sha256: str
-    size_bytes: int
 
 
 class RunManifest(StrictModel):
@@ -207,17 +145,17 @@ class RunManifest(StrictModel):
     as_of: AwareDatetime
     git_sha: str
     git_dirty: bool
-    schedule: ScheduleRecord | None = None
+    schedule: ScheduleSummary | None = None
     cluster: ClusterRecord | None = None
     versions: VersionInfo
     config: ConfigInfo
     settings: dict[str, str]
-    terms: tuple[StepRecord, ...]
-    constraints: tuple[StepRecord, ...]
-    datasets: tuple[DatasetRecord, ...]
-    assembly: tuple[AssemblyRecord, ...] = ()
+    terms: tuple[StepRef, ...]
+    constraints: tuple[StepRef, ...]
+    datasets: tuple[DatasetAudit, ...]
+    assembly: tuple[AssemblyAuditRecord, ...] = ()
     portfolios: tuple[PortfolioRecord, ...]
-    artifacts: tuple[ArtifactRecord, ...]
+    artifacts: tuple[Artifact, ...]
     exit_code: int
     manifest_sha256: str = Field(default="")
 
@@ -236,52 +174,6 @@ def versions(solver: str, solver_version: str, packages: Mapping[str, str], work
     )
 
 
-def step_records(refs: Sequence[StepRef]) -> tuple[StepRecord, ...]:
-    """Serialize step references with their params rendered JSON-safe."""
-    return tuple(StepRecord(qualname=ref.qualname, params={key: _json_safe(value) for key, value in ref.params.items()}, label=ref.label) for ref in refs)
-
-
-def _json_safe(value: object) -> object:
-    return json.loads(json.dumps(value, default=str))
-
-
-def dataset_records(audits: Sequence[DatasetAudit]) -> tuple[DatasetRecord, ...]:
-    """Convert load-time audits into manifest records."""
-    return tuple(
-        DatasetRecord(
-            name=a.name,
-            loader_qualname=a.loader_qualname,
-            loader_source_sha256=a.loader_source_sha256,
-            params_sha256=a.params_sha256,
-            rows=a.rows,
-            columns=a.columns,
-            content_sha256=a.content_sha256,
-            load_time_s=a.load_time_s,
-        )
-        for a in audits
-    )
-
-
-def assembly_records(audits: Sequence[AssemblyAuditRecord]) -> tuple[AssemblyRecord, ...]:
-    """Convert assembly audits into manifest records."""
-    return tuple(
-        AssemblyRecord(
-            qualname=a.qualname,
-            source_sha256=a.source_sha256,
-            params_sha256=a.params_sha256,
-            rows_in=dict(a.rows_in),
-            rows_out=dict(a.rows_out),
-            columns_added={name: tuple(columns) for name, columns in a.columns_added.items()},
-        )
-        for a in audits
-    )
-
-
-def rule_records(audits: Sequence[RuleAuditRecord]) -> tuple[RuleRecord, ...]:
-    """Convert rule audits into manifest records."""
-    return tuple(RuleRecord(qualname=a.qualname, source_sha256=a.source_sha256, params_sha256=a.params_sha256, rows_in=dict(a.rows_in), rows_out=dict(a.rows_out)) for a in audits)
-
-
 def solved_record(result: PortfolioResult, violation_tol: float, *, solve_order: str | None = None) -> PortfolioRecord:
     """The manifest record for a portfolio that produced orders; ``violation_tol`` is what its verification was held to."""
     solution, report, drift = result.solution, result.report, result.drift
@@ -291,7 +183,7 @@ def solved_record(result: PortfolioResult, violation_tol: float, *, solve_order:
         status="solved",
         solve_order=solve_order,
         predecessors=len(result.chain_state.predecessors),
-        rules=rule_records(result.rule_audit),
+        rules=result.rule_audit,
         problem_spec_sha256=result.spec.content_hash(),
         chain_inputs_sha256=result.chain_state.content_hash(),
         solve=SolveRecord(
@@ -316,29 +208,17 @@ def solved_record(result: PortfolioResult, violation_tol: float, *, solve_order:
     )
 
 
-def failed_record(failure: PortfolioFailure, rules: Sequence[RuleAuditRecord] = (), *, solve_order: str | None = None, predecessors: int | None = None) -> PortfolioRecord:
+def failed_record(failure: PortfolioFailure, rules: tuple[RuleAuditRecord, ...] = (), *, solve_order: str | None = None, predecessors: int | None = None) -> PortfolioRecord:
     """The manifest record for a portfolio that did not produce orders."""
     return PortfolioRecord(
         portfolio_id=failure.portfolio_id,
         status="failed",
         solve_order=solve_order,
         predecessors=predecessors,
-        rules=rule_records(rules),
+        rules=rules,
         failure_stage=failure.stage,
         error=f"{failure.error_type}: {failure.message}",
     )
-
-
-def schedule_record(summary: ScheduleSummary) -> ScheduleRecord:
-    """The manifest's view of the derived schedule."""
-    return ScheduleRecord(
-        coupling=summary.coupling, portfolios=summary.portfolios, edges=summary.edges, components=summary.components, largest_component=summary.largest_component, critical_path=summary.critical_path
-    )
-
-
-def artifact_records(artifacts: Sequence[Artifact]) -> tuple[ArtifactRecord, ...]:
-    """Convert written artifacts into manifest records."""
-    return tuple(ArtifactRecord(path=a.path, sha256=a.sha256, size_bytes=a.size_bytes) for a in artifacts)
 
 
 def finalize(manifest: RunManifest) -> RunManifest:

@@ -14,7 +14,7 @@ from typing import Literal
 
 import numpy as np
 
-from portfolio_optimizer.domain.types import PortfolioId
+from portfolio_optimizer.domain.types import PortfolioId, StrictModel
 
 type Coupling = Literal["none", "overlap", "all"]
 """``none``: nothing reads the chain, so nothing waits. ``overlap``: wait for higher-priority portfolios with a shared tradable security. ``all``: wait for every higher-priority portfolio."""
@@ -25,9 +25,13 @@ def order_portfolios(keys: Mapping[PortfolioId, Decimal]) -> tuple[PortfolioId, 
     return tuple(sorted(keys, key=lambda portfolio_id: (keys[portfolio_id], portfolio_id)))
 
 
-@dataclass(frozen=True, slots=True)
-class ScheduleSummary:
-    """The shape of a schedule, for the manifest and the log."""
+class ScheduleSummary(StrictModel):
+    """The shape of a schedule, for the manifest and the log.
+
+    ``coupling`` is ``none`` when no step read the chain, ``overlap`` when portfolios waited only for
+    higher-priority portfolios with a shared tradable security, ``all`` when every higher-priority
+    portfolio was a predecessor. ``critical_path`` counts solves that had to run one after another.
+    """
 
     coupling: Coupling
     portfolios: int

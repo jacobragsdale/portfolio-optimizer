@@ -1,7 +1,8 @@
-"""Pure-data results: the problem spec, solutions, verification reports, and the chain between portfolios.
+"""Pure-data results: the problem spec, solutions, verification reports, the chain between portfolios, and the audit records.
 
 Everything here is picklable and free of cvxpy, so it can cross process boundaries and be
-persisted for audit.
+persisted for audit. The audit records are strict models because the manifest carries them as they
+are: what a step did is recorded once, in one shape, from the worker to the file on disk.
 """
 
 import hashlib
@@ -18,6 +19,8 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 from scipy.sparse import csr_array
+
+from portfolio_optimizer.domain.types import StrictModel
 
 type F64 = NDArray[np.float64]
 type Flags = NDArray[np.bool_]
@@ -328,22 +331,20 @@ class DriftReport:
         return self.max_weight_error <= self.tolerance
 
 
-@dataclass(frozen=True, slots=True)
-class StepRef:
-    """A step's identity, parameters, and label as data, for cvxpy-free verification and the manifest.
+class StepRef(StrictModel):
+    """A term or constraint as configured — qualified name, JSON-safe params, label — for cvxpy-free verification and the manifest.
 
     The label is what the report and the manifest key on; for a term it is the bare name, for a
     constraint whatever the config gave it.
     """
 
     qualname: str
-    params: Mapping[str, object]
+    params: dict[str, object]
     label: str
 
 
-@dataclass(frozen=True, slots=True)
-class Artifact:
-    """A file a sink wrote, with its hash for the manifest."""
+class Artifact(StrictModel):
+    """A file the run wrote, with its hash for the manifest."""
 
     path: str
     sha256: str
@@ -457,27 +458,25 @@ class ConstraintReport:
         return tuple(check.name for check in self.checks if not check.passed)
 
 
-@dataclass(frozen=True, slots=True)
-class AssemblyAuditRecord:
-    """What one assembly step did to the run's datasets."""
+class AssemblyAuditRecord(StrictModel):
+    """What one assembly step did to the run's datasets: row counts per dataset before and after, and the columns it added."""
 
     qualname: str
     source_sha256: str
     params_sha256: str
-    rows_in: Mapping[str, int]
-    rows_out: Mapping[str, int]
-    columns_added: Mapping[str, tuple[str, ...]]
+    rows_in: dict[str, int]
+    rows_out: dict[str, int]
+    columns_added: dict[str, tuple[str, ...]]
 
 
-@dataclass(frozen=True, slots=True)
-class RuleAuditRecord:
-    """What one rule did to one portfolio's bundle."""
+class RuleAuditRecord(StrictModel):
+    """What one rule did to one portfolio's bundle: row counts per frame before and after."""
 
     qualname: str
     source_sha256: str
     params_sha256: str
-    rows_in: Mapping[str, int]
-    rows_out: Mapping[str, int]
+    rows_in: dict[str, int]
+    rows_out: dict[str, int]
 
 
 @dataclass(frozen=True, slots=True, eq=False)

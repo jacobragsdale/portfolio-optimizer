@@ -17,8 +17,10 @@ from portfolio_optimizer.engine.solve import solve
 from portfolio_optimizer.engine.tasks import constraint_refs, step_refs
 from tests.conftest import Factories, Frames, resolved_example
 
-CONSTRAINTS = [StepRef(f"portfolio_optimizer.terms:{name}", {}, name) for name in ("long_only", "max_weight", "cash_bounds", "sector_bounds", "turnover_cap", "cumulative_adv_participation")]
-TERMS = [StepRef("portfolio_optimizer.terms:tracking_error", {"weight": "1"}, "tracking_error")]
+CONSTRAINTS = [
+    StepRef(qualname=f"portfolio_optimizer.terms:{name}", params={}, label=name) for name in ("long_only", "max_weight", "cash_bounds", "sector_bounds", "turnover_cap", "cumulative_adv_participation")
+]
+TERMS = [StepRef(qualname="portfolio_optimizer.terms:tracking_error", params={"weight": "1"}, label="tracking_error")]
 
 
 def rest_solution(spec: ProblemSpec, **overrides: object) -> Solution:
@@ -78,7 +80,12 @@ def test_sector_bounds_use_the_configured_tolerance(make: Factories) -> None:
     tight = verify(spec, rest_solution(spec), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS, profile=TWO_SIDED)
     assert "sector_ub" in tight.violated
     loose = verify(
-        spec, rest_solution(spec), ChainState.empty(spec.security_ids), TERMS, [StepRef("portfolio_optimizer.terms:sector_bounds", {"tolerance": "0.5"}, "sector_bounds")], profile=TWO_SIDED
+        spec,
+        rest_solution(spec),
+        ChainState.empty(spec.security_ids),
+        TERMS,
+        [StepRef(qualname="portfolio_optimizer.terms:sector_bounds", params={"tolerance": "0.5"}, label="sector_bounds")],
+        profile=TWO_SIDED,
     )
     assert loose.passed
 
@@ -111,8 +118,8 @@ def test_objective_gap_is_checked_and_custom_steps_are_reported_unverified(make:
         spec,
         rest_solution(spec, objective=0.5),
         ChainState.empty(spec.security_ids),
-        [*TERMS, StepRef("my_firm.terms:esg", {}, "esg")],
-        [*CONSTRAINTS, StepRef("my_firm.terms:beta", {}, "beta")],
+        [*TERMS, StepRef(qualname="my_firm.terms:esg", params={}, label="esg")],
+        [*CONSTRAINTS, StepRef(qualname="my_firm.terms:beta", params={}, label="beta")],
         profile=TWO_SIDED,
     )
     assert custom.unverified == ("my_firm.terms:beta", "my_firm.terms:esg")

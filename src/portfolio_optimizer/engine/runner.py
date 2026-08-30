@@ -29,23 +29,7 @@ from portfolio_optimizer.engine.dask_backend import DaskBackend
 from portfolio_optimizer.engine.environment import GitInfo, WorkerEnvironment, environment_for, package_versions
 from portfolio_optimizer.engine.hashing import file_sha256
 from portfolio_optimizer.engine.load import DatasetAudit, assemble, load_datasets
-from portfolio_optimizer.engine.manifest import (
-    ClusterRecord,
-    ConfigInfo,
-    RunManifest,
-    WorkerRecord,
-    artifact_records,
-    assembly_records,
-    created_at,
-    dataset_records,
-    failed_record,
-    finalize,
-    schedule_record,
-    solved_record,
-    step_records,
-    versions,
-    write_manifest,
-)
+from portfolio_optimizer.engine.manifest import ClusterRecord, ConfigInfo, RunManifest, WorkerRecord, created_at, failed_record, finalize, solved_record, versions, write_manifest
 from portfolio_optimizer.engine.schedule import Coupling, Schedule, dependency_graph, order_portfolios
 from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, constraint_refs, contribution, probe_task, skipped, solve_task, step_refs, summarize
 from portfolio_optimizer.settings import ExecutionSettings
@@ -482,17 +466,17 @@ def _manifest(
         as_of=config.run.as_of,
         git_sha=git.sha,
         git_dirty=git.dirty,
-        schedule=schedule_record(executed.schedule.summary()) if executed is not None else None,
+        schedule=executed.schedule.summary() if executed is not None else None,
         cluster=session.cluster_record(),
         versions=versions(config.solver.name, solver_ver, packages, session.worker_records()),
         config=ConfigInfo(path=config_path, sha256=resolved.config_sha256, resolved=config.model_dump(mode="json")),
         settings=dict(settings),
-        terms=step_records(step_refs(resolved.terms)),
-        constraints=step_records(constraint_refs(resolved.constraints)),
-        datasets=dataset_records(audits),
-        assembly=assembly_records(assembly_audits),
+        terms=step_refs(resolved.terms),
+        constraints=constraint_refs(resolved.constraints),
+        datasets=tuple(audits),
+        assembly=tuple(assembly_audits),
         portfolios=tuple(records),
-        artifacts=artifact_records(artifacts),
+        artifacts=tuple(artifacts),
         exit_code=exit_code,
     )
     return finalize(manifest)

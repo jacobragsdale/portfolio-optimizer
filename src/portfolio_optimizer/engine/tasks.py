@@ -171,12 +171,12 @@ def tradable_ids(profile: SideProfile, spec: ProblemSpec) -> tuple[str, ...]:
 
 def step_refs(steps: Sequence[ResolvedStep]) -> tuple[StepRef, ...]:
     """Reduce resolved term steps to the data the verifier and manifest need; a term's label is its bare name."""
-    return tuple(StepRef(step.qualname, _params_json(step), step.name.rpartition(":")[2]) for step in steps)
+    return tuple(StepRef(qualname=step.qualname, params=_params_json(step), label=step.name.rpartition(":")[2]) for step in steps)
 
 
 def constraint_refs(constraints: Sequence[ResolvedConstraint]) -> tuple[StepRef, ...]:
     """Reduce resolved constraints to the data the verifier and manifest need, under their labels."""
-    return tuple(StepRef(constraint.qualname, _params_json(constraint.step), constraint.label) for constraint in constraints)
+    return tuple(StepRef(qualname=constraint.qualname, params=_params_json(constraint.step), label=constraint.label) for constraint in constraints)
 
 
 def _params_json(step: ResolvedStep) -> dict[str, object]:

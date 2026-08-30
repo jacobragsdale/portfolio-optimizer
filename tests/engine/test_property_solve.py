@@ -28,8 +28,8 @@ def test_solutions_verify_and_never_do_worse_than_resting(spec: ProblemSpec) -> 
     resolved = resolved_example(objective={"terms": [{"name": "tracking_error", "params": {"weight": "1"}}]}, constraints=CONSTRAINT_NAMES)
     chain = ChainState.empty(spec.security_ids)
     solution = solve(spec, chain, resolved)
-    terms = [StepRef("portfolio_optimizer.terms:tracking_error", {"weight": "1"}, "tracking_error")]
-    constraints = [StepRef(f"portfolio_optimizer.terms:{name}", {}, name) for name in CONSTRAINT_NAMES]
+    terms = [StepRef(qualname="portfolio_optimizer.terms:tracking_error", params={"weight": "1"}, label="tracking_error")]
+    constraints = [StepRef(qualname=f"portfolio_optimizer.terms:{name}", params={}, label=name) for name in CONSTRAINT_NAMES]
     report = verify(spec, solution, chain, terms, constraints, profile=TWO_SIDED)
     assert report.passed, (report.violated, report.objective_gap)
     resting = float(((spec.w0 - spec.w_target) ** 2).sum())
