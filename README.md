@@ -56,6 +56,13 @@ The quickest way to see what the engine does is to read the run it ships with,
     // Engine-known but optional: one row per portfolio and sector. Omit the dataset to bound no sector.
     "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
 
+    // Which constraints bind each account, as data. The engine knows only which portfolio a row
+    // belongs to — every other column is yours, and only the solve step interprets them. The shipped
+    // `cvxpy` step reads this convention: a `name` naming a step in terms.py, an optional `label`, and
+    // optional `params` as JSON text. Optional, like any dataset: omit it and nothing is constrained
+    // beyond the trade identity.
+    "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
+
     "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
 
     // Any name the engine does not know is an extra dataset. It cannot be typed from a schema, so
@@ -110,20 +117,6 @@ The quickest way to see what the engine does is to read the run it ships with,
     ]
   },
 
-  // *Which* constraints apply; *how tight* they are comes from the data. Note that a constraint often
-  // shares a name with the column it reads without being the same thing: `cash_bounds` is the function
-  // this list turns on, `cash_lb`/`cash_ub` are the numbers in `details` it reads.
-  "constraints": [
-    "long_only",
-    "max_weight",
-    "cash_bounds",
-    "turnover_cap",
-    "sector_bounds",
-    // The only chain-aware constraint: it reads what higher-priority portfolios already traded, and
-    // its presence is the only reason one portfolio ever waits for another.
-    "cumulative_adv_participation"
-  ],
-
   // Checked when the config resolves and on every worker; there is no silent fallback to another solver.
   "solver": {"name": "CLARABEL", "options": {"max_iter": 200}, "time_limit_s": 60.0, "verbose": false},
 
@@ -132,10 +125,12 @@ The quickest way to see what the engine does is to read the run it ships with,
 
   "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},
 
-  // `fail_fast` stops at the first failed portfolio; `continue` isolates it. *Where* the work runs and
-  // how many workers there are are environment settings, not config, so the same config hashes the
-  // same on a laptop and on a cluster.
-  "execution": {"on_error": "fail_fast"}
+  // `fail_fast` stops at the first failed portfolio; `continue` isolates it. `dependencies` says
+  // whether portfolios wait for each other — `none` when no constraint reads what others traded,
+  // which the engine cannot infer now that constraints are opaque data. *Where* the work runs and how
+  // many workers there are are environment settings, not config, so the same config hashes the same
+  // on a laptop and on a cluster.
+  "execution": {"on_error": "fail_fast", "dependencies": "overlap"}
 }
 ```
 

@@ -22,7 +22,7 @@ STEP_NAME_PATTERN = r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:)?
 _STEP_NAME = re.compile(STEP_NAME_PATTERN)
 
 type OnError = Literal["fail_fast", "continue"]
-type Dependencies = Literal["overlap", "all"]
+type Dependencies = Literal["overlap", "all", "none"]
 type DatasetScope = Literal["global", "per_portfolio"]
 
 STEP_NAME_DESCRIPTION = (
@@ -55,31 +55,6 @@ class StepSpec(StrictModel):
     def is_qualified(self) -> bool:
         """True when the name carries an explicit module."""
         return ":" in self.name
-
-
-LABEL_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
-
-
-class ConstraintStep(StepSpec):
-    """A constraint as configured: a function step with a label.
-
-    ``kind`` is the discriminator the list of constraint models grows on; ``function`` — a step from
-    `terms.py` or an importable module — is the only kind today. A bare string is accepted, as for any
-    step. The engine asks nothing else of a constraint than what it declares: its label, whether it
-    reads the chain, and (through the verifier's twin table) how to check it.
-    """
-
-    kind: Literal["function"] = Field(default="function", description="What kind of constraint this is; `function` names a step. Other kinds are planned.")
-    label: str | None = Field(
-        default=None,
-        pattern=LABEL_PATTERN,
-        description="A name unique among the run's constraints; the verifier's report and the manifest key on it. Defaults to the step's bare name, so it only needs setting when one function is instantiated twice.",
-    )
-
-    @property
-    def effective_label(self) -> str:
-        """The configured label, or the step's bare name."""
-        return self.label if self.label is not None else self.name.rpartition(":")[2]
 
 
 def is_step_name(value: str) -> bool:
@@ -205,7 +180,7 @@ class ExecutionConfig(StrictModel):
     )
     dependencies: Dependencies = Field(
         default="overlap",
-        description="`overlap`: a portfolio waits only for higher-priority portfolios that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `sell`). `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis.",
+        description="Whether portfolios wait for each other, and which. `overlap` (default): a portfolio waits only for higher-priority portfolios that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `sell`). `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis. `none`: nothing waits and the whole book solves at once, which is right when no constraint reads what others traded. This is declared, not inferred: constraints are loaded data the engine does not interpret, so it cannot tell whether yours read the chain.",
     )
 
 
@@ -242,9 +217,6 @@ class RunConfig(StrictModel):
         description="Which side the run trades. `both`: buys and sells in one problem, portfolios coupling through buys only. `buy`: buys alone — one variable per name, `w >= w0`, no sell vector, so a term that reads `sell` is refused at validate-config; portfolios couple through buys. `sell`: the mirror — `w <= w0`, no buy vector, portfolios couple through sells. The value selects the side profile that supplies the decision variables, the trade identity, the tradable set the dependency graph is built from, and the chain.",
     )
     objective: ObjectiveConfig = Field(description="What the optimizer minimizes.")
-    constraints: tuple[ConstraintStep, ...] = Field(
-        default=(), description="Constraints: steps from `terms.py`, each with an optional `label`. The trade identity (`w = w0 + buy - sell` under `both`) is not a constraint; `sides` supplies it."
-    )
     solve: StepSpec = Field(
         default_factory=lambda: StepSpec(name="cvxpy"),
         description="The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`. `cvxpy` (default) builds and solves the cvxpy problem from the terms and constraints; a qualified name plugs in a firm's own library or a pure function for one side.",

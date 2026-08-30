@@ -14,7 +14,7 @@ from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.results import PortfolioResult
 from portfolio_optimizer.engine.runner import EXIT_OK, RunReport
-from tests.conftest import example_body
+from tests.conftest import SHIPPED_CONSTRAINTS, example_body
 from tests.engine.fakes import LazyBackend, factory_for
 from tests.engine.support import execute
 
@@ -48,6 +48,9 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
     (root / "prices.csv").write_text("\n".join(["security_id,price", *(f"{security},{PRICES[security]}" for security in SECURITIES)]) + "\n")
     (root / "targets.csv").write_text("\n".join(["benchmark_id,security_id,weight", *(f"B1,{security},0.2" for security in SECURITIES)]) + "\n")
     (root / "sector_bounds.csv").write_text("portfolio_id,sector,lower,upper\n")  # one sector and no rows: nothing is bounded
+    constraints = ["portfolio_id,name,label,params"]
+    constraints.extend(f"{portfolio_id},{name}," for portfolio_id in portfolio_ids for name in SHIPPED_CONSTRAINTS)
+    (root / "constraints.csv").write_text("\n".join(constraints) + "\n")
 
 
 def run_book(tmp_path: Path, root: Path, dependencies: str, run_id: str) -> RunReport:

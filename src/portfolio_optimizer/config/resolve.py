@@ -29,7 +29,7 @@ from pydantic import ValidationError
 from scipy.sparse import csr_array
 
 from portfolio_optimizer.config.models import RunConfig, StepSpec, config_sha256
-from portfolio_optimizer.config.steps import ResolvedConstraint, ResolvedStep, StepKind
+from portfolio_optimizer.config.steps import ResolvedStep, StepKind
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, installed_solvers, solver_failures
 from portfolio_optimizer.cvx.sides import decision_variables
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
@@ -92,21 +92,24 @@ class ResolvedConfig:
     rules: tuple[ResolvedStep, ...]
     solve_order: ResolvedStep | None
     terms: tuple[ResolvedStep, ...]
-    constraints: tuple[ResolvedConstraint, ...]
     solve: ResolvedStep
     sink: ResolvedStep
     profile: SideProfile
 
     @property
-    def chain_aware_steps(self) -> tuple[ResolvedStep, ...]:
-        """Terms and constraints that read what higher-priority portfolios traded; if there are none, no portfolio waits for another."""
-        return tuple(step for step in (*self.terms, *(constraint.step for constraint in self.constraints)) if step.reads_chain)
+    def chain_aware_terms(self) -> tuple[ResolvedStep, ...]:
+        """Objective terms that read what higher-priority portfolios traded.
+
+        Constraints are loaded data the engine does not interpret, so they cannot be counted here — whether
+        the run couples at all is declared in ``execution.dependencies`` rather than inferred.
+        """
+        return tuple(step for step in self.terms if step.reads_chain)
 
     @property
     def all_steps(self) -> tuple[ResolvedStep, ...]:
         """Every resolved step, in pipeline order."""
         ordering = () if self.solve_order is None else (self.solve_order,)
-        return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *ordering, *self.terms, *(constraint.step for constraint in self.constraints), self.solve, self.sink)
+        return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *ordering, *self.terms, self.solve, self.sink)
 
 
 def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] = installed_solvers) -> ResolvedConfig:
@@ -131,18 +134,6 @@ def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] 
     rules = [resolve(spec, "rule", f"rules[{i}]") for i, spec in enumerate(config.rules)]
     solve_order = resolve(config.solve_order, "solve_order", "solve_order") if config.solve_order is not None else None
     terms = [resolve(spec, "term", f"objective.terms[{i}]") for i, spec in enumerate(config.objective.terms)]
-    constraints: list[ResolvedConstraint | None] = []
-    labels: dict[str, int] = {}
-    for i, spec in enumerate(config.constraints):
-        if spec.name == "trade_balance":
-            failures.append(f"constraints[{i}]: 'trade_balance' is not a configurable constraint; the trade identity comes from `sides` ({config.sides!r}) — remove it")
-            continue
-        label = spec.effective_label
-        if label in labels:
-            failures.append(f"constraints[{i}]: label {label!r} is also used by constraints[{labels[label]}]; give one of them a `label`")
-        labels.setdefault(label, i)
-        step = resolve(spec, "constraint", f"constraints[{i}]")
-        constraints.append(ResolvedConstraint(label=label, spec=spec, step=step) if step is not None else None)
     solve = resolve(config.solve, "solve", "solve")
     sink = resolve(config.sink, "sink", "sink")
     resolved_loaders = {name: step for name, step in loaders.items() if step is not None}
@@ -157,7 +148,6 @@ def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] 
         rules=tuple(step for step in rules if step is not None),
         solve_order=solve_order,
         terms=tuple(step for step in terms if step is not None),
-        constraints=tuple(constraint for constraint in constraints if constraint is not None),
         solve=solve,
         sink=sink,
         profile=profile_for(config.sides),
@@ -169,21 +159,20 @@ def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] 
 
 
 def _construction_failures(resolved: ResolvedConfig) -> list[str]:
-    """Construct every term and constraint once against a one-security dummy spec, under the run's side profile.
+    """Construct every objective term once against a one-security dummy spec, under the run's side profile.
 
-    What signature checks cannot see — a term that raises when called, a constraint reaching for a decision
-    vector the side does not have — surfaces here instead of on a worker. A step that asks for a spec
-    column or flag the dummy does not carry is skipped rather than failed: whether the universe has it
-    is a question for the data, not the config. The solve step is not run; a firm's step may reach a
-    service, and the dummy is not a problem worth solving.
+    What signature checks cannot see — a term that raises when called, or reaches for a decision vector
+    the side does not have — surfaces here instead of on a worker. A step that asks for a spec column or
+    flag the dummy does not carry is skipped rather than failed: whether the universe has it is a
+    question for the data, not the config. Constraints are not constructed here at all — they are loaded
+    per portfolio and only the solve step knows what to make of them, so a bad one surfaces as that
+    portfolio's failure at stage ``solve``. The solve step is not run; a firm's step may reach a service,
+    and the dummy is not a problem worth solving.
     """
     spec = _dry_run_spec()
     chain = ChainState.empty(spec.security_ids)
     failures: list[str] = []
-    for where, step, expected in (
-        *((f"objective.terms[{i}]", step, ObjectiveTerm) for i, step in enumerate(resolved.terms)),
-        *((f"constraints[{i}]", c.step, ConstraintSet) for i, c in enumerate(resolved.constraints)),
-    ):
+    for where, step, expected in ((f"objective.terms[{i}]", step, ObjectiveTerm) for i, step in enumerate(resolved.terms)):
         try:
             result = step.invoke(x=decision_variables(resolved.profile.sides, spec.w0), spec=spec, chain=chain)
         except MissingSpecColumnError:

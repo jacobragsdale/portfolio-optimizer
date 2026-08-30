@@ -113,7 +113,14 @@ def test_with_changes_revalidates_and_records_the_rule(make: Factories, frames: 
 def test_prevalidated_frames_are_trusted_until_a_rule_replaces_them(make: Factories, frames: Frames) -> None:
     invalid = frames.universe({"price": Decimal(0)})  # fails the universe schema; the bundle would normally refuse it
     trusted = PortfolioData(
-        details=make.details(), holdings=frames.holdings(), universe=invalid, targets=frames.targets(), sector_bounds=frames.sector_bounds(), as_of_date=AS_OF, prevalidated=frozenset({"universe"})
+        details=make.details(),
+        holdings=frames.holdings(),
+        universe=invalid,
+        targets=frames.targets(),
+        sector_bounds=frames.sector_bounds(),
+        constraints=frames.constraints(),
+        as_of_date=AS_OF,
+        prevalidated=frozenset({"universe"}),
     )
     assert trusted.universe is invalid
     assert trusted.with_changes(details=make.details()).prevalidated == frozenset({"universe"})  # untouched frames keep their standing

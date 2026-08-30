@@ -47,13 +47,16 @@ from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.orders import rounding_drift, solution_to_orders
 from portfolio_optimizer.engine.pipeline import apply_rules
 from portfolio_optimizer.engine.solve import solve
-from portfolio_optimizer.engine.tasks import BuildResult, constraint_refs, step_refs
+from portfolio_optimizer.engine.tasks import BuildResult, step_refs
+from portfolio_optimizer.solvers import interpret_constraints
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
 AS_OF = datetime(2026, 8, 28, tzinfo=UTC)
 NAV = Decimal(1_000_000_000)
 MB = 1e6
+SHIPPED_CONSTRAINTS: tuple[str, ...] = ("long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation")
+"""Every constraint the template ships, as the shipped convention names them in the constraints frame."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +68,7 @@ class Book:
     universe: pd.DataFrame
     targets: pd.DataFrame
     sector_bounds: pd.DataFrame
+    constraints: pd.DataFrame
 
 
 def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, held: int, sides: str) -> Book:
@@ -131,7 +135,8 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
             "upper": pd.Series([Decimal("0.5")] * len(sector_names), dtype="object"),
         }
     )
-    return Book(details=details, holdings=holdings, universe=universe, targets=targets, sector_bounds=sector_bounds)
+    constraints = pd.DataFrame({"portfolio_id": pd.Series(["P1"] * len(SHIPPED_CONSTRAINTS), dtype="string"), "name": pd.Series(list(SHIPPED_CONSTRAINTS), dtype="string")})
+    return Book(details=details, holdings=holdings, universe=universe, targets=targets, sector_bounds=sector_bounds, constraints=constraints)
 
 
 @dataclass(slots=True)
@@ -222,7 +227,9 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     book = synthetic_book(rng, securities=securities, sectors=sectors, held=held, sides=sides)
     report = Report()
     with report.stage("validate bundle", f"{securities:,} securities in {sectors} sectors, {held:,} held; sides {sides}, terms {', '.join(step.name for step in resolved.terms)}") as row:
-        data = PortfolioData(details=book.details, holdings=book.holdings, universe=book.universe, targets=book.targets, sector_bounds=book.sector_bounds, as_of_date=AS_OF)
+        data = PortfolioData(
+            details=book.details, holdings=book.holdings, universe=book.universe, targets=book.targets, sector_bounds=book.sector_bounds, constraints=book.constraints, as_of_date=AS_OF
+        )
     with report.stage("rules", ", ".join(step.name for step in resolved.rules)):
         ruled, _ = apply_rules(data, resolved.rules)
     with report.stage("spec build") as row:
@@ -237,7 +244,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     with report.stage("expression tree") as row:
         x = decision_variables(resolved.profile.sides, spec.w0)
         terms = [step.invoke(x=x, spec=spec, chain=chain) for step in resolved.terms]
-        sets = [constraint.step.invoke(x=x, spec=spec, chain=chain) for constraint in resolved.constraints]
+        sets = [step.invoke(x=x, spec=spec, chain=chain) for step, _ in interpret_constraints(book.constraints)]
     constraint_sets = [item for item in sets if isinstance(item, ConstraintSet)]
     expressions = [item.expression for item in terms if isinstance(item, ObjectiveTerm)]
     flat = [constraint for group in constraint_sets for constraint in group.constraints]
@@ -263,9 +270,9 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
         f"status {problem.status}; solver-reported {float(stats.solve_time):.3f}s, {stats.num_iters} iterations" if stats is not None and stats.solve_time is not None else f"status {problem.status}"
     )
     with report.stage("engine solve() end to end", "tree + canonicalization + solve + classify, the way solve_task does it"):
-        solution = solve(spec, chain, resolved)
+        solution = solve(spec, chain, resolved, book.constraints)
     with report.stage("verify") as row:
-        checked = verify(spec, solution, chain, step_refs(resolved.terms), constraint_refs(resolved.constraints), profile=resolved.profile)
+        checked = verify(spec, solution, chain, step_refs(resolved.terms), solution.constraints, profile=resolved.profile)
     row.note = f"passed {checked.passed}, max violation {checked.max_violation:.2e}, objective gap {checked.objective_gap:.2e}"
     with report.stage("orders") as row:
         orders = solution_to_orders(spec, solution, output.order_inputs, run_id="benchmark")
@@ -278,7 +285,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
         solution.to_npz(solution_path)
         row.note = f"spec {spec_path.stat().st_size / MB:.1f} MB, solution {solution_path.stat().st_size / MB:.1f} MB on disk"
     with report.stage("pickle sizes") as row:
-        built = BuildResult(portfolio_id=PortfolioId(spec.portfolio_id), spec=spec, order_inputs=output.order_inputs, rule_audit=(), solve_order=Decimal(0), tradable=())
+        built = BuildResult(portfolio_id=PortfolioId(spec.portfolio_id), spec=spec, order_inputs=output.order_inputs, rule_audit=(), solve_order=Decimal(0), tradable=(), constraints=book.constraints)
         result = PortfolioResult(
             portfolio_id=spec.portfolio_id,
             spec=spec,

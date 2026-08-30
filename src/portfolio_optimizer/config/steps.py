@@ -10,7 +10,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from portfolio_optimizer.config.models import ConstraintStep
 from portfolio_optimizer.domain.data import LoadRequest
 from portfolio_optimizer.domain.results import ChainState
 from portfolio_optimizer.domain.types import Params
@@ -32,6 +31,13 @@ class ResolvedStep:
     params_sha256: str
     is_external: bool
     is_async: bool = False
+
+    @property
+    def params_json(self) -> dict[str, object]:
+        """This step's validated params as JSON-safe values, the form a :class:`StepRef` and the manifest carry."""
+        if self.params is None:
+            return {}
+        return {str(key): value for key, value in self.params.model_dump(mode="json").items()}
 
     def invoke(self, *, chain: ChainState | None = None, **engine_args: object) -> object:
         """Call the function with the engine arguments, its validated params, and — when it declared ``chain`` — the chain.
@@ -57,22 +63,3 @@ class ResolvedStep:
             msg = f"async step {self.qualname!r} returned {type(result).__name__} instead of an awaitable"
             raise TypeError(msg)
         return await result
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedConstraint:
-    """A constraint as the engine consumes it: its label, the model as configured, and the resolved step behind it."""
-
-    label: str
-    spec: ConstraintStep
-    step: ResolvedStep
-
-    @property
-    def reads_chain(self) -> bool:
-        """True when the constraint reads what higher-priority portfolios traded; what the dependency graph is derived from."""
-        return self.step.reads_chain
-
-    @property
-    def qualname(self) -> str:
-        """The step's qualified name."""
-        return self.step.qualname

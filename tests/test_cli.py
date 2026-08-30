@@ -68,10 +68,11 @@ def test_validate_config_lists_every_resolved_step() -> None:
     assert "config ok" in out
     assert "dependencies overlap" in out
     assert "rule                portfolio_optimizer.rules:restrict_low_liquidity" in out
-    assert "constraint          portfolio_optimizer.terms:cumulative_adv_participation [chain]" in out
+    assert "term                portfolio_optimizer.terms:tracking_error" in out
+    assert "constraint" not in out, "constraints are loaded data now, so validate-config has none to list"
 
 
-def test_validate_config_constructs_every_term_and_constraint_before_saying_ok(tmp_path: Path) -> None:
+def test_validate_config_constructs_every_term_before_saying_ok(tmp_path: Path) -> None:
     body = example_body() | {"objective": {"terms": ["tests.steps:lying_term"]}}
     config = tmp_path / "lying.json"
     config.write_text(json.dumps(body))

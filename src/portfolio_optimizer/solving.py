@@ -12,11 +12,13 @@ A solve step returns weights and nothing else: it writes no files, reads no cloc
 portfolio. It may raise; the engine records that as the portfolio's failure at stage ``solve``.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+import pandas as pd
 
 from portfolio_optimizer.config.models import SolverConfig
-from portfolio_optimizer.config.steps import ResolvedConstraint, ResolvedStep
-from portfolio_optimizer.domain.results import F64, ChainState, ProblemSpec, SolveStatus
+from portfolio_optimizer.config.steps import ResolvedStep
+from portfolio_optimizer.domain.results import F64, ChainState, ProblemSpec, SolveStatus, StepRef
 from portfolio_optimizer.domain.sides import SideProfile
 
 
@@ -32,7 +34,15 @@ class SolveRequest:
     chain: ChainState
     profile: SideProfile
     terms: tuple[ResolvedStep, ...]
-    constraints: tuple[ResolvedConstraint, ...]
+    constraints: pd.DataFrame
+    """This portfolio's constraint rows as loaded and as the rules left them, in the desk's own shape.
+
+    The engine does not interpret them — it knows only that they belong to this portfolio — so a step
+    reads whatever columns its desk writes. The shipped ``cvxpy`` step reads a ``name``/``label``/``params``
+    convention; a step with its own syntax reads its own, and one that needs no constraints ignores the
+    frame, which is empty when the run declares no such dataset.
+    """
+
     solver: SolverConfig
     """The ``solver`` block of the run config: cvxpy's solver and its options. A step that is not cvxpy may ignore it."""
 
@@ -56,3 +66,12 @@ class SolveResult:
     solver: str | None = None
     solver_version: str | None = None
     detail: str = ""
+    constraints: tuple[StepRef, ...] = field(default_factory=tuple)
+    """What the step applied, for the verifier and the manifest.
+
+    The step is the only thing that understands the constraint rows, so it says what it made of them:
+    a qualified name, JSON-safe params, and a label each. The verifier re-checks every ref it has a
+    numpy twin for and reports the rest as ``unverified``; the manifest records them under the
+    portfolio. A step that interprets nothing leaves this empty and its constraints go unverified,
+    which is the honest answer rather than a silent pass.
+    """

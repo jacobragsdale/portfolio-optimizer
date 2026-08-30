@@ -107,6 +107,18 @@ def chained_constraint(x: DecisionVars, spec: ProblemSpec, chain: ChainState) ->
     return ConstraintSet("chained", (at_most(x.coupled, chain.traded_shares + 1.0),))
 
 
+def chained_term(x: DecisionVars, spec: ProblemSpec, chain: ChainState) -> ObjectiveTerm:
+    from portfolio_optimizer.cvx.adapter import dot  # local: the header stays about the resolver
+
+    del spec
+    return ObjectiveTerm("chained", dot(chain.traded_shares, x.w))
+
+
+def term_that_raises(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:  # noqa: ARG001  # raising at construction is the case under test
+    msg = "no such column 'beta' in the risk model"
+    raise RuntimeError(msg)
+
+
 def loader(request: LoadRequest) -> pd.DataFrame:
     return pd.DataFrame({"dataset": [request.dataset]})
 
@@ -252,7 +264,6 @@ def fake_config(
     *,
     on_error: str = "fail_fast",
     rules: list[str] | None = None,
-    constraints: list[object] | None = None,
     solve_order: str | None = None,
     solver: dict[str, object] | None = None,
     solve: str | None = None,
@@ -264,7 +275,6 @@ def fake_config(
         "datasets": {name: {"loader": f"{fake_steps}:loader"} for name in ("holdings", "universe", "details", "targets")},
         "rules": rules if rules is not None else [f"{fake_steps}:plain_rule"],
         "objective": {"terms": terms if terms is not None else [f"{fake_steps}:term"]},
-        "constraints": constraints if constraints is not None else [],
         "sink": f"{fake_steps}:sink",
         "execution": {"on_error": on_error},
     }
@@ -278,13 +288,13 @@ def fake_config(
 
 
 def test_resolve_config_resolves_every_step(fake_steps: str) -> None:
-    resolved = resolve_config(fake_config(fake_steps, constraints=[f"{fake_steps}:chained_constraint"], solve_order=f"{fake_steps}:solve_order_step"))
-    assert [step.kind for step in resolved.all_steps] == ["loader", "loader", "loader", "loader", "loader", "rule", "solve_order", "term", "constraint", "solve", "sink"]
+    resolved = resolve_config(fake_config(fake_steps, terms=[f"{fake_steps}:chained_term"], solve_order=f"{fake_steps}:solve_order_step"))
+    assert [step.kind for step in resolved.all_steps] == ["loader", "loader", "loader", "loader", "loader", "rule", "solve_order", "term", "solve", "sink"]
     assert resolved.config_sha256 == config_sha256(resolved.config)
     assert resolved.solve.qualname == "portfolio_optimizer.solvers:cvxpy", "the default solve step is the shipped cvxpy one"
     assert {step.kind for step in resolved.loaders.values()} == {"loader"}, "every dataset is a frame, so every loader resolves under the one contract"
     assert resolved.solve_order is not None and resolved.solve_order.qualname == "fake_steps:solve_order_step"
-    assert [step.qualname for step in resolved.chain_aware_steps] == ["fake_steps:chained_constraint"]
+    assert [step.qualname for step in resolved.chain_aware_terms] == ["fake_steps:chained_term"], "constraints are data, so only terms can be counted here"
     assert resolve_config(fake_config(fake_steps)).solve_order is None
 
 
@@ -297,8 +307,8 @@ def test_resolve_config_reports_every_failing_step_at_once(fake_steps: str) -> N
 
 
 def test_continue_is_allowed_with_chain_aware_steps(fake_steps: str) -> None:
-    resolved = resolve_config(fake_config(fake_steps, on_error="continue", constraints=[f"{fake_steps}:chained_constraint"]))
-    assert len(resolved.chain_aware_steps) == 1
+    resolved = resolve_config(fake_config(fake_steps, on_error="continue", terms=[f"{fake_steps}:chained_term"]))
+    assert len(resolved.chain_aware_terms) == 1
     assert resolved.config.execution.dependencies == "overlap"
 
 
@@ -333,9 +343,8 @@ def test_a_term_reading_a_side_the_run_lacks_fails_dry_construction_naming_the_s
 
 def test_dry_construction_surfaces_a_step_that_raises_and_skips_one_that_needs_data(fake_steps: str) -> None:
     with pytest.raises(ConfigResolutionError) as info:
-        resolve_config(fake_config(fake_steps, constraints=[f"{fake_steps}:constraint_that_raises"], terms=[f"{fake_steps}:term_needing_a_column"]))
-    assert info.value.failures == ("constraints[0]: fake_steps:constraint_that_raises: construction failed: RuntimeError: no such column 'beta' in the risk model",)
-    assert resolve_config(fake_config(fake_steps, terms=["tracking_error"], constraints=["long_only", "cumulative_adv_participation"])).chain_aware_steps
+        resolve_config(fake_config(fake_steps, terms=[f"{fake_steps}:term_that_raises", f"{fake_steps}:term_needing_a_column"]))
+    assert info.value.failures == ("objective.terms[0]: fake_steps:term_that_raises: construction failed: RuntimeError: no such column 'beta' in the risk model",)
 
 
 def test_a_term_returning_the_wrong_type_fails_dry_construction() -> None:
@@ -350,23 +359,11 @@ def test_the_solve_step_is_resolved_against_its_contract(fake_steps: str) -> Non
         resolve_config(fake_config(fake_steps, solve=f"{fake_steps}:solve_wrong_args"))
 
 
-def test_constraints_resolve_under_unique_labels_that_default_to_the_bare_name(fake_steps: str) -> None:
-    resolved = resolve_config(fake_config(fake_steps, constraints=[f"{fake_steps}:chained_constraint", {"name": f"{fake_steps}:chained_constraint", "label": "adv_again"}]))
-    assert [(constraint.label, constraint.reads_chain, constraint.qualname) for constraint in resolved.constraints] == [
-        ("chained_constraint", True, "fake_steps:chained_constraint"),
-        ("adv_again", True, "fake_steps:chained_constraint"),
-    ]
-    assert resolved.constraints[1].spec.kind == "function"
-    with pytest.raises(ConfigResolutionError) as info:
-        resolve_config(fake_config(fake_steps, constraints=[f"{fake_steps}:chained_constraint", f"{fake_steps}:chained_constraint"]))
-    assert info.value.failures == ("constraints[1]: label 'chained_constraint' is also used by constraints[0]; give one of them a `label`",)
-
-
-def test_trade_balance_is_refused_by_name_because_sides_supplies_the_identity(fake_steps: str) -> None:
-    with pytest.raises(ConfigResolutionError) as info:
-        resolve_config(fake_config(fake_steps, constraints=["trade_balance"]))
-    assert info.value.failures == ("constraints[0]: 'trade_balance' is not a configurable constraint; the trade identity comes from `sides` ('both') — remove it",)
-    assert resolve_config(fake_config(fake_steps)).profile.sides == "both"
+def test_a_config_cannot_name_constraints_at_all(fake_steps: str) -> None:
+    body = json.loads(fake_config(fake_steps).model_dump_json(by_alias=True, exclude_none=True))
+    with pytest.raises(ValueError, match="extra_forbidden"):
+        RunConfig.model_validate_json(json.dumps({**body, "constraints": ["long_only"]}))
+    assert resolve_config(fake_config(fake_steps)).profile.sides == "both", "the trade identity still comes from sides"
 
 
 def test_a_solver_failure_is_reported_together_with_the_step_failures(fake_steps: str) -> None:

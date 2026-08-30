@@ -8,7 +8,7 @@ Builders are exposed as fixtures because ``--import-mode=importlib`` keeps ``tes
 
 import json
 import logging
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -24,7 +24,7 @@ from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails
 from portfolio_optimizer.domain.frames import FrameSchema
 from portfolio_optimizer.domain.results import F64, ProblemSpec, Solution, SolveStatus, StepRef
-from portfolio_optimizer.domain.schemas import DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, SECTOR_BOUNDS, TARGETS, UNIVERSE
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, SECTOR_BOUNDS, TARGETS, UNIVERSE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
@@ -67,6 +67,7 @@ _DEFAULTS: dict[str, Row] = {
         "cash_ub": Decimal(0),
     },
     SECTOR_BOUNDS.name: {"portfolio_id": "P1", "sector": "TECH", "lower": Decimal(0), "upper": Decimal(1)},
+    CONSTRAINTS.name: {"portfolio_id": "P1", "name": "long_only", "label": None, "params": None},
     HOLDINGS.name: {"portfolio_id": "P1", "security_id": "A", "quantity": 5000, "avg_cost": Decimal(90), "acquired_on": ACQUIRED},
     UNIVERSE.name: {"security_id": "A", "price": Decimal(100), "sector": "TECH", "adv_shares": 1_000_000, "lot_size": 1, "restricted": False},
     TARGETS.name: {"benchmark_id": "B1", "security_id": "A", "weight": Decimal(1)},
@@ -123,6 +124,10 @@ class Frames:
         """Build a ``sector_bounds`` frame; with no rows, the empty frame that bounds no sector."""
         return build(SECTOR_BOUNDS, *rows) if rows else empty_frame(SECTOR_BOUNDS)
 
+    def constraints(self, *names: str, portfolio_id: str = "P1") -> pd.DataFrame:
+        """Build a ``constraints`` frame under the shipped convention; with no names, the empty frame that constrains nothing."""
+        return build(CONSTRAINTS, *({"portfolio_id": portfolio_id, "name": name} for name in names)) if names else empty_frame(CONSTRAINTS)
+
     def orders(self, *rows: Row) -> pd.DataFrame:
         """Build an ``orders`` frame."""
         return build(ORDERS, *rows)
@@ -153,6 +158,7 @@ def make_portfolio_data(
     universe: pd.DataFrame | None = None,
     targets: pd.DataFrame | None = None,
     sector_bounds: pd.DataFrame | None = None,
+    constraints: pd.DataFrame | None = None,
     as_of_date: datetime = AS_OF,
     extras: Mapping[str, pd.DataFrame] | None = None,
     prevalidated: frozenset[str] = frozenset(),
@@ -165,6 +171,7 @@ def make_portfolio_data(
         universe=universe if universe is not None else frames.three_security_universe(),
         targets=targets if targets is not None else frames.equal_weight_targets(),
         sector_bounds=sector_bounds if sector_bounds is not None else frames.sector_bounds(),
+        constraints=constraints if constraints is not None else frames.constraints(*SHIPPED_CONSTRAINTS),
         as_of_date=as_of_date,
         extras=extras if extras is not None else {},
         prevalidated=prevalidated,
@@ -246,9 +253,16 @@ def make() -> Factories:
 SHIPPED_CONSTRAINTS = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation"]
 """Every constraint the template ships, in the example's order."""
 NO_CHAIN_CONSTRAINTS = [name for name in SHIPPED_CONSTRAINTS if name != "cumulative_adv_participation"]
-"""The shipped constraints without the chain-aware ADV cap: nothing reads the chain, so no portfolio waits for another."""
+"""The shipped constraints without the chain-aware ADV cap; a run over them can declare `dependencies: none`."""
+UNCOUPLED: dict[str, object] = {"on_error": "continue", "dependencies": "none"}
+"""An `execution` block in which nothing waits for anything: coupling is declared, not inferred from the constraints."""
 BUY_ONLY_OBJECTIVE: dict[str, object] = {"terms": [{"name": "tracking_error", "params": {"weight": "1.0"}}, {"name": "transaction_cost", "params": {"weight": "1.0"}}]}
 """The example's objective without ``tax_cost``, which reads ``sell`` and so cannot run in a buy-only run."""
+
+
+def constraint_frame(names: Sequence[str] = tuple(SHIPPED_CONSTRAINTS), portfolio_id: str = "P1") -> pd.DataFrame:
+    """A ``constraints`` frame naming shipped steps under the convention ``solvers.cvxpy`` reads."""
+    return Frames().constraints(*names, portfolio_id=portfolio_id)
 
 
 def step_refs_for(names: list[str]) -> list[StepRef]:
@@ -272,7 +286,9 @@ def _example_body(real_steps: bool) -> dict[str, object]:
     body = example_body()
     if not real_steps:
         body["objective"] = {"terms": ["tests.steps:noop_term"]}
-        body["constraints"] = []
+        datasets = body["datasets"]
+        assert isinstance(datasets, dict)
+        body["datasets"] = {name: spec for name, spec in datasets.items() if name != "constraints"}
     body["sink"] = "tests.steps:noop_sink"
     return body
 

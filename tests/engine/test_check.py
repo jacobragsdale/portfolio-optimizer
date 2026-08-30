@@ -14,8 +14,8 @@ from portfolio_optimizer.domain.sides import TWO_SIDED
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.check import CONSTRAINT_TWINS, TERM_TWINS, verify
 from portfolio_optimizer.engine.solve import solve
-from portfolio_optimizer.engine.tasks import constraint_refs, step_refs
-from tests.conftest import SHIPPED_CONSTRAINTS, Factories, Frames, resolved_example, step_refs_for
+from portfolio_optimizer.engine.tasks import step_refs
+from tests.conftest import SHIPPED_CONSTRAINTS, Factories, Frames, constraint_frame, resolved_example, step_refs_for
 
 CONSTRAINTS = step_refs_for(SHIPPED_CONSTRAINTS)
 TERMS = [StepRef(qualname="portfolio_optimizer.terms:tracking_error", params={"weight": "1"}, label="tracking_error")]
@@ -123,12 +123,10 @@ def test_true_optimum_verifies_including_the_objective(make: Factories, frames: 
     holdings = frames.holdings({"security_id": "A", "quantity": 5000, "avg_cost": Decimal(50)}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(50)})
     spec = build_problem_spec(make.portfolio_data(holdings=holdings, details=make.details(max_adv_participation=Decimal("0.25")))).spec
     terms = [{"name": "tracking_error", "params": {"weight": "1"}}, {"name": "tax_cost", "params": {"weight": "1"}}, {"name": "transaction_cost", "params": {"weight": "1", "cost_bps": "10"}}]
-    resolved = resolved_example(objective={"terms": terms}, constraints=SHIPPED_CONSTRAINTS)
+    resolved = resolved_example(objective={"terms": terms})
     chain = ChainState.empty(spec.security_ids)
-    solution = solve(spec, chain, resolved)
-    refs_terms = step_refs(resolved.terms)
-    refs_constraints = constraint_refs(resolved.constraints)
-    report = verify(spec, solution, chain, refs_terms, refs_constraints, profile=TWO_SIDED)
+    solution = solve(spec, chain, resolved, constraint_frame(SHIPPED_CONSTRAINTS))
+    report = verify(spec, solution, chain, step_refs(resolved.terms), solution.constraints, profile=TWO_SIDED)
     assert report.passed, (report.violated, report.objective_gap)
     assert report.objective_gap <= 1e-9 + 1e-5 * abs(report.recomputed_objective)
 

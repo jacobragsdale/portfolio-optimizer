@@ -8,7 +8,7 @@ from portfolio_optimizer.domain.results import PortfolioFailure, PortfolioResult
 from portfolio_optimizer.engine.backends import TaskOutput
 from portfolio_optimizer.engine.environment import environment_for
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, RunReport
-from tests.conftest import BUY_ONLY_OBJECTIVE, NO_CHAIN_CONSTRAINTS, resolved_example_real
+from tests.conftest import BUY_ONLY_OBJECTIVE, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
 from tests.engine.support import HALF_CASH_ORDERS_P1, HALF_CASH_ORDERS_P2, SELL_BOOK_ORDERS_P1, SELL_BOOK_ORDERS_P2, example_book, execute, half_cash_book, no_details_csv, sell_book
 
@@ -73,7 +73,7 @@ def test_a_configured_solve_order_step_reorders_the_run_and_is_read_before_any_s
 
 def test_an_uncoupled_run_submits_every_solve_behind_its_own_build_and_reads_no_summary_first(tmp_path: Path) -> None:
     backend = LazyBackend()
-    report = execute(tmp_path, backend_factory=factory_for(backend), constraints=NO_CHAIN_CONSTRAINTS)
+    report = execute(tmp_path, backend_factory=factory_for(backend), dependencies="none")
     assert report.exit_code == EXIT_OK
     assert backend.submitted == ["run-test/P1/build", "run-test/P1/summary", "run-test/P2/build", "run-test/P2/summary", "run-test/P1/solve", "run-test/P2/solve"], (
         "nothing reads the chain, so no solve waits and no portfolio is asked to contribute"
@@ -125,7 +125,7 @@ def test_a_sell_only_run_reproduces_the_hand_checked_sells_and_couples_through_t
 
 
 def test_nothing_reading_the_chain_means_no_portfolio_waits(tmp_path: Path) -> None:
-    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), constraints=NO_CHAIN_CONSTRAINTS)
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), dependencies="none")
     assert report.exit_code == EXIT_OK
     schedule = report.manifest.schedule
     assert schedule is not None and (schedule.coupling, schedule.edges, schedule.components) == ("none", 0, 2)

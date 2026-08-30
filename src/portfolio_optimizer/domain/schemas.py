@@ -143,11 +143,23 @@ ORDERS = FrameSchema(
     checks=(FrameCheck("notional_matches", _orders_notional_matches),),
 )
 
-DATASET_SCHEMAS: dict[str, FrameSchema] = {"holdings": HOLDINGS, "universe": UNIVERSE, "details": DETAILS, "targets": TARGETS, "sector_bounds": SECTOR_BOUNDS}
+CONSTRAINTS = FrameSchema(name="constraints", columns=(ColumnSpec("portfolio_id", "string"),), key=(), allow_extra=True)
+"""One portfolio's constraints, in whatever shape the desk writes them.
+
+The engine knows exactly one thing about a constraint row: which portfolio it belongs to. Everything
+else is the desk's own vocabulary, carried opaquely from the loader, through the rules that adjust it,
+to the solve step that interprets it — which is the only thing that understands the rest of the
+columns. There is no key, because the engine does not know what identifies a row.
+
+Optional: a run whose solve step needs no constraints declares no such dataset, and every portfolio
+gets the empty frame.
+"""
+
+DATASET_SCHEMAS: dict[str, FrameSchema] = {"holdings": HOLDINGS, "universe": UNIVERSE, "details": DETAILS, "targets": TARGETS, "sector_bounds": SECTOR_BOUNDS, "constraints": CONSTRAINTS}
 """Engine-known frames and the schema each must satisfy after assembly. Any other dataset name is an extra."""
 
 REQUIRED_DATASETS: tuple[str, ...] = ("holdings", "universe", "details", "targets")
-"""Datasets a run cannot do without, loaded directly or produced by an assembly step. ``sector_bounds`` is engine-known but optional."""
+"""Datasets a run cannot do without, loaded directly or produced by an assembly step. ``sector_bounds`` and ``constraints`` are engine-known but optional."""
 
 REQUIRED_FRAMES: tuple[str, ...] = REQUIRED_DATASETS
 """Every dataset is a frame, so these are the same names; both spellings are kept because each reads better in its own place."""

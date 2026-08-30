@@ -375,14 +375,23 @@ class Solution:
     solve_time_s: float
     iterations: int | None
     spec_hash: str
+    constraints: tuple[StepRef, ...] = ()
+    """What the solve step made of this portfolio's constraint rows.
+
+    The engine does not interpret constraints, so the step says what it applied; the verifier re-checks
+    every ref it has a numpy twin for and reports the rest as ``unverified``. Persisted with the rest of
+    the provenance so an offline ``verify`` from the ``.npz`` alone checks exactly what the run did.
+    """
 
     def __post_init__(self) -> None:
         for name in ("w", "buy", "sell"):
             object.__setattr__(self, name, _readonly(getattr(self, name)))
+        object.__setattr__(self, "constraints", tuple(self.constraints))
 
     def to_npz(self, path: Path) -> None:
         """Persist the solution vectors and provenance without pickle."""
-        meta = {name: getattr(self, name) for name in ("objective", "status", "solver", "solver_version", "solve_time_s", "iterations", "spec_hash")}
+        meta: dict[str, object] = {name: getattr(self, name) for name in ("objective", "status", "solver", "solver_version", "solve_time_s", "iterations", "spec_hash")}
+        meta["constraints"] = [ref.model_dump(mode="json") for ref in self.constraints]
         np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(meta, sort_keys=True)), w=self.w, buy=self.buy, sell=self.sell)
 
     @classmethod
@@ -402,6 +411,7 @@ class Solution:
             solve_time_s=float(meta["solve_time_s"]),
             iterations=None if meta["iterations"] is None else int(meta["iterations"]),
             spec_hash=str(meta["spec_hash"]),
+            constraints=tuple(StepRef.model_validate(ref) for ref in meta.get("constraints", ())),
         )
 
 

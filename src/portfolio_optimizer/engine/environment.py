@@ -70,17 +70,14 @@ def environment_for(config: RunConfig, *, cwd: Path, image_digest: str | None) -
 
 
 def external_modules(config: RunConfig) -> tuple[str, ...]:
-    """The modules of every qualified step name in ``config``, sorted; what ``packages`` is computed over."""
-    specs = [
-        config.portfolios.loader,
-        *(dataset.loader for dataset in config.datasets.values()),
-        *config.assembly,
-        *config.rules,
-        *config.objective.terms,
-        *config.constraints,
-        config.solve,
-        config.sink,
-    ]
+    """The modules of every qualified step name in ``config``, sorted; what ``packages`` is computed over.
+
+    Constraints are not here: they are loaded data, so their step names are not in the config to read.
+    A desk's constraint functions are covered when they live in the package its ``solve`` step names,
+    which is the ordinary arrangement; ones in a package nothing else names are not fingerprinted, and
+    a worker missing them fails at stage ``solve`` rather than at the environment check.
+    """
+    specs = [config.portfolios.loader, *(dataset.loader for dataset in config.datasets.values()), *config.assembly, *config.rules, *config.objective.terms, config.solve, config.sink]
     if config.solve_order is not None:
         specs.append(config.solve_order)
     return tuple(sorted({spec.name.partition(":")[0] for spec in specs if spec.is_qualified}))

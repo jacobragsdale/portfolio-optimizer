@@ -1,0 +1,13 @@
+portfolio_id,name,label,params
+P1,long_only,,
+P1,max_weight,,
+P1,cash_bounds,,
+P1,turnover_cap,,
+P1,sector_bounds,,
+P1,cumulative_adv_participation,,
+P2,long_only,,
+P2,max_weight,,
+P2,cash_bounds,,
+P2,turnover_cap,,
+P2,sector_bounds,,
+P2,cumulative_adv_participation,,

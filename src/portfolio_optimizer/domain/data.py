@@ -12,7 +12,7 @@ from pydantic import Field, model_validator
 
 from portfolio_optimizer.domain.frames import FrameSchemaError, validate_frame
 from portfolio_optimizer.domain.optimizer_frame import column_dtype_conflicts, stack_frames
-from portfolio_optimizer.domain.schemas import HOLDINGS, RESERVED_DATASET_NAMES, SECTOR_BOUNDS, TARGETS, UNIVERSE
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, HOLDINGS, RESERVED_DATASET_NAMES, SECTOR_BOUNDS, TARGETS, UNIVERSE
 from portfolio_optimizer.domain.types import Clock, PortfolioId, StrictModel
 from portfolio_optimizer.ratelimit import RateLimiter
 
@@ -122,7 +122,7 @@ def details_from_frame(frame: pd.DataFrame, portfolio_id: PortfolioId) -> Portfo
     return PortfolioDetails.model_validate(record)
 
 
-PREVALIDATED_FRAMES: frozenset[str] = frozenset({"holdings", "universe", "targets", "sector_bounds"})
+PREVALIDATED_FRAMES: frozenset[str] = frozenset({"holdings", "universe", "targets", "sector_bounds", "constraints"})
 """The bundle's frames that have a schema: the only names ``prevalidated`` may carry, and what the engine marks when it slices from assembled datasets."""
 
 
@@ -160,6 +160,7 @@ class PortfolioData:
     universe: pd.DataFrame
     targets: pd.DataFrame
     sector_bounds: pd.DataFrame
+    constraints: pd.DataFrame
     as_of_date: datetime
     extras: Mapping[str, pd.DataFrame] = field(default_factory=dict)
     applied_rules: tuple[str, ...] = field(default=())
@@ -176,6 +177,7 @@ class PortfolioData:
             ("universe", self.universe, UNIVERSE),
             ("targets", self.targets, TARGETS),
             ("sector_bounds", self.sector_bounds, SECTOR_BOUNDS),
+            ("constraints", self.constraints, CONSTRAINTS),
         ):
             if name in self.prevalidated:
                 continue
@@ -221,6 +223,9 @@ class PortfolioData:
         foreign_bounds = sorted({str(p) for p in self.sector_bounds["portfolio_id"]} - own)
         if foreign_bounds:
             failures.append(f"sector_bounds contain other portfolios {foreign_bounds}")
+        foreign_constraints = sorted({str(p) for p in self.constraints["portfolio_id"]} - own)
+        if foreign_constraints:
+            failures.append(f"constraints contain other portfolios {foreign_constraints}")
         failures.extend(f"holdings and universe disagree on {conflict}" for conflict in column_dtype_conflicts({"holdings": self.holdings, "universe": self.universe}))
         for name, frame in self.extras.items():
             if "portfolio_id" in frame.columns:
@@ -254,13 +259,16 @@ class PortfolioData:
         universe: pd.DataFrame | None = None,
         targets: pd.DataFrame | None = None,
         sector_bounds: pd.DataFrame | None = None,
+        constraints: pd.DataFrame | None = None,
         extras: Mapping[str, pd.DataFrame] | None = None,
     ) -> "PortfolioData":
         """Return a re-validated copy with the given details, frames, or extras replaced.
 
         A replaced frame loses its ``prevalidated`` standing and is checked against its schema.
+        Adjusting ``constraints`` from what the holdings or the universe say is ordinary rule work:
+        the frame carries the desk's own columns, and only the solve step interprets them.
         """
-        replaced = {name for name, frame in (("holdings", holdings), ("universe", universe), ("targets", targets), ("sector_bounds", sector_bounds)) if frame is not None}
+        replaced = {name for name, frame in (("holdings", holdings), ("universe", universe), ("targets", targets), ("sector_bounds", sector_bounds), ("constraints", constraints)) if frame is not None}
         return replace(
             self,
             details=self.details if details is None else details,
@@ -268,6 +276,7 @@ class PortfolioData:
             universe=self.universe if universe is None else universe,
             targets=self.targets if targets is None else targets,
             sector_bounds=self.sector_bounds if sector_bounds is None else sector_bounds,
+            constraints=self.constraints if constraints is None else constraints,
             extras=self.extras if extras is None else extras,
             prevalidated=self.prevalidated - replaced,
         )

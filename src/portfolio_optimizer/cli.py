@@ -146,10 +146,7 @@ def _validate_config(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO
     except (ValidationError, ConfigResolutionError) as error:
         stderr.write(f"config rejected: {error}\n")
         return EXIT_INPUT_REJECTED
-    coupling = "none" if not resolved.chain_aware_steps else resolved.config.execution.dependencies
-    stdout.write(
-        f"config ok (sha256 {resolved.config_sha256[:12]}): {len(resolved.rules)} rule(s), {len(resolved.terms)} term(s), {len(resolved.constraints)} constraint(s), dependencies {coupling}\n"
-    )
+    stdout.write(f"config ok (sha256 {resolved.config_sha256[:12]}): {len(resolved.rules)} rule(s), {len(resolved.terms)} term(s), dependencies {resolved.config.execution.dependencies}\n")
     stdout.writelines(f"  {step.kind:19} {step.qualname}{' [external]' if step.is_external else ''}{' [chain]' if step.reads_chain else ''}\n" for step in resolved.all_steps)
     return EXIT_OK
 
@@ -184,7 +181,7 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
         stderr.write("persisted chain state does not match the manifest's chain hash\n")
         return EXIT_PORTFOLIO_FAILED
     profile = profile_for(str(manifest.config.resolved.get("sides", "both")))
-    report = verify(spec, solution, chain, manifest.terms, manifest.constraints, profile=profile, tolerances=Tolerances(violation=record.check.tolerance))
+    report = verify(spec, solution, chain, manifest.terms, record.constraints, profile=profile, tolerances=Tolerances(violation=record.check.tolerance))
     stdout.writelines(
         f"  {'ok  ' if check.passed else 'FAIL'} {check.name:32} violation {check.violation:.3e} (tol {check.tolerance:.1e}){' worst ' + check.worst_security if check.worst_security else ''}\n"
         for check in report.checks

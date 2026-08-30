@@ -15,6 +15,7 @@
       "batch_size": 2
     },
     "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
+    "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
     "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
     "prices": {
       "loader": {
@@ -49,16 +50,8 @@
       {"name": "transaction_cost", "params": {"weight": "1.0"}}
     ]
   },
-  "constraints": [
-    "long_only",
-    "max_weight",
-    "cash_bounds",
-    "turnover_cap",
-    "sector_bounds",
-    "cumulative_adv_participation"
-  ],
   "solver": {"name": "CLARABEL", "options": {"max_iter": 200}, "time_limit_s": 60.0, "verbose": false},
   "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9},
   "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},
-  "execution": {"on_error": "fail_fast"}
+  "execution": {"on_error": "fail_fast", "dependencies": "overlap"}
 }

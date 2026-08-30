@@ -21,9 +21,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+import pandas as pd
+
 from portfolio_optimizer.config.models import RunConfig
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
-from portfolio_optimizer.config.steps import ResolvedConstraint, ResolvedStep
+from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError
 from portfolio_optimizer.domain.results import (
     ChainState,
@@ -94,6 +96,8 @@ class BuildResult:
     rule_audit: tuple[RuleAuditRecord, ...]
     solve_order: Decimal
     tradable: tuple[str, ...]
+    constraints: pd.DataFrame
+    """This portfolio's constraint rows as the rules left them, carried to the solve step that interprets them."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +119,15 @@ def build_portfolio(data: PortfolioData, resolved: ResolvedConfig, fallback_solv
     ruled, audit = apply_rules(data, resolved.rules)
     key = fallback_solve_order if resolved.solve_order is None else solve_order_key(resolved.solve_order, ruled)
     output = build_problem_spec(ruled)
-    return BuildResult(portfolio_id=data.portfolio_id, spec=output.spec, order_inputs=output.order_inputs, rule_audit=audit, solve_order=key, tradable=tradable_ids(resolved.profile, output.spec))
+    return BuildResult(
+        portfolio_id=data.portfolio_id,
+        spec=output.spec,
+        order_inputs=output.order_inputs,
+        rule_audit=audit,
+        solve_order=key,
+        tradable=tradable_ids(resolved.profile, output.spec),
+        constraints=ruled.constraints,
+    )
 
 
 def solve_order_key(step: ResolvedStep, data: PortfolioData) -> Decimal:
@@ -133,14 +145,14 @@ def solve_order_key(step: ResolvedStep, data: PortfolioData) -> Decimal:
 
 def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainState, run_id: str) -> PortfolioResult:
     """Solve, verify independently, round to orders, and bound the rounding drift."""
-    solution = solve(built.spec, chain, resolved)
+    solution = solve(built.spec, chain, resolved, built.constraints)
     post = resolved.config.post_solve
     report = verify(
         built.spec,
         solution,
         chain,
         step_refs(resolved.terms),
-        constraint_refs(resolved.constraints),
+        solution.constraints,
         profile=resolved.profile,
         tolerances=Tolerances(violation=post.violation_tol, obj_rel=post.objective_rel_tol, obj_abs=post.objective_abs_tol),
     )
@@ -171,18 +183,7 @@ def tradable_ids(profile: SideProfile, spec: ProblemSpec) -> tuple[str, ...]:
 
 def step_refs(steps: Sequence[ResolvedStep]) -> tuple[StepRef, ...]:
     """Reduce resolved term steps to the data the verifier and manifest need; a term's label is its bare name."""
-    return tuple(StepRef(qualname=step.qualname, params=_params_json(step), label=step.name.rpartition(":")[2]) for step in steps)
-
-
-def constraint_refs(constraints: Sequence[ResolvedConstraint]) -> tuple[StepRef, ...]:
-    """Reduce resolved constraints to the data the verifier and manifest need, under their labels."""
-    return tuple(StepRef(qualname=constraint.qualname, params=_params_json(constraint.step), label=constraint.label) for constraint in constraints)
-
-
-def _params_json(step: ResolvedStep) -> dict[str, object]:
-    if step.params is None:
-        return {}
-    return {str(key): value for key, value in step.params.model_dump(mode="json").items()}
+    return tuple(StepRef(qualname=step.qualname, params=step.params_json, label=step.name.rpartition(":")[2]) for step in steps)
 
 
 def failure(portfolio_id: str, stage: str, error: BaseException) -> PortfolioFailure:

@@ -11,10 +11,10 @@ from portfolio_optimizer.domain.sides import TWO_SIDED
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.runner import EXIT_OK
-from portfolio_optimizer.engine.tasks import constraint_refs, step_refs
+from portfolio_optimizer.engine.tasks import step_refs
 from portfolio_optimizer.solvers import pro_rata_fill
 from portfolio_optimizer.solving import SolveRequest
-from tests.conftest import Factories, resolved_example_real
+from tests.conftest import Factories, constraint_frame, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
 from tests.engine.support import execute
 
@@ -22,7 +22,7 @@ from tests.engine.support import execute
 def _request(spec: ProblemSpec, chain: ChainState | None = None) -> SolveRequest:
     resolved = resolved_example_real()
     return SolveRequest(
-        spec=spec, chain=chain if chain is not None else ChainState.empty(spec.security_ids), profile=TWO_SIDED, terms=resolved.terms, constraints=resolved.constraints, solver=resolved.config.solver
+        spec=spec, chain=chain if chain is not None else ChainState.empty(spec.security_ids), profile=TWO_SIDED, terms=resolved.terms, constraints=constraint_frame(), solver=resolved.config.solver
     )
 
 
@@ -61,10 +61,10 @@ def test_pro_rata_fill_verifies_like_a_solve(make: Factories) -> None:
     output = build_problem_spec(make.portfolio_data(details=details))
     resolved = resolved_example_real(solve="pro_rata_fill")
     chain = ChainState.empty(output.spec.security_ids)
-    result = pro_rata_fill(SolveRequest(spec=output.spec, chain=chain, profile=TWO_SIDED, terms=resolved.terms, constraints=resolved.constraints, solver=resolved.config.solver))
+    result = pro_rata_fill(SolveRequest(spec=output.spec, chain=chain, profile=TWO_SIDED, terms=resolved.terms, constraints=constraint_frame(), solver=resolved.config.solver))
     assert result.w is not None
     solution = make.solution(output.spec, w=result.w, buy=result.w - output.spec.w0, objective=None, solver="f", iterations=None)
-    report = verify(output.spec, solution, chain, step_refs(resolved.terms), constraint_refs(resolved.constraints), profile=TWO_SIDED)
+    report = verify(output.spec, solution, chain, step_refs(resolved.terms), solution.constraints, profile=TWO_SIDED)
     assert report.passed, report.violated
     assert result.w.sum() == pytest.approx(1.0), "cash_bounds [0, 0] means every dollar is invested"
 

@@ -8,7 +8,7 @@ from portfolio_optimizer.domain.results import ChainState, ProblemSpec, StepRef
 from portfolio_optimizer.domain.sides import TWO_SIDED
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.solve import solve
-from tests.conftest import SHIPPED_CONSTRAINTS, make_spec, resolved_example, step_refs_for
+from tests.conftest import SHIPPED_CONSTRAINTS, constraint_frame, make_spec, resolved_example, step_refs_for
 
 
 @st.composite
@@ -23,9 +23,9 @@ def feasible_specs(draw: st.DrawFn) -> ProblemSpec:
 @given(spec=feasible_specs())
 @settings(deadline=None, max_examples=15)
 def test_solutions_verify_and_never_do_worse_than_resting(spec: ProblemSpec) -> None:
-    resolved = resolved_example(objective={"terms": [{"name": "tracking_error", "params": {"weight": "1"}}]}, constraints=SHIPPED_CONSTRAINTS)
+    resolved = resolved_example(objective={"terms": [{"name": "tracking_error", "params": {"weight": "1"}}]})
     chain = ChainState.empty(spec.security_ids)
-    solution = solve(spec, chain, resolved)
+    solution = solve(spec, chain, resolved, constraint_frame(SHIPPED_CONSTRAINTS))
     terms = [StepRef(qualname="portfolio_optimizer.terms:tracking_error", params={"weight": "1"}, label="tracking_error")]
     report = verify(spec, solution, chain, terms, step_refs_for(SHIPPED_CONSTRAINTS), profile=TWO_SIDED)
     assert report.passed, (report.violated, report.objective_gap)

@@ -13,14 +13,21 @@ from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution
 from portfolio_optimizer.domain.sides import TWO_SIDED
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.check import verify
-from portfolio_optimizer.engine.solve import InfeasibleError, SolveSetupError, solve
-from portfolio_optimizer.engine.tasks import constraint_refs, step_refs
-from tests.conftest import SHIPPED_CONSTRAINTS, Factories, Frames, resolved_example
+from portfolio_optimizer.engine.solve import InfeasibleError, SolveSetupError
+from portfolio_optimizer.engine.solve import solve as engine_solve
+from portfolio_optimizer.engine.tasks import step_refs
+from tests.conftest import SHIPPED_CONSTRAINTS, Factories, Frames, constraint_frame, resolved_example
 from tests.engine.support import HAND_OPTIMUM
 
 
 def resolved_with(terms: Sequence[object], constraints: Sequence[object], **overrides: object) -> ResolvedConfig:
-    return resolved_example(objective={"terms": list(terms)}, constraints=list(constraints), **overrides)
+    del constraints  # the set is data now, passed to solve(); kept here so each case still reads as "these terms, those constraints"
+    return resolved_example(objective={"terms": list(terms)}, **overrides)
+
+
+def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig, names: Sequence[str] = tuple(SHIPPED_CONSTRAINTS)) -> Solution:
+    """Solve with the shipped constraints unless a case names its own; the engine reads them off the frame."""
+    return engine_solve(spec, chain, resolved, constraint_frame(names))
 
 
 def hand_case(make: Factories, frames: Frames) -> ProblemSpec:
@@ -52,7 +59,7 @@ def test_solving_twice_is_bitwise_identical(make: Factories, frames: Frames) -> 
 
 def test_turnover_cap_binds_with_the_known_answer(make: Factories) -> None:
     spec = make.spec(n=2, w0=np.array([1.0, 0.0]), w_target=np.array([0.5, 0.5]), shares_held=np.array([10_000.0, 0.0]), max_turnover=0.2)
-    solution = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], ["long_only", "max_weight", "cash_bounds", "turnover_cap"]))
+    solution = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], []), ["long_only", "max_weight", "cash_bounds", "turnover_cap"])
     np.testing.assert_allclose(solution.w, [0.9, 0.1], atol=1e-6)
     assert float((solution.buy + solution.sell).sum()) == pytest.approx(0.2, abs=1e-6)
 
@@ -75,7 +82,7 @@ def test_a_buy_only_solve_only_buys_and_verifies(make: Factories, frames: Frames
     np.testing.assert_allclose(solution.w, HAND_OPTIMUM, atol=1e-6)
     assert (solution.w >= spec.w0 - 1e-9).all() and solution.sell.tolist() == [0.0, 0.0, 0.0]
     np.testing.assert_allclose(solution.buy, [0.125, 0.125, 0.25], atol=1e-6)
-    report = verify(spec, solution, ChainState.empty(spec.security_ids), step_refs(resolved.terms), constraint_refs(resolved.constraints), profile=resolved.profile)
+    report = verify(spec, solution, ChainState.empty(spec.security_ids), step_refs(resolved.terms), solution.constraints, profile=resolved.profile)
     assert report.passed, report.violated
     assert {check.name for check in report.checks if check.label == "identity"} == {"no_sells", "trade_balance", "nonneg_buy", "sell_absent"}
     spent = ChainState(security_ids=spec.security_ids, traded_shares=np.array([0.0, 0.0, 25_000.0]), predecessors=("P0",))
@@ -102,12 +109,12 @@ def test_a_sell_only_solve_only_sells_and_couples_through_sells(make: Factories,
     solution = solve(spec, ChainState.empty(spec.security_ids), resolved)
     np.testing.assert_allclose(solution.w, [0.4, 1 / 3, 0.0], atol=1e-6, err_msg="A sells its whole ADV budget (0.1), B to target, C is not held")
     assert (solution.w <= spec.w0 + 1e-9).all() and solution.buy.tolist() == [0.0, 0.0, 0.0]
-    report = verify(spec, solution, ChainState.empty(spec.security_ids), step_refs(resolved.terms), constraint_refs(resolved.constraints), profile=resolved.profile)
+    report = verify(spec, solution, ChainState.empty(spec.security_ids), step_refs(resolved.terms), solution.constraints, profile=resolved.profile)
     assert report.passed, report.violated
     assert {check.name for check in report.checks if check.label == "identity"} == {"no_buys", "trade_balance", "nonneg_sell", "buy_absent"}
     spent = ChainState(security_ids=spec.security_ids, traded_shares=np.array([1000.0, 0.0, 0.0]), predecessors=("P0",))
     np.testing.assert_allclose(solve(spec, spent, resolved).w, [0.5, 1 / 3, 0.0], atol=1e-6, err_msg="a predecessor's sells of A consumed the budget this portfolio would have sold into")
-    report = verify(spec, _with_sell(solve(spec, spent, resolved), spec, np.array([0.05, 0.0, 0.0])), spent, step_refs(resolved.terms), constraint_refs(resolved.constraints), profile=resolved.profile)
+    report = verify(spec, _with_sell(solve(spec, spent, resolved), spec, np.array([0.05, 0.0, 0.0])), spent, step_refs(resolved.terms), solution.constraints, profile=resolved.profile)
     assert report.violated == ("cumulative_adv_participation",), "a sell past what the chain left of A's budget is caught: the verifier checks the chain against the sells, not the absent buys"
 
 
@@ -182,7 +189,7 @@ def test_a_sell_only_run_over_the_reflected_book_is_the_buy_only_run_over_the_or
 def test_infeasible_problem_raises_with_an_arithmetic_diagnosis(make: Factories) -> None:
     spec = make.spec(ub=np.array([0.3, 0.3, 0.3]))
     with pytest.raises(InfeasibleError, match=r"upper bounds sum to 0\.900000 < required investment 1\.000000"):
-        solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], ["long_only", "max_weight", "cash_bounds"]))
+        solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], []), ["long_only", "max_weight", "cash_bounds"])
 
 
 def test_empty_universe_solves_trivially(make: Factories) -> None:

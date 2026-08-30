@@ -40,7 +40,7 @@ from portfolio_optimizer.engine.hashing import file_sha256
 from portfolio_optimizer.engine.load import DatasetAudit, assemble, load_datasets
 from portfolio_optimizer.engine.manifest import ClusterRecord, ConfigInfo, RunManifest, WorkerRecord, created_at, failed_record, finalize, solved_record, versions, write_manifest
 from portfolio_optimizer.engine.schedule import Coupling, OverlapIndex, Schedule, dependency_graph, order_portfolios
-from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, constraint_refs, contribution, probe_task, skipped, solve_task, step_refs, summarize
+from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, contribution, probe_task, skipped, solve_task, step_refs, summarize
 from portfolio_optimizer.settings import ExecutionSettings
 
 log = logging.getLogger(__name__)
@@ -292,7 +292,7 @@ def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session,
     expected = environment_for(config, cwd=Path.cwd(), image_digest=session.context.execution.image_digest)
     _check_workers(backend, shared, session, expected)
     dispatch = _Dispatch(backend, backend.share(shared), shared.run_id, len(shared.assembled.portfolio_ids), session, expected)
-    coupling: Coupling = "none" if not resolved.chain_aware_steps else config.execution.dependencies
+    coupling: Coupling = config.execution.dependencies
     builds = _submit_builds(dispatch, shared)
     if coupling == "none":
         planned = _plan_uncoupled(dispatch, shared, builds)
@@ -627,7 +627,6 @@ def _manifest(
         config=ConfigInfo(path=context.config_path, sha256=resolved.config_sha256, resolved=config.model_dump(mode="json")),
         settings=dict(context.settings),
         terms=step_refs(resolved.terms),
-        constraints=constraint_refs(resolved.constraints),
         datasets=tuple(audits),
         assembly=tuple(assembly_audits),
         portfolios=tuple(records),

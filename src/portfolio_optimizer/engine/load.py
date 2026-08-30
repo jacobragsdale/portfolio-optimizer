@@ -36,7 +36,7 @@ from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.data import PREVALIDATED_FRAMES, Frames, LoadRequest, PortfolioData, details_from_frame
 from portfolio_optimizer.domain.frames import FrameSchemaError, empty_frame, validate_frame
 from portfolio_optimizer.domain.results import AssemblyAuditRecord, PortfolioFailure
-from portfolio_optimizer.domain.schemas import DATASET_SCHEMAS, PORTFOLIOS, REQUIRED_FRAMES, SECTOR_BOUNDS
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, DATASET_SCHEMAS, PORTFOLIOS, REQUIRED_FRAMES, SECTOR_BOUNDS
 from portfolio_optimizer.domain.types import PortfolioId, StrictModel
 from portfolio_optimizer.engine.hashing import frame_sha256
 from portfolio_optimizer.ratelimit import RateLimiter
@@ -108,6 +108,7 @@ class AssembledDatasets:
     details: pd.DataFrame
     targets: pd.DataFrame
     sector_bounds: pd.DataFrame
+    constraints: pd.DataFrame
     extras: Mapping[str, pd.DataFrame]
     rejected: Mapping[PortfolioId, PortfolioFailure]
     """Portfolios that could not be loaded — a failed batch or a missing ``details`` row — failed at stage ``load`` so the rest of the book still runs."""
@@ -388,6 +389,7 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -
         details=details,
         targets=frames["targets"],
         sector_bounds=frames.get("sector_bounds", empty_frame(SECTOR_BOUNDS)),
+        constraints=frames.get("constraints", empty_frame(CONSTRAINTS)),
         extras={name: frame for name, frame in frames.items() if name not in DATASET_SCHEMAS},
         rejected=rejected,
         as_of_date=resolved.config.run.as_of_date,
@@ -435,7 +437,7 @@ def _columns_added(before: Frames, after: Frames) -> dict[str, tuple[str, ...]]:
 
 
 def slice_portfolio(assembled: AssembledDatasets, portfolio_id: PortfolioId) -> PortfolioData:
-    """Build the validated per-portfolio bundle: its own holdings, sector bounds, and extras rows; its benchmark's targets; the whole universe.
+    """Build the validated per-portfolio bundle: its own holdings, sector bounds, constraints, and extras rows; its benchmark's targets; the whole universe.
 
     The schema frames are marked prevalidated: :func:`assemble` validated them, the universe is
     passed whole, and the holdings, sector-bounds, and targets slices are row subsets, which keep every
@@ -452,6 +454,7 @@ def slice_portfolio(assembled: AssembledDatasets, portfolio_id: PortfolioId) -> 
         universe=assembled.universe.reset_index(drop=True),
         targets=targets,
         sector_bounds=_rows_for(assembled.sector_bounds, portfolio_id),
+        constraints=_rows_for(assembled.constraints, portfolio_id),
         as_of_date=assembled.as_of_date,
         extras=extras,
         prevalidated=PREVALIDATED_FRAMES,

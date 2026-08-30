@@ -7,7 +7,7 @@ from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.results import PortfolioFailure, PortfolioResult
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError
-from tests.conftest import EXAMPLE_DATA, NO_CHAIN_CONSTRAINTS, resolved_example_real
+from tests.conftest import EXAMPLE_DATA, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
 from tests.engine.support import EXAMPLE_ORDERS_P1, GIT, details_csv, example_book, execute, no_details_csv
 
@@ -64,7 +64,7 @@ def test_fail_fast_skips_every_lower_priority_portfolio_and_publishes_nothing(tm
 
 def test_continue_isolates_a_failure_nothing_depended_on(tmp_path: Path, scheduler_address: str) -> None:
     data_root = example_book(tmp_path, **{"details/P1.csv": CAPPED_P1})
-    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, constraints=NO_CHAIN_CONSTRAINTS)
+    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
     assert report.exit_code == EXIT_PORTFOLIO_FAILED
     assert [type(o).__name__ for o in report.outcomes] == ["PortfolioFailure", "PortfolioResult"]
     assert (tmp_path / "run-test" / "run-test" / "orders" / "orders.parquet").exists()
@@ -84,7 +84,7 @@ def test_continue_skips_the_portfolios_that_depended_on_the_failure_and_names_it
 def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_path: Path, scheduler_address: str) -> None:
     holdings = (EXAMPLE_DATA / "holdings" / "P2.csv").read_text().replace("P2,B,10000,50", "P2,Z,10000,50")
     data_root = example_book(tmp_path, **{"holdings/P2.csv": holdings})
-    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, constraints=NO_CHAIN_CONSTRAINTS)
+    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioResult)
     assert isinstance(p2, PortfolioFailure)
@@ -104,7 +104,7 @@ def test_a_failed_build_is_treated_as_overlapping_everything_after_it(tmp_path: 
 def test_a_portfolio_whose_bundle_is_inconsistent_fails_at_slice(tmp_path: Path, scheduler_address: str) -> None:
     targets = (EXAMPLE_DATA / "targets.csv").read_text().replace("B1,C,", "B1,Z,")
     data_root = example_book(tmp_path, **{"targets.csv": targets})
-    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, constraints=NO_CHAIN_CONSTRAINTS)
+    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
     assert [outcome.stage for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)] == ["slice", "slice"]
     assert "target securities in neither holdings nor universe ['Z']" in report.outcomes[0].message  # ty: ignore[unresolved-attribute]  # both outcomes are failures, asserted above
 
@@ -146,7 +146,7 @@ def test_manifest_records_provenance_for_every_stage(tmp_path: Path, scheduler_a
     manifest = execute(tmp_path, scheduler_address=scheduler_address).manifest
     assert manifest.git_sha == GIT.sha
     assert manifest.config.sha256 == resolved_example_real(sink="orders_to_parquet").config_sha256
-    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "sector_bounds", "targets", "prices"}
+    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "sector_bounds", "constraints", "targets", "prices"}
     p1 = manifest.portfolios[0]
     assert [r.qualname for r in p1.rules] == ["portfolio_optimizer.rules:restrict_low_liquidity", "portfolio_optimizer.rules:add_zero_alpha", "portfolio_optimizer.rules:attach_universe_columns"]
     assert p1.solve is not None

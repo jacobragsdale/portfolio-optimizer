@@ -8,6 +8,7 @@ split, explains an infeasibility with arithmetic, and raises for everything else
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 
 from portfolio_optimizer.config.resolve import ResolvedConfig
 from portfolio_optimizer.config.steps import ResolvedStep
@@ -42,7 +43,7 @@ class SolverFailureError(RuntimeError):
     """The solve step raised, or returned a status the engine cannot act on."""
 
 
-def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig) -> Solution:
+def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig, constraints: pd.DataFrame) -> Solution:
     """Solve one portfolio with the configured step. Raises on infeasible, unbounded, or failure; never returns ``w0`` as a default."""
     spec_hash = spec.content_hash()
     step = resolved.solve
@@ -51,7 +52,7 @@ def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig) -> Sol
         return Solution(
             w=empty, buy=empty, sell=empty, objective=0.0, status=SolveStatus.OPTIMAL, solver=step.qualname, solver_version=_step_version(step), solve_time_s=0.0, iterations=0, spec_hash=spec_hash
         )
-    request = SolveRequest(spec=spec, chain=chain, profile=resolved.profile, terms=resolved.terms, constraints=resolved.constraints, solver=resolved.config.solver)
+    request = SolveRequest(spec=spec, chain=chain, profile=resolved.profile, terms=resolved.terms, constraints=constraints, solver=resolved.config.solver)
     result = step.invoke(request=request)
     if not isinstance(result, SolveResult):
         msg = f"solve step {step.qualname!r} returned {type(result).__name__}, expected SolveResult"
@@ -73,6 +74,7 @@ def _classify(result: SolveResult, spec: ProblemSpec, chain: ChainState, spec_ha
         # then re-checks the identity and, when the step minimized one, the objective against it.
         buy, sell = resolved.profile.split(result.w, spec.w0)
         return Solution(
+            constraints=result.constraints,
             w=result.w,
             buy=buy,
             sell=sell,

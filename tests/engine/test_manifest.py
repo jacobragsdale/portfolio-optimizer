@@ -24,7 +24,6 @@ def manifest(**overrides: object) -> RunManifest:
         "config": ConfigInfo(path="c.json", sha256="cfg", resolved={}),
         "settings": {},
         "terms": (),
-        "constraints": (),
         "datasets": (),
         "portfolios": (
             PortfolioRecord(portfolio_id="P1", status="solved", problem_spec_sha256="spec1", chain_inputs_sha256="chain1", orders=OrdersRecord(count=1, sha256="orders1", gross_notional="1")),

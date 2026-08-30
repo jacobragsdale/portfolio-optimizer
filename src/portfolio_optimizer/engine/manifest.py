@@ -126,6 +126,13 @@ class PortfolioRecord(StrictModel):
     solve_order: str | None = None
     predecessors: int | None = None
     rules: tuple[RuleAuditRecord, ...] = ()
+    constraints: tuple[StepRef, ...] = ()
+    """What the solve step made of this portfolio's constraint rows, after its rules.
+
+    Per portfolio, because constraints are loaded data and a rule may change them; the run-level block
+    that used to hold them could not say what any one account solved.
+    """
+
     problem_spec_sha256: str | None = None
     chain_inputs_sha256: str | None = None
     solve: SolveRecord | None = None
@@ -151,7 +158,6 @@ class RunManifest(StrictModel):
     config: ConfigInfo
     settings: dict[str, str]
     terms: tuple[StepRef, ...]
-    constraints: tuple[StepRef, ...]
     datasets: tuple[DatasetAudit, ...]
     assembly: tuple[AssemblyAuditRecord, ...] = ()
     portfolios: tuple[PortfolioRecord, ...]
@@ -184,6 +190,7 @@ def solved_record(result: PortfolioResult, violation_tol: float, *, solve_order:
         solve_order=solve_order,
         predecessors=len(result.chain_state.predecessors),
         rules=result.rule_audit,
+        constraints=solution.constraints,
         problem_spec_sha256=result.spec.content_hash(),
         chain_inputs_sha256=result.chain_state.content_hash(),
         solve=SolveRecord(

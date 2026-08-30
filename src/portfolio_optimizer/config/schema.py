@@ -41,7 +41,6 @@ _STEP_DEFINITIONS: Mapping[StepKind, tuple[str, str, ModuleType]] = {
     "rule": ("RuleStep", "A business-logic rule from `rules.py`: `(data: PortfolioData[, params]) -> PortfolioData`.", rules),
     "solve_order": ("SolveOrderStep", "A solve-order step from `solve_order.py`: `(data: PortfolioData[, params]) -> Decimal`; lower keys solve first, ties break on `portfolio_id`.", solve_order),
     "term": ("TermStep", "An objective term from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ObjectiveTerm`.", terms),
-    "constraint": ("ConstraintStep", "A constraint from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ConstraintSet`.", terms),
     "solve": ("SolveStep", "The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`; `cvxpy` is the default.", solvers),
     "sink": ("SinkStep", "An order sink from `sinks.py`: `(orders: DataFrame, io: IoContext[, params]) -> tuple[Artifact, ...]`.", sinks),
 }
@@ -52,10 +51,8 @@ def run_config_schema() -> JsonObject:
     base = RunConfig.model_json_schema()
     defs = _object(base["$defs"])
     del defs["StepSpec"]
-    constraint_model = _object(_object(defs.pop("ConstraintStep"))["properties"])
     for kind, (title, description, module) in _STEP_DEFINITIONS.items():
-        extra = {name: constraint_model[name] for name in ("kind", "label")} if kind == "constraint" else {}
-        defs[title] = _step_definition(title, description, shipped_steps(module, kind), defs, extra)
+        defs[title] = _step_definition(title, description, shipped_steps(module, kind), defs)
     for name, description in _ENUM_DESCRIPTIONS.items():
         defs[name] = {**_object(defs[name]), "description": description}
     properties = _object(base["properties"])
@@ -63,7 +60,6 @@ def run_config_schema() -> JsonObject:
     properties["assembly"] = _with_items(properties["assembly"], "AssemblyStep")
     properties["rules"] = _with_items(properties["rules"], "RuleStep")
     properties["solve_order"] = _with_nullable_ref(properties["solve_order"], "SolveOrderStep")
-    properties["constraints"] = _with_items(properties["constraints"], "ConstraintStep")
     properties["solve"] = _with_ref(properties["solve"], "SolveStep")
     properties["sink"] = _with_ref(properties["sink"], "SinkStep")
     properties["datasets"] = _datasets_schema(properties["datasets"])
