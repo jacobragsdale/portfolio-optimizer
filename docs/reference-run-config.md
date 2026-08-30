@@ -19,7 +19,7 @@ Ways to validate a config:
 | Method | What it checks |
 |---|---|
 | `"$schema": "./run-config.schema.json"` at the top of the file | Live validation and completion in editors that honor `$schema` (VS Code, JetBrains). The key is accepted and ignored by the engine. |
-| `uv run portfolio-optimizer validate-config CONFIG` | Everything: the models, plus importing every step, checking signatures, validating params (including custom steps), checking the solver, and constructing every term and constraint once under the run's side profile. Prints how dependencies between portfolios will be derived, then one line per resolved step. The same resolution runs at the start of `run` and on every worker. |
+| `uv run portfolio-optimizer validate-config CONFIG` | Everything the config can be checked for without data: the models, plus importing every step, checking signatures, validating params (including custom steps), checking the solver, and constructing every term once under the run's side profile. Constraints are loaded data, so they are not checked here. Prints how dependencies between portfolios will be derived, then one line per resolved step. The same resolution runs at the start of `run` and on every worker. |
 | Any draft 2020-12 validator (`check-jsonschema`, `jsonschema`, `ajv`) against the schema file | The schema alone — suitable for CI pipelines that do not install the engine. |
 
 The schema cannot express one rule the models enforce: `as_of_date` must carry a time zone.
@@ -31,14 +31,13 @@ The schema cannot express one rule the models enforce: `as_of_date` must carry a
 |---|---|---|---|
 | `run` | object | yes | Run identity: `name` (non-empty), `as_of_date` (timezone-aware ISO-8601 timestamp), `tags` (string map, default `{}`). |
 | `portfolios` | step or input | yes | Loader returning the `portfolios` frame (`portfolio_id`, optional `solve_order`); a bare step, or `{"loader": step[, "rate_limit": ...]}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, values may repeat. |
-| `datasets` | object | yes | Named inputs, each `{"loader": step[, "scope": ..., "batch_size": n, "rate_limit": name or bound]}`. `constraints` is always required; `holdings`, `universe`, `details`, and `targets` are required unless `assembly` is non-empty, in which case they may be produced by a step and are checked after assembly. Any other name is an extra dataset: visible to every assembly step, and carried into each portfolio's bundle as `data.extras` unless dropped. All dataset loaders run concurrently. |
+| `datasets` | object | yes | Named inputs, each `{"loader": step[, "scope": ..., "batch_size": n, "rate_limit": name or bound]}`. `holdings`, `universe`, `details`, and `targets` are required unless `assembly` is non-empty, in which case they may be produced by a step and are checked after assembly. `sector_bounds` and `constraints` are engine-known but optional. Any other name is an extra dataset: visible to every assembly step, and carried into each portfolio's bundle as `data.extras` unless dropped. All dataset loaders run concurrently. |
 | `rate_limits` | object | no | Named pools that inputs on the same backend share; see below. Default `{}`. |
 | `assembly` | step list | no | Assembly steps, run in order over every loaded dataset before schema validation. Default `[]`. See below. |
 | `rules` | step list | no | Business-logic rules, run in order on each portfolio's bundle; they never see other portfolios. Default `[]`. |
 | `solve_order` | step | no | A solve-order step evaluated on each ruled bundle; its `Decimal` key replaces the `solve_order` column. Lower solves first. |
-| `sides` | `both` \| `buy` \| `sell` | no | Which side the run trades; default `both`. `both`: `w`, `buy`, `sell` all variables, `w = w0 + buy − sell`, coupling through buys. `buy`: `w` alone with `w ≥ w0`, `buy = w − w0`, no `sell`; coupling through buys. `sell`: `w` alone with `w ≤ w0`, `sell = w0 − w`, no `buy`; coupling through sells. A term or constraint reading a side the run lacks is refused at `validate-config`. See [how to run one side](how-to-run-one-side.md). |
+| `sides` | `both` \| `buy` \| `sell` | no | Which side the run trades; default `both`. `both`: `w`, `buy`, `sell` all variables, `w = w0 + buy − sell`, coupling through buys. `buy`: `w` alone with `w ≥ w0`, `buy = w − w0`, no `sell`; coupling through buys. `sell`: `w` alone with `w ≤ w0`, `sell = w0 − w`, no `buy`; coupling through sells. A term reading a side the run lacks is refused at `validate-config`; a constraint that does fails its portfolio at `solve`. See [how to run one side](how-to-run-one-side.md). |
 | `objective` | object | yes | `sense` (only `minimize`), `terms` (step list, at least one). |
-| `constraints` | constraint list | no | Constraints. Default `[]`. Each is a step (bare name or `{"name", "params"}`) with two optional keys: `kind` (`function`, the only kind today) and `label` (unique among the run's constraints; defaults to the bare name; the verifier's report and the manifest key on it). The trade identity is not a constraint; `sides` supplies it, and `trade_balance` is refused by name. |
 | `solve` | step | no | The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`. Default `cvxpy`. A qualified name plugs in a firm's library or a pure function; see [how to replace the cvxpy solve](how-to-write-a-solve-step.md). |
 | `solver` | object | no | `name` (default `CLARABEL`; one of `CLARABEL`, `OSQP`, `SCS`, `HIGHS`, `PIQP`, and installed — checked when the config resolves, on the client and on every worker), `options` (map of solver options passed verbatim to `Problem.solve`, default `{}`), `time_limit_s` (number > 0 or absent; mapped to `time_limit` for `CLARABEL`, `OSQP`, and `HIGHS` and to `time_limit_secs` for `SCS`; `PIQP` rejects it at resolve), `verbose` (default `false`). |
 | `post_solve` | object | no | `violation_tol` (default `1e-6`; the one tolerance every residual is held to, identity checks and constraints alike), `objective_rel_tol` (`1e-5`), `objective_abs_tol` (`1e-9`); all > 0. |
@@ -61,7 +60,6 @@ against the function's `params` annotation; a function without a `params` argume
 | Kind | Signature |
 |---|---|
 | portfolios, dataset loader | `(request: LoadRequest[, params]) -> pd.DataFrame`, plain or `async def` |
-| constraints loader | `(request: LoadRequest[, params]) -> dict[str, dict[str, object]]`, plain or `async def` |
 | assembly step | `(frames: Frames[, params]) -> Frames` |
 | rule | `(data: PortfolioData[, params]) -> PortfolioData` |
 | solve-order step | `(data: PortfolioData[, params]) -> Decimal` — finite; lower solves first |
@@ -169,11 +167,11 @@ Unmatched rows of a Decimal (`object`) column are `None`.
 | Key | Type | Required | Description |
 |---|---|---|---|
 | `on_error` | `fail_fast` \| `continue` | no | Default `fail_fast`: every lower-priority portfolio is recorded `skipped` after the first failure. `continue`: only the portfolios that depended on the failure are skipped, naming it. |
-| `dependencies` | `overlap` \| `all` | no | Default `overlap`: a portfolio waits for every higher-priority portfolio whose tradable set — the securities it can trade on the side the run couples through: buyable (`ub > w0`) under `both` and `buy`, sellable (held, `lb < w0`) under `sell` — overlaps its own. `all`: every higher-priority portfolio is a predecessor — the same answer, one line, for diagnosis. |
+| `dependencies` | `overlap` \| `all` \| `none` | no | Default `overlap`: a portfolio waits for every higher-priority portfolio whose tradable set — the securities it can trade on the side the run couples through: buyable (`ub > w0`) under `both` and `buy`, sellable (held, `lb < w0`) under `sell` — overlaps its own. `all`: every higher-priority portfolio is a predecessor — the same answer, one line, for diagnosis. `none`: nothing waits and the whole book solves at once, which is right when no constraint reads what others traded. Declared, not inferred: constraints are loaded data the engine does not interpret, so it cannot tell whether yours read the chain. |
 
 There is no execution mode. Every portfolio builds in a worker at once; solves are submitted with their
 predecessors' contributions as dependencies and run where the build lives; outcomes are classified in
-solve order. With no chain-aware term or constraint, no portfolio waits for another. The workers are the
+solve order. Under `dependencies: none`, no portfolio waits for another. The workers are the
 Dask cluster the run provisions for itself — local worker processes on a laptop, pods on Kubernetes, or
 a scheduler someone else runs — sized by the settings below; they are recorded in the manifest's
 `settings` block and never affect the config hash.
@@ -194,6 +192,31 @@ Solve-order steps: `furthest_from_target_first`. Terms: `tracking_error`, `alpha
 `long_only`, `max_weight`, `cash_bounds`, `sector_bounds` (`tolerance`), `turnover_cap`,
 `cumulative_adv_participation` (`chain`: `trade ≤ adv_capacity` and `coupled ≤ adv_capacity − predecessors' trades on the side the run couples through`).
 Solve steps: `cvxpy` (default), `pro_rata_fill`. Sinks: `orders_to_parquet`, `orders_to_csv` (`subdir`, default `orders`).
+
+## Constraints (the `constraints` dataset)
+
+Which constraints bind an account is data, not config: there is no `constraints` key in a run config.
+The dataset is per portfolio, like `holdings`, and optional — a run whose solve step needs none
+declares no such dataset.
+
+The engine validates one column and carries the rest untouched:
+
+| Column | Type | Description |
+|---|---|---|
+| `portfolio_id` | string | The account the row applies to. The only column the engine reads. |
+
+Every other column is the desk's own and reaches the solve step, which is the only thing that
+interprets them. The shipped `cvxpy` step reads this convention:
+
+| Column | Type | Description |
+|---|---|---|
+| `name` | string | A step in `terms.py` or a qualified `package.module:function`. |
+| `label` | string, optional | Unique among the portfolio's rows; the verifier's report and the manifest key on it. Defaults to the bare name. |
+| `params` | string, optional | A JSON object validated against the function's own `Params` model. Money and weights are strings inside it, as in a config. |
+
+A row naming `trade_balance` is refused: the trade identity comes from `sides`. Nothing about a row is
+checked until the solve step uses it, so a bad row fails that portfolio at stage `solve` and the rest
+of the book runs.
 
 ## Style limits (columns of `details`, and the `sector_bounds` dataset)
 

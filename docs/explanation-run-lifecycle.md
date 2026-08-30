@@ -85,7 +85,7 @@ book whose global stage is the long pole they cost nothing.
 Failure is split along the same line. A **structural** problem rejects the whole run — a required
 dataset missing, a schema violated, a global loader that raised, a per-portfolio dataset no batch of
 which came back. A **coverage** problem fails only the portfolios it touches — one batch that raised,
-a portfolio with no `details` row or no `constraints` entry — recorded as a failure at stage `load` so
+a portfolio with no `details` row — recorded as a failure at stage `load` so
 that every other portfolio still solves. A portfolio rejected here never entered the run, so it traded
 nothing and couples to nobody: it appears in the manifest as failed and blocks no one in the schedule.
 Otherwise every outcome is collected — one failing dataset does not cancel the others — and all

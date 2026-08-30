@@ -35,7 +35,7 @@ def holdings_from_sql(request: LoadRequest, params: SqlParams) -> pd.DataFrame:
   order, `as_of_date`, `data_root`, `run_id`, and `rate_limiter` (see below).
 - Return `pd.DataFrame` with every dtype declared. `coerce_frame` casts to the dataset's schema and turns
   money written as strings, ints, or floats into `Decimal` — do this at the read boundary, not later.
-- The `constraints` loader returns `dict[str, dict[str, object]]` keyed by portfolio id; money inside may
+- Every dataset loader returns a DataFrame, `constraints` included; money inside a frame may
   be strings (`"0.05"`), which the engine validates into `Decimal`.
 
 Pass the database client in as a parameter of your gateway object rather than reaching for a global,

@@ -24,7 +24,7 @@ version. Read it when you have a config in front of you and want it to make sens
 | [`solve_order`](#solve_order) | A step that computes each portfolio's priority from its data | Per portfolio, after its rules |
 | [`sides`](#sides) | Which side the run trades, and so what a trade means | At resolve, then at every build, solve, and verification |
 | [`objective`](#objective) | The terms whose sum is minimized | Constructed once at resolve, then at every solve and verification |
-| [`constraints`](#constraints) | Which constraints apply; their limits come from the data | Constructed once at resolve, then at every solve and verification |
+| [constraints](#constraints-are-not-a-config-block-at-all) | *Not a config block* — a loaded per-portfolio dataset the solve step interprets | Sliced per portfolio, adjusted by rules, read at every solve |
 | [`solve`](#solve) | The step that turns a built problem into weights | At every solve |
 | [`solver`](#solver) | Which cvxpy solver, with what options and time limit | Checked at resolve, used at every solve |
 | [`post_solve`](#post_solve) | How tightly the cvxpy-free verifier holds each solution | After every solve |
@@ -38,13 +38,14 @@ The engine reads the config twice, and the split explains most of what follows.
 The **first pass** happens before any data is touched. `config/models.py` parses the JSON strictly —
 an unknown key anywhere is an error, money and weights must be strings so they become exact
 `Decimal`, and `as_of_date` must carry a time zone. Then `config/resolve.py` takes every *step* in the
-document (the loaders, the assembly steps, the rules, the solve-order step, the terms, the constraints,
-the solve step, and the sink), imports the function it names, checks that its signature matches the
+document (the loaders, the assembly steps, the rules, the solve-order step, the terms, the solve step,
+and the sink), imports the function it names, checks that its signature matches the
 contract for its kind, and validates its `params` against the function's own `Params` model. It checks
 the `solver` block too — the solver is known to the adapter, installed in this process, and able to
-honor `time_limit_s` — and, once every step has resolved, it constructs every term and constraint once
+honor `time_limit_s` — and, once every step has resolved, it constructs every term once
 against a one-security dummy spec under the run's side profile, so a term that raises or reads a side
-the run lacks is refused here rather than on a worker. Every failure across the whole document is
+the run lacks is refused here rather than on a worker. Constraints are not checked in this pass at all:
+they are loaded data, and only the solve step knows what to make of them. Every failure across the whole document is
 collected and reported together. `portfolio-optimizer validate-config` runs exactly this pass and
 stops; `run` runs it before asking for a cluster, and every worker runs it before it does any work, so
 all three apply identical checks.
@@ -377,47 +378,70 @@ when losses could be harvested but nothing charges for trading (no `transaction_
 positive `cost_bps` and no `tcost_bps` column), because that combination lets the solver sell and
 rebuy a name for free.
 
-## `constraints`
+## Constraints are not a config block at all
+
+There is no `constraints` key. Which constraints bind an account is *data*, loaded per portfolio like
+`holdings`, and the engine never interprets it:
 
 ```json
-"constraints": ["long_only", "max_weight", "cash_bounds", "turnover_cap",
-                "sector_bounds", "cumulative_adv_participation"]
+"constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}}
 ```
 
-This list says *which* constraints apply; *how tight* they are comes from the data. `max_weight`,
-`cash_bounds`, and `turnover_cap` read their limits from the account's `details` row (`max_weight`,
-`cash_lb`/`cash_ub`, `max_turnover`), `cumulative_adv_participation` from its `max_adv_participation`,
-and `sector_bounds` from the `sector_bounds` dataset — all tightened where the universe carries
-per-security `min_weight`/`max_weight` columns or a restricted flag. That split is the reason the
-config almost never changes between daily runs while the numbers inside the data do: the config is
-wiring, the data is policy. Note that a constraint and the column it reads often share a name but are
-not the same thing: `cash_bounds` is a function this list turns on, `cash_lb`/`cash_ub` are the numbers
-it reads.
+```csv
+portfolio_id,name,label,params
+P1,long_only,,
+P1,cumulative_adv_participation,,
+P2,long_only,,
+```
 
-The trade identity is not on this list, and cannot be. What `buy` and `sell` *mean* — for a two-sided
+The engine reads exactly one column, `portfolio_id`, because that is all it needs to give each
+portfolio its own rows. Every other column is yours. That is the point: a desk with its own constraint
+vocabulary writes its own columns and replaces one function — the solve step — without the engine
+changing, and a book where every account has different constraints needs one config rather than one
+per combination.
+
+**The solve step interprets them.** `request.constraints` is the portfolio's rows exactly as the loader
+returned them and the rules left them. The shipped `cvxpy` step reads the convention above — `name`
+naming a step in `terms.py` or an importable module, an optional `label`, optional `params` as JSON
+text — builds a `ConstraintSet` from each, and reports back on `SolveResult.constraints` what it
+applied. The dataset is optional: a run whose solve step needs no constraints, or that is a pure
+function rather than an optimizer, declares none and every portfolio gets an empty frame.
+
+*How tight* a constraint is still comes from elsewhere in the data. `max_weight`, `cash_bounds`, and
+`turnover_cap` read their limits from the account's `details` row (`max_weight`, `cash_lb`/`cash_ub`,
+`max_turnover`), `cumulative_adv_participation` from its `max_adv_participation`, and `sector_bounds`
+from the `sector_bounds` dataset — all tightened where the universe carries per-security
+`min_weight`/`max_weight` columns or a restricted flag. A constraint and the column it reads often
+share a name without being the same thing: `cash_bounds` is the function a row turns on,
+`cash_lb`/`cash_ub` are the numbers it reads.
+
+**Rules may change them**, and that is ordinary rule work rather than a special power: the frame is on
+the bundle, so a rule that tightens a cap because of what the holdings say returns
+`data.with_changes(constraints=...)` like any other change, and the result is re-validated. The set a
+portfolio actually solved is therefore recorded per portfolio in the manifest, after its rules.
+
+The trade identity is not a constraint and cannot be. What `buy` and `sell` *mean* — for a two-sided
 run, `w − w0 = buy − sell`, both non-negative, `sell ≤ w0`; for a one-sided run, `w ≥ w0` or `w ≤ w0`
 with the trade an expression of `w` — is what every cost term, the turnover cap, the ADV constraint,
-and the verifier's identity checks rely on, so it comes from `sides` and is added to every solve; a
-config that still names `trade_balance` is refused at resolve with a message saying so.
+and the verifier's identity checks rely on, so it comes from `sides` and is added to every solve; a row
+naming `trade_balance` is refused.
 
-Each constraint may carry a `label`, unique among the run's constraints and defaulting to the bare
-name; the verifier's report and the manifest key on it, which is what tells two instances of one
-function apart. A `kind` key names what sort of constraint it is — `function`, a step, is the only
-kind today; it is the seam on which constraint models that are not functions will be added.
-
-Most constraints take no parameters, and the JSON Schema enforces that: `{"name": "long_only",
-"params": {"x": 1}}` is rejected by your editor. `sector_bounds` is the exception with a `tolerance`
-that loosens every sector band symmetrically; with an empty `sector_bounds` map in the style, it
-contributes nothing. `cumulative_adv_participation` declares `chain: ChainState` — it needs to know how
-much of each name's ADV budget higher-priority portfolios have already *traded* on the side the run
-couples through — which makes it chain-aware, and its presence is the only reason any portfolio waits
-for another. It writes two rows: `trade ≤ adv_capacity` for the portfolio's own participation, and
-`coupled ≤ remaining` where predecessors' trades on the coupled side have consumed part of the budget.
-The other side, where the run has one, is the portfolio's own business.
+`cumulative_adv_participation` is the one shipped constraint that declares `chain: ChainState` — it
+needs to know how much of each name's ADV budget higher-priority portfolios have already *traded* on
+the side the run couples through. It writes two rows: `trade ≤ adv_capacity` for the portfolio's own
+participation, and `coupled ≤ remaining` where predecessors' trades have consumed part of the budget.
+Because the engine cannot read your constraints, it cannot tell whether any of them do this, so whether
+portfolios wait for each other is **declared** in [`execution.dependencies`](#execution) rather than
+inferred.
 
 Every shipped constraint has a numpy twin in the verifier, looked up by qualified name, so the
-post-solve check is a genuine second opinion for each one you list. A custom constraint without a twin
-is accepted and reported as `unverified` in the manifest rather than refused.
+post-solve check is a genuine second opinion for each one. A constraint the verifier does not
+recognize — anything under a desk's own syntax — is reported as `unverified` in the manifest rather
+than silently passed; the identity and solution checks still run for every portfolio.
+
+Nothing about a constraint row is checked until the solve step uses it. That is the deliberate trade
+for letting the shape be yours: a bad row fails its own portfolio at stage `solve`, with the row's
+index in the message, and the rest of the book runs.
 
 ## `solve`
 
@@ -427,7 +451,7 @@ is accepted and reported as `unverified` in the manifest rather than refused.
 
 Which step decides the weights. The engine builds each portfolio's problem as data, folds the chain,
 and hands one function everything it may use — the spec, the chain, the side profile, the resolved
-terms and constraints, the `solver` block — and takes back weights. `cvxpy`, the default, is the
+terms, the portfolio's constraint rows, the `solver` block — and takes back weights. `cvxpy`, the default, is the
 optimizer: it builds the cvxpy problem from the terms and constraints and solves it. `pro_rata_fill`
 is the other shipped step and is not an optimizer at all — a numpy function that spends the cash on
 the underweights — which is the point of the key: what a desk does on one side is sometimes not an

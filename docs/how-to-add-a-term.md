@@ -61,17 +61,29 @@ enough. If the model needs a harvest reward, price the round trip explicitly wit
 term the verifier can mirror. A one-sided run has no such rule to keep: with one vector there is no
 round trip to reward.
 
-## 2. Name it in the config
+## 2. Name a term in the config, a constraint in the data
+
+A term is config — the engine minimizes the sum of the objective's terms:
 
 ```json
-"objective": {"terms": ["tracking_error", {"name": "signal_tilt", "params": {"weight": "0.5", "column": "momentum"}}]},
-"constraints": ["long_only", "max_weight", "cash_bounds", {"name": "max_names_traded", "params": {"limit": "0.02"}}]
+"objective": {"terms": ["tracking_error", {"name": "signal_tilt", "params": {"weight": "0.5", "column": "momentum"}}]}
 ```
 
-The engine minimizes the sum of the terms. What `buy` and `sell` mean is not a constraint you list: the
-run's `sides` supplies the trade identity to every solve. To use one constraint function twice with
-different params, give each instance a `label` — `{"name": "group_cap", "label": "country_caps", "params":
-{...}}` — since the verifier's report and the manifest key on it, and labels must be unique.
+A **constraint is data**, one row per portfolio in the `constraints` dataset, under the convention the
+shipped `cvxpy` solve step reads:
+
+```csv
+portfolio_id,name,label,params
+P1,long_only,,
+P1,max_weight,,
+P1,max_names_traded,,"{""limit"": ""0.02""}"
+```
+
+So a constraint that applies to one account is one row, not a config edit — which is the point of
+loading them. What `buy` and `sell` mean is not a constraint you write: the run's `sides` supplies the
+trade identity to every solve, and a row naming `trade_balance` is refused. To use one constraint
+function twice for a portfolio with different params, give each row a `label`, since the verifier's
+report and the manifest key on it and labels must be unique within a portfolio.
 
 ## 3. Give the verifier a twin, or accept "unverified"
 

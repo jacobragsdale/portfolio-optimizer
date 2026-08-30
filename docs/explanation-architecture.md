@@ -10,7 +10,7 @@ Quant developers who clone this repository want to write Python, not learn a plu
 mechanism for extending the engine is: write an ordinary function — in a designated module of this repository or in any installed
 package — and name it in JSON. The engine's resolver (`config/resolve.py`) does the work a framework would normally push onto the
 author — it imports the function, checks its signature against the contract for its kind (nine kinds:
-loader, constraints loader, assembly step, rule, solve-order step, term, constraint, solve step, sink),
+loader, assembly step, rule, solve-order step, term, constraint, solve step, sink),
 validates the JSON parameters against the function's own `Params` model, and detects the optional
 `chain` argument by name — and it does all of this before any data is loaded. It then checks the
 solver and constructs every term and constraint once, against a one-security dummy spec, under the

@@ -18,8 +18,8 @@ rounding, the manifest — is unchanged, and the verifier is what makes the step
 A solve step takes a `SolveRequest` and returns a `SolveResult`. Everything it may use is on the
 request: the `ProblemSpec` (every input the solver would see, as numpy arrays aligned to
 `spec.security_ids`), the `ChainState` (what higher-priority portfolios traded on the side the run
-couples through, masked to what this one can trade there), the side profile, the resolved terms and
-constraints, and the `solver` block.
+couples through, masked to what this one can trade there), the side profile, the resolved terms, this
+portfolio's constraint rows, and the `solver` block.
 
 ```python
 import numpy as np
@@ -69,21 +69,32 @@ Every field but `w` has a default, so a pure function sets `w` and nothing else 
 | `solver_version` | `str \| None` | `None` | Its version; the engine records the step's package version when unset. |
 | `detail` | `str` | `""` | Free text: the solver's own status, or what a function did (`pro_rata_fill` reports what it invested). Quoted in the failure message when the status is not optimal. |
 
-### If your library builds the cvxpy problem itself
+### Constraints are yours to interpret
 
-Give it the constraints as data and the terms as callables:
+`request.constraints` is a **DataFrame**: this portfolio's constraint rows exactly as its loader
+returned them and its rules left them. The engine reads one column, `portfolio_id`, and nothing else —
+so whatever vocabulary your desk writes its constraints in arrives intact, and interpreting it is the
+solve step's job. It is empty when the run declares no `constraints` dataset, which is the shape to
+handle if your step needs none.
 
 ```python
 def with_our_library(request: SolveRequest) -> SolveResult:
-    limits = [constraint.spec.model_dump() for constraint in request.constraints]  # {"kind": ..., "name": ..., "params": ..., "label": ...}
+    limits = our_library.parse(request.constraints)  # your columns, your syntax
     weights, value = our_library.solve(request.spec, limits, solver=request.solver.name, options=request.solver.options)
-    return SolveResult(w=weights, objective=value, solver=request.solver.name)
+    return SolveResult(w=weights, objective=value, solver=request.solver.name, constraints=our_library.applied(limits))
 ```
 
-`request.constraints` are `ResolvedConstraint`s: each has a `label`, its `spec` (the configured model),
-and its resolved `step` for the function kind. What your library does with them is its business; the
-engine's verifier still re-checks every shipped constraint against the weights you return. Set
-`solver` and `solver_version` on the result when your library can say what solved the problem;
+Report what you applied on `SolveResult.constraints`, a tuple of `StepRef` (`qualname`, JSON-safe
+`params`, `label`). The verifier re-checks every ref it has a numpy twin for — every shipped
+constraint has one — and reports the rest as `unverified` in the manifest rather than passing them
+silently; the identity and solution checks run either way. Leave it empty and none of your constraints
+are independently checked, which is honest but worth choosing deliberately.
+
+The shipped `solvers.cvxpy` is the worked example: `interpret_constraints` reads the template's
+`name`/`label`/`params` convention and resolves each row to a function in `terms.py`. Replacing that
+one function is how a desk brings its own syntax without touching the engine.
+
+Set `solver` and `solver_version` on the result when your library can say what solved the problem;
 otherwise the engine records the step's qualified name and its package version.
 
 ## 2. Name it in the config
