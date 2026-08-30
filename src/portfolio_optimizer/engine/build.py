@@ -75,8 +75,6 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
     shares_held = [positions[security].quantity if security in positions else 0 for security in ids]
     lot_size = [int(value) for value in universe["lot_size"]]
     w0 = [Decimal(shares) * px / nav for shares, px in zip(shares_held, price, strict=True)]
-    targets = {str(security): _decimal(weight) for security, weight in zip(data.targets["security_id"], data.targets["weight"], strict=True)}
-    w_target = [targets.get(security, Decimal(0)) for security in ids]
     tax = [_tax_per_dollar(data, positions.get(security), px) for security, px in zip(ids, price, strict=True)]
     tcost = [_decimal(value) / BPS for value in universe["tcost_bps"]] if "tcost_bps" in universe.columns else [Decimal(0)] * n
     lb, ub = _bounds(data, universe, ids, w0)
@@ -97,7 +95,6 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
         price=to_float64(price, "price"),
         shares_held=to_float64(shares_held, "shares_held"),
         lot_size=to_float64(lot_size, "lot_size"),
-        w_target=to_float64(w_target, "w_target"),
         tax_per_dollar=to_float64(tax, "tax_per_dollar"),
         tcost_per_dollar=to_float64(tcost, "tcost_per_dollar"),
         lb=to_float64(lb, "lb"),

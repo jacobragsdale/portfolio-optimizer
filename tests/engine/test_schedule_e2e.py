@@ -20,14 +20,16 @@ from tests.engine.support import execute
 
 SECURITIES = ("A", "B", "C", "D", "E")
 PRICES = {"A": 100, "B": 50, "C": 10, "D": 20, "E": 40}
+ALPHAS = {"A": "0.01", "B": "0.02", "C": "0.03", "D": "0.04", "E": "0.05"}
+"""Distinct, so every portfolio wants to move toward its best buyable name and the schedule has contention to resolve."""
 
 
 def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
-    """Write a random book: per-account holdings and details, per-portfolio buy lists, tying priorities; universe and targets shared."""
+    """Write a random book: per-account holdings and details, per-portfolio buy lists, tying priorities; one shared universe."""
     root.mkdir()
     portfolio_ids = [f"P{index}" for index in range(1, portfolios + 1)]
     holdings_header = "portfolio_id,security_id,quantity,avg_cost,acquired_on"
-    details_header = "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id,max_weight,max_turnover,max_adv_participation,min_trade_notional,cash_lb,cash_ub"
+    details_header = "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,max_weight,max_turnover,max_adv_participation,min_trade_notional,cash_lb,cash_ub"
     style = "1,2,0.25,0,0,0"  # the example's limits, which bind nothing here: the schedule is what this test is about
     (root / "holdings").mkdir()
     (root / "details").mkdir()
@@ -40,12 +42,12 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
             rows.append(f"{portfolio_id},{security},{quantity},{PRICES[security]},2024-01-15T00:00:00Z")
             nav += quantity * PRICES[security]
         (root / "holdings" / f"{portfolio_id}.csv").write_text("\n".join(rows) + "\n")
-        (root / "details" / f"{portfolio_id}.csv").write_text(f"{details_header}\n{portfolio_id},{portfolio_id} book,NY,0.40,0.20,0,{nav},B1,{style}\n")
+        (root / "details" / f"{portfolio_id}.csv").write_text(f"{details_header}\n{portfolio_id},{portfolio_id} book,NY,0.40,0.20,0,{nav},{style}\n")
         buy_list.extend(f"{portfolio_id},{security}" for security in sorted(rng.sample(SECURITIES, k=rng.randint(1, 3))))
     (root / "portfolios.csv").write_text("\n".join(["portfolio_id,solve_order", *(f"{portfolio_id},{rng.randint(0, 1)}" for portfolio_id in portfolio_ids)]) + "\n")
     (root / "buy_list.csv").write_text("\n".join(buy_list) + "\n")
-    (root / "universe.csv").write_text("\n".join(["security_id,price,sector,adv_shares,lot_size,restricted", *(f"{security},{PRICES[security]},TECH,20000,1,false" for security in SECURITIES)]) + "\n")
-    (root / "targets.csv").write_text("\n".join(["benchmark_id,security_id,weight", *(f"B1,{security},0.2" for security in SECURITIES)]) + "\n")
+    universe_rows = (f"{security},{PRICES[security]},TECH,20000,1,false,{ALPHAS[security]}" for security in SECURITIES)
+    (root / "universe.csv").write_text("\n".join(["security_id,price,sector,adv_shares,lot_size,restricted,alpha", *universe_rows]) + "\n")
     (root / "sector_bounds.csv").write_text("portfolio_id,sector,lower,upper\n")  # one sector and no rows: nothing is bounded
     constraints = ["portfolio_id,name,label,params"]
     constraints.extend(f"{portfolio_id},{name}," for portfolio_id in portfolio_ids for name in SHIPPED_CONSTRAINTS)

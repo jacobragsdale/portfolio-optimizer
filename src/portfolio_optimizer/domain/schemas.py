@@ -13,15 +13,6 @@ from portfolio_optimizer.domain.frames import ColumnSpec, FrameCheck, FrameSchem
 ZERO = Decimal(0)
 ONE = Decimal(1)
 TWO = Decimal(2)
-TARGET_WEIGHT_SUM_TOLERANCE = Decimal("1e-8")
-
-
-def _targets_sum_to_one(frame: pd.DataFrame) -> str | None:
-    sums = frame.groupby("benchmark_id", sort=True)["weight"].agg(lambda weights: sum(weights, ZERO))
-    off = {str(benchmark): total for benchmark, total in sums.items() if abs(total - ONE) > TARGET_WEIGHT_SUM_TOLERANCE}
-    if off:
-        return f"weights do not sum to 1 for benchmark(s) {off}"
-    return None
 
 
 def _cash_bounds_ordered(frame: pd.DataFrame) -> str | None:
@@ -62,7 +53,6 @@ DETAILS = FrameSchema(
         ColumnSpec("lt_tax_rate", "decimal", ge=ZERO, lt=ONE),
         ColumnSpec("cash", "decimal", ge=ZERO),
         ColumnSpec("nav", "decimal", gt=ZERO),
-        ColumnSpec("benchmark_id", "string"),
         # The account's management-style limits. Every constraint reads its bounds from here or from
         # `sector_bounds`, so what a run permits is data that changes daily, not config.
         ColumnSpec("max_weight", "decimal", gt=ZERO, le=ONE),
@@ -115,13 +105,6 @@ UNIVERSE = FrameSchema(
     allow_extra=True,  # analytics columns joined or computed per security; build exports every numeric extra by name
 )
 
-TARGETS = FrameSchema(
-    name="targets",
-    columns=(ColumnSpec("benchmark_id", "string"), ColumnSpec("security_id", "string"), ColumnSpec("weight", "decimal", ge=ZERO, le=ONE)),
-    key=("benchmark_id", "security_id"),
-    checks=(FrameCheck("weights_sum_to_one", _targets_sum_to_one),),
-)
-
 ORDER_SIDES = frozenset({"BUY", "SELL"})
 
 ORDERS = FrameSchema(
@@ -155,10 +138,10 @@ Optional: a run whose solve step needs no constraints declares no such dataset, 
 gets the empty frame.
 """
 
-DATASET_SCHEMAS: dict[str, FrameSchema] = {"holdings": HOLDINGS, "universe": UNIVERSE, "details": DETAILS, "targets": TARGETS, "sector_bounds": SECTOR_BOUNDS, "constraints": CONSTRAINTS}
+DATASET_SCHEMAS: dict[str, FrameSchema] = {"holdings": HOLDINGS, "universe": UNIVERSE, "details": DETAILS, "sector_bounds": SECTOR_BOUNDS, "constraints": CONSTRAINTS}
 """Engine-known frames and the schema each must satisfy after assembly. Any other dataset name is an extra."""
 
-REQUIRED_DATASETS: tuple[str, ...] = ("holdings", "universe", "details", "targets")
+REQUIRED_DATASETS: tuple[str, ...] = ("holdings", "universe", "details")
 """Datasets a run cannot do without, loaded directly or produced by an assembly step. ``sector_bounds`` and ``constraints`` are engine-known but optional."""
 
 REQUIRED_FRAMES: tuple[str, ...] = REQUIRED_DATASETS

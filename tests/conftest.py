@@ -24,7 +24,7 @@ from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails
 from portfolio_optimizer.domain.frames import FrameSchema
 from portfolio_optimizer.domain.results import F64, ProblemSpec, Solution, SolveStatus, StepRef
-from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, SECTOR_BOUNDS, TARGETS, UNIVERSE
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, SECTOR_BOUNDS, UNIVERSE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
@@ -58,7 +58,6 @@ _DEFAULTS: dict[str, Row] = {
         "lt_tax_rate": Decimal("0.20"),
         "cash": Decimal(0),
         "nav": Decimal(1000000),
-        "benchmark_id": "B1",
         "max_weight": Decimal(1),
         "max_turnover": Decimal(2),
         "max_adv_participation": Decimal(1),
@@ -69,8 +68,7 @@ _DEFAULTS: dict[str, Row] = {
     SECTOR_BOUNDS.name: {"portfolio_id": "P1", "sector": "TECH", "lower": Decimal(0), "upper": Decimal(1)},
     CONSTRAINTS.name: {"portfolio_id": "P1", "name": "long_only", "label": None, "params": None},
     HOLDINGS.name: {"portfolio_id": "P1", "security_id": "A", "quantity": 5000, "avg_cost": Decimal(90), "acquired_on": ACQUIRED},
-    UNIVERSE.name: {"security_id": "A", "price": Decimal(100), "sector": "TECH", "adv_shares": 1_000_000, "lot_size": 1, "restricted": False},
-    TARGETS.name: {"benchmark_id": "B1", "security_id": "A", "weight": Decimal(1)},
+    UNIVERSE.name: {"security_id": "A", "price": Decimal(100), "sector": "TECH", "adv_shares": 1_000_000, "lot_size": 1, "restricted": False, "alpha": 0.0},
     ORDERS.name: {
         "portfolio_id": "P1",
         "security_id": "A",
@@ -116,10 +114,6 @@ class Frames:
         """Build a ``universe`` frame."""
         return build(UNIVERSE, *rows)
 
-    def targets(self, *rows: Row) -> pd.DataFrame:
-        """Build a ``targets`` frame."""
-        return build(TARGETS, *rows)
-
     def sector_bounds(self, *rows: Row) -> pd.DataFrame:
         """Build a ``sector_bounds`` frame; with no rows, the empty frame that bounds no sector."""
         return build(SECTOR_BOUNDS, *rows) if rows else empty_frame(SECTOR_BOUNDS)
@@ -133,17 +127,12 @@ class Frames:
         return build(ORDERS, *rows)
 
     def three_security_universe(self) -> pd.DataFrame:
-        """Securities A, B, C at 100, 50, 10 in one sector; C has limited ADV."""
+        """The example's securities: A, B, C at 100, 50, 10 in one sector, C thin and dear to trade but worth the most."""
         return self.universe(
-            {"security_id": "A", "price": Decimal(100), "adv_shares": 1_000_000},
-            {"security_id": "B", "price": Decimal(50), "adv_shares": 1_000_000},
-            {"security_id": "C", "price": Decimal(10), "adv_shares": 100_000},
+            {"security_id": "A", "price": Decimal(100), "adv_shares": 1_000_000, "alpha": 0.03, "tcost_bps": Decimal(5)},
+            {"security_id": "B", "price": Decimal(50), "adv_shares": 1_000_000, "alpha": 0.01, "tcost_bps": Decimal(5)},
+            {"security_id": "C", "price": Decimal(10), "adv_shares": 100_000, "alpha": 0.05, "tcost_bps": Decimal(20)},
         )
-
-    def equal_weight_targets(self) -> pd.DataFrame:
-        """Benchmark B1: one third in each of A, B, C."""
-        third = Decimal(1) / Decimal(3)
-        return self.targets({"security_id": "A", "weight": third}, {"security_id": "B", "weight": third}, {"security_id": "C", "weight": Decimal(1) - 2 * third})
 
 
 def make_details(**overrides: object) -> PortfolioDetails:
@@ -156,7 +145,6 @@ def make_portfolio_data(
     details: PortfolioDetails | None = None,
     holdings: pd.DataFrame | None = None,
     universe: pd.DataFrame | None = None,
-    targets: pd.DataFrame | None = None,
     sector_bounds: pd.DataFrame | None = None,
     constraints: pd.DataFrame | None = None,
     as_of_date: datetime = AS_OF,
@@ -169,7 +157,6 @@ def make_portfolio_data(
         details=details if details is not None else make_details(),
         holdings=holdings if holdings is not None else frames.holdings({"security_id": "A", "quantity": 5000}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(60)}),
         universe=universe if universe is not None else frames.three_security_universe(),
-        targets=targets if targets is not None else frames.equal_weight_targets(),
         sector_bounds=sector_bounds if sector_bounds is not None else frames.sector_bounds(),
         constraints=constraints if constraints is not None else frames.constraints(*SHIPPED_CONSTRAINTS),
         as_of_date=as_of_date,
@@ -179,7 +166,11 @@ def make_portfolio_data(
 
 
 def make_spec(n: int = 3, **overrides: object) -> ProblemSpec:
-    """A feasible spec with ``n`` securities, identity-like data, and no binding limits."""
+    """A feasible spec with ``n`` securities, identity-like data, and no binding limits.
+
+    ``alpha`` rises with the index, so the shipped ``alpha`` term has a strict preference and every
+    optimum below is a single vertex rather than a face the solver may pick any point of.
+    """
     ids = tuple(f"S{i}" for i in range(n))
     zeros: F64 = np.zeros(n)
     base: dict[str, object] = {
@@ -192,7 +183,7 @@ def make_spec(n: int = 3, **overrides: object) -> ProblemSpec:
         "price": np.full(n, 100.0),
         "shares_held": np.full(n, 1_000_000.0 / n / 100.0) if n else zeros,
         "lot_size": np.ones(n),
-        "w_target": np.full(n, 1.0 / n) if n else zeros,
+        "columns": {"alpha": np.arange(n, dtype=np.float64) * 0.01},
         "tax_per_dollar": zeros,
         "tcost_per_dollar": zeros,
         "lb": zeros,
@@ -256,8 +247,12 @@ NO_CHAIN_CONSTRAINTS = [name for name in SHIPPED_CONSTRAINTS if name != "cumulat
 """The shipped constraints without the chain-aware ADV cap; a run over them can declare `dependencies: none`."""
 UNCOUPLED: dict[str, object] = {"on_error": "continue", "dependencies": "none"}
 """An `execution` block in which nothing waits for anything: coupling is declared, not inferred from the constraints."""
-BUY_ONLY_OBJECTIVE: dict[str, object] = {"terms": [{"name": "tracking_error", "params": {"weight": "1.0"}}, {"name": "transaction_cost", "params": {"weight": "1.0"}}]}
-"""The example's objective without ``tax_cost``, which reads ``sell`` and so cannot run in a buy-only run."""
+EXAMPLE_TERMS: list[object] = [{"name": "alpha", "params": {"weight": "1.0"}}, {"name": "tax_cost", "params": {"weight": "1.0"}}, {"name": "transaction_cost", "params": {"weight": "1.0"}}]
+"""The example's objective terms, in its order: buy the expected return, pay the tax and the trading cost."""
+BUY_ONLY_TERMS: list[object] = [term for term in EXAMPLE_TERMS if term != EXAMPLE_TERMS[1]]
+"""The example's terms without ``tax_cost``, which reads ``sell`` and so cannot run in a buy-only run."""
+BUY_ONLY_OBJECTIVE: dict[str, object] = {"terms": BUY_ONLY_TERMS}
+"""The example's objective without ``tax_cost``."""
 
 
 def constraint_frame(names: Sequence[str] = tuple(SHIPPED_CONSTRAINTS), portfolio_id: str = "P1") -> pd.DataFrame:

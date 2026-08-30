@@ -272,7 +272,7 @@ def fake_config(
     body: dict[str, object] = {
         "run": {"name": "r", "as_of_date": "2026-01-01T00:00:00Z"},
         "portfolios": f"{fake_steps}:loader",
-        "datasets": {name: {"loader": f"{fake_steps}:loader"} for name in ("holdings", "universe", "details", "targets")},
+        "datasets": {name: {"loader": f"{fake_steps}:loader"} for name in ("holdings", "universe", "details")},
         "rules": rules if rules is not None else [f"{fake_steps}:plain_rule"],
         "objective": {"terms": terms if terms is not None else [f"{fake_steps}:term"]},
         "sink": f"{fake_steps}:sink",
@@ -289,7 +289,7 @@ def fake_config(
 
 def test_resolve_config_resolves_every_step(fake_steps: str) -> None:
     resolved = resolve_config(fake_config(fake_steps, terms=[f"{fake_steps}:chained_term"], solve_order=f"{fake_steps}:solve_order_step"))
-    assert [step.kind for step in resolved.all_steps] == ["loader", "loader", "loader", "loader", "loader", "rule", "solve_order", "term", "solve", "sink"]
+    assert [step.kind for step in resolved.all_steps] == ["loader", "loader", "loader", "loader", "rule", "solve_order", "term", "solve", "sink"]
     assert resolved.config_sha256 == config_sha256(resolved.config)
     assert resolved.solve.qualname == "portfolio_optimizer.solvers:cvxpy", "the default solve step is the shipped cvxpy one"
     assert {step.kind for step in resolved.loaders.values()} == {"loader"}, "every dataset is a frame, so every loader resolves under the one contract"

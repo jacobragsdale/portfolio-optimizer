@@ -68,7 +68,7 @@ def test_validate_config_lists_every_resolved_step() -> None:
     assert "config ok" in out
     assert "dependencies overlap" in out
     assert "rule                portfolio_optimizer.rules:restrict_low_liquidity" in out
-    assert "term                portfolio_optimizer.terms:tracking_error" in out
+    assert "term                portfolio_optimizer.terms:alpha" in out
     assert "constraint" not in out, "constraints are loaded data now, so validate-config has none to list"
 
 

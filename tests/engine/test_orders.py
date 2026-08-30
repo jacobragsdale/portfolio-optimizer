@@ -31,7 +31,7 @@ def test_exact_deltas_become_exact_orders(make: Factories) -> None:
     output = built(make)
     orders = solution_to_orders(output.spec, solution_at(output.spec, HAND_OPTIMUM), output.order_inputs, run_id="r1")
     assert orders[["security_id", "side", "quantity"]].to_dict("records") == EXAMPLE_ORDERS_P1
-    assert orders["notional"].tolist() == [Decimal(125000), Decimal(125000), Decimal(250000)]
+    assert orders["notional"].tolist() == [Decimal(150000), Decimal(100000), Decimal(250000)]
     assert orders["run_id"].tolist() == ["r1"] * 3
     assert orders["spec_hash"].iloc[0] == output.spec.content_hash()
 

@@ -15,18 +15,13 @@
       "batch_size": 2
     },
     "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
-    "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
-    "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}}
+    "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}}
   },
-  "rules": [
-    {"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}},
-    "add_zero_alpha",
-    "attach_universe_columns"
-  ],
+  "rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}],
   "objective": {
     "sense": "minimize",
     "terms": [
-      {"name": "tracking_error", "params": {"weight": "1.0"}},
+      {"name": "alpha", "params": {"weight": "1.0"}},
       {"name": "tax_cost", "params": {"weight": "1.0"}},
       {"name": "transaction_cost", "params": {"weight": "1.0"}}
     ]

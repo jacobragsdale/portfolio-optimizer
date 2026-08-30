@@ -11,8 +11,8 @@ from tests.conftest import EXAMPLE_DATA, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
 from tests.engine.support import EXAMPLE_ORDERS_P1, GIT, details_csv, example_book, execute, no_details_csv
 
-CAPPED_P1 = details_csv("P1", max_weight="0.3")
-"""P1's cap below a third: with three names it cannot invest its NAV, so its solve is infeasible."""
+CAPPED_P1 = details_csv("P1", max_weight="0.25")
+"""P1's cap at a quarter: three names cannot hold the 0.8 of NAV its cash bounds oblige it to invest, so its solve is infeasible."""
 
 
 def test_the_run_reproduces_the_hand_checked_orders(tmp_path: Path, scheduler_address: str) -> None:
@@ -54,7 +54,7 @@ def test_fail_fast_skips_every_lower_priority_portfolio_and_publishes_nothing(tm
     assert isinstance(p1, PortfolioFailure)
     assert p1.stage == "solve"
     assert p1.error_type == "InfeasibleError"
-    assert "upper bounds sum to 0.900000" in p1.message
+    assert "upper bounds sum to 0.750000 < required investment 0.800000" in p1.message
     assert isinstance(p2, PortfolioFailure)
     assert p2.stage == "skipped"
     assert not (tmp_path / "run-test" / "run-test" / "orders").exists()
@@ -82,7 +82,7 @@ def test_continue_skips_the_portfolios_that_depended_on_the_failure_and_names_it
 
 
 def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_path: Path, scheduler_address: str) -> None:
-    holdings = (EXAMPLE_DATA / "holdings" / "P2.csv").read_text().replace("P2,B,10000,50", "P2,Z,10000,50")
+    holdings = (EXAMPLE_DATA / "holdings" / "P2.csv").read_text().replace("P2,B,10000,40", "P2,Z,10000,40")
     data_root = example_book(tmp_path, **{"holdings/P2.csv": holdings})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
     p1, p2 = report.outcomes
@@ -93,7 +93,7 @@ def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_pa
 
 
 def test_a_failed_build_is_treated_as_overlapping_everything_after_it(tmp_path: Path, scheduler_address: str) -> None:
-    holdings = (EXAMPLE_DATA / "holdings" / "P1.csv").read_text().replace("P1,B,10000,50", "P1,Z,10000,50")
+    holdings = (EXAMPLE_DATA / "holdings" / "P1.csv").read_text().replace("P1,B,10000,40", "P1,Z,10000,40")
     data_root = example_book(tmp_path, **{"holdings/P1.csv": holdings})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
     p1, p2 = report.outcomes
@@ -102,11 +102,11 @@ def test_a_failed_build_is_treated_as_overlapping_everything_after_it(tmp_path: 
 
 
 def test_a_portfolio_whose_bundle_is_inconsistent_fails_at_slice(tmp_path: Path, scheduler_address: str) -> None:
-    targets = (EXAMPLE_DATA / "targets.csv").read_text().replace("B1,C,", "B1,Z,")
-    data_root = example_book(tmp_path, **{"targets.csv": targets})
+    bounds = (EXAMPLE_DATA / "sector_bounds.csv").read_text().replace(",TECH,", ",ENERGY,")
+    data_root = example_book(tmp_path, **{"sector_bounds.csv": bounds})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
     assert [outcome.stage for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)] == ["slice", "slice"]
-    assert "target securities in neither holdings nor universe ['Z']" in report.outcomes[0].message  # ty: ignore[unresolved-attribute]  # both outcomes are failures, asserted above
+    assert "sector_bounds reference sectors absent from universe ['ENERGY']" in report.outcomes[0].message  # ty: ignore[unresolved-attribute]  # both outcomes are failures, asserted above
 
 
 def test_sink_failure_is_infrastructure_and_the_manifest_still_records_it(tmp_path: Path, scheduler_address: str) -> None:
@@ -146,15 +146,15 @@ def test_manifest_records_provenance_for_every_stage(tmp_path: Path, scheduler_a
     manifest = execute(tmp_path, scheduler_address=scheduler_address).manifest
     assert manifest.git_sha == GIT.sha
     assert manifest.config.sha256 == resolved_example_real(sink="orders_to_parquet").config_sha256
-    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "sector_bounds", "constraints", "targets"}
+    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "sector_bounds", "constraints"}
     p1 = manifest.portfolios[0]
-    assert [r.qualname for r in p1.rules] == ["portfolio_optimizer.rules:restrict_low_liquidity", "portfolio_optimizer.rules:add_zero_alpha", "portfolio_optimizer.rules:attach_universe_columns"]
+    assert [r.qualname for r in p1.rules] == ["portfolio_optimizer.rules:restrict_low_liquidity"]
     assert p1.solve is not None
     assert p1.solve.status == "optimal"
     assert p1.check is not None
     assert p1.check.passed
     assert p1.drift is not None
-    assert p1.drift.max_weight_error <= 1e-8
+    assert p1.drift.max_weight_error <= 1e-6, "the example's deltas are whole shares, so what drift is left is the solver's own slack, not rounding"
     assert p1.orders is not None
     assert p1.orders.count == 3
     assert p1.orders.gross_notional == "500000"

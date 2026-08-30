@@ -163,12 +163,13 @@ def _constraint_set(step: ResolvedStep, x: object, spec: ProblemSpec, chain: Cha
 
 
 def pro_rata_fill(request: SolveRequest) -> SolveResult:
-    """Invest the cash above the style's floor into the underweights, pro rata to how far below target each is — no optimizer.
+    """Spread the cash above the style's floor evenly over the names the portfolio may buy — no optimizer, and no view on which name is better.
 
-    A name's buy is capped by its upper bound and by the ADV budget left after higher-priority
-    portfolios' buys; a cap's excess is spread over the names still open. The verifier checks the
-    result like any solve: this step honours bounds, the cash floor, and the ADV budget by
-    construction, and sector limits not at all — a book with binding ones is a job for the optimizer.
+    A name's room is the smaller of what its upper bound allows and what is left of its ADV budget
+    after higher-priority portfolios' buys; a name that fills up passes its share to the rest. The
+    verifier checks the result like any solve: this step honours bounds, the cash floor, and the ADV
+    budget by construction, and sector limits not at all — a book with binding ones is a job for the
+    optimizer.
     """
     spec, chain = request.spec, request.chain
     budget = (1.0 - float(spec.w0.sum())) - spec.cash_lb
@@ -176,8 +177,7 @@ def pro_rata_fill(request: SolveRequest) -> SolveResult:
         msg = f"cash is {budget:+.6f} of NAV below the floor {spec.cash_lb:.6f}; a fill only buys, so nothing can be done"
         raise ValueError(msg)
     room = np.maximum(np.minimum(spec.ub - spec.w0, adv_remaining(spec, chain)), 0.0)
-    want = np.maximum(spec.w_target - spec.w0, 0.0)
-    buy = _water_fill(want, room, max(budget, 0.0))
+    buy = _water_fill(np.where(room > 0.0, 1.0, 0.0), room, max(budget, 0.0))
     return SolveResult(w=spec.w0 + buy, detail=f"invested {float(buy.sum()):.6f} of {max(budget, 0.0):.6f} of NAV across {int((buy > 0).sum())} names")
 
 

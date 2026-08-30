@@ -19,7 +19,7 @@ from decimal import Decimal
 import numpy as np
 from pydantic import Field
 
-from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, at_least, at_most, dot, matvec, scale, shifted, sum_squares, total
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, at_least, at_most, dot, matvec, scale, total
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec
 from portfolio_optimizer.domain.types import Params
 
@@ -28,11 +28,6 @@ class WeightedParams(Params):
     """A non-negative weight multiplying the term."""
 
     weight: Decimal = Field(default=Decimal(1), ge=0)
-
-
-def tracking_error(x: DecisionVars, spec: ProblemSpec, params: WeightedParams) -> ObjectiveTerm:
-    """``weight · |w - w_target|^2`` — squared deviation from the target weights."""
-    return ObjectiveTerm("tracking_error", scale(float(params.weight), sum_squares(shifted(x.w, spec.w_target))))
 
 
 class AlphaParams(WeightedParams):

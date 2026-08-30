@@ -52,9 +52,14 @@ def execution_on(scheduler_address: str, *, max_workers: int = 2) -> ExecutionSe
 
 # --- the example book, and variations of it with a hand-checked answer each ---
 
-HAND_OPTIMUM = np.array([0.375, 0.375, 0.25])
-"""P1's optimal weights on the example book: C is capped by ADV at a quarter, the rest splits evenly between A and B."""
-EXAMPLE_ORDERS_P1: Orders = [{"security_id": "A", "side": "SELL", "quantity": 1250}, {"security_id": "B", "side": "SELL", "quantity": 2500}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
+HAND_OPTIMUM = np.array([0.35, 0.4, 0.25])
+"""P1's optimal weights on the example book.
+
+C has the best alpha and is bought to its ADV budget, a quarter of NAV. The quarter is raised by
+selling A and B, and A goes first: B is at a 20% unrealized gain, so selling it costs 4 cents of tax
+per dollar against A's nothing. B still falls to P1's 40% single-name cap, which it starts above.
+"""
+EXAMPLE_ORDERS_P1: Orders = [{"security_id": "A", "side": "SELL", "quantity": 1500}, {"security_id": "B", "side": "SELL", "quantity": 2000}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
 """P1's orders on the example book: from a half-and-half book at 100 and 50 to ``HAND_OPTIMUM`` on a NAV of 1,000,000."""
 
 
@@ -80,16 +85,17 @@ def no_details_csv(portfolio_id: str) -> str:
     return (EXAMPLE_DATA / "details" / f"{portfolio_id}.csv").read_text().splitlines()[0] + "\n"
 
 
-HALF_CASH_ORDERS_P1: Orders = [{"security_id": "A", "side": "BUY", "quantity": 1250}, {"security_id": "B", "side": "BUY", "quantity": 2500}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
-HALF_CASH_ORDERS_P2: Orders = [{"security_id": "A", "side": "BUY", "quantity": 2500}, {"security_id": "B", "side": "BUY", "quantity": 5000}]
+HALF_CASH_ORDERS_P1: Orders = [{"security_id": "A", "side": "BUY", "quantity": 1500}, {"security_id": "B", "side": "BUY", "quantity": 2000}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
+HALF_CASH_ORDERS_P2: Orders = [{"security_id": "A", "side": "BUY", "quantity": 3500}, {"security_id": "B", "side": "BUY", "quantity": 3000}]
 
 
 def half_cash_book(tmp_path: Path) -> Path:
     """The example data with each portfolio holding A 2500 @100 and B 5000 @50 and half its NAV in cash: what a buy-only run invests.
 
-    Targets are a third each and C's ADV budget is 25,000 shares, so the hand answer for P1 is buy
-    1,250 A, 2,500 B, and 25,000 C (C is capped at 0.25, the rest splits evenly), and P2 — C's budget
-    spent by P1 — buys 2,500 A and 5,000 B: ``HALF_CASH_ORDERS_P1`` and ``HALF_CASH_ORDERS_P2``.
+    Half of NAV goes to work, best name first, net of what each costs to trade. For P1 that is C to its
+    ADV budget of 25,000 shares, then A and B to P1's 40% cap: buy 1,500 A, 2,000 B, 25,000 C. P2, with
+    C's budget spent by P1 and a 60% cap, puts the same half into A first: 3,500 A and 3,000 B.
+    ``HALF_CASH_ORDERS_P1`` and ``HALF_CASH_ORDERS_P2``.
     """
     details = {f"details/{pid}.csv": details_csv(pid, cash="500000") for pid in ("P1", "P2")}
     header = "portfolio_id,security_id,quantity,avg_cost,acquired_on\n"
@@ -100,19 +106,21 @@ def half_cash_book(tmp_path: Path) -> Path:
     return example_book(tmp_path, **details, **holdings)
 
 
-SELL_BOOK_ORDERS_P1: Orders = [{"security_id": "A", "side": "SELL", "quantity": 1000}, {"security_id": "B", "side": "SELL", "quantity": 3333}]
-SELL_BOOK_ORDERS_P2: Orders = [{"security_id": "B", "side": "SELL", "quantity": 3333}]
+SELL_BOOK_ORDERS_P1: Orders = [{"security_id": "A", "side": "SELL", "quantity": 1000}, {"security_id": "B", "side": "SELL", "quantity": 8000}]
+SELL_BOOK_ORDERS_P2: Orders = [{"security_id": "B", "side": "SELL", "quantity": 10000}]
 
 
 def sell_book(tmp_path: Path) -> Path:
-    """The example data allowed to raise cash (``cash_ub`` of ``1``) with A's ADV budget cut to 1,000 shares: what a sell-only run trims.
+    """The example data allowed to raise cash (``cash_ub`` of ``1``) over a universe whose alphas have turned negative, with A's ADV cut to 4,000 shares: what a sell-only run trims.
 
-    Each portfolio holds A 0.5 and B 0.5 against a target of a third each, so the hand answer for P1 is
-    sell 1,000 A (its whole ADV budget, a 0.1 weight) and 3,333 B (to a third); P2, with A's budget spent
-    by P1, sells 3,333 B alone: ``SELL_BOOK_ORDERS_P1`` and ``SELL_BOOK_ORDERS_P2``.
+    Both held names are worth less than nothing now, so both are sold; B far enough underwater that even
+    P2's short-term rate on its gain does not hold it. A's ADV budget is 1,000 shares and P1 takes all of
+    it, which leaves A at the 40% cap and the ``TECH`` floor of 0.5 holding 0.1 of B back: P1 sells
+    1,000 A and 8,000 B. P2, with no A budget left, keeps A at 0.5 and so has the whole floor covered:
+    it sells all 10,000 B. ``SELL_BOOK_ORDERS_P1`` and ``SELL_BOOK_ORDERS_P2``.
     """
     raise_cash = {f"details/{pid}.csv": details_csv(pid, cash_ub="1") for pid in ("P1", "P2")}
-    universe = "security_id,price,sector,adv_shares,lot_size,restricted\nA,100,TECH,4000,1,false\nB,50,TECH,1000000,1,false\nC,10,HEALTH,100000,1,false\n"
+    universe = "security_id,price,sector,adv_shares,lot_size,restricted,alpha,tcost_bps\nA,100,TECH,4000,1,false,-0.03,5\nB,50,TECH,1000000,1,false,-0.10,5\nC,10,HEALTH,100000,1,false,0.05,20\n"
     return example_book(tmp_path, **raise_cash, **{"universe.csv": universe})
 
 

@@ -28,12 +28,12 @@ from portfolio_optimizer.solving import SolveRequest, SolveResult
 from portfolio_optimizer.terms import adv_remaining
 
 
-def buy_the_underweights(request: SolveRequest) -> SolveResult:
-    """Spend the cash above the floor on the names furthest below target, capped by the ADV budget left."""
+def buy_the_best_alpha(request: SolveRequest) -> SolveResult:
+    """Spend the cash above the floor in proportion to each name's alpha, capped by its bound and the ADV budget left."""
     spec, chain = request.spec, request.chain
     budget = (1.0 - float(spec.w0.sum())) - spec.cash_lb
     room = np.maximum(np.minimum(spec.ub - spec.w0, adv_remaining(spec, chain)), 0.0)
-    want = np.maximum(spec.w_target - spec.w0, 0.0)
+    want = np.maximum(spec.column("alpha"), 0.0)
     buy = np.minimum(room, budget * want / want.sum()) if want.sum() > 0 else np.zeros(spec.n)
     return SolveResult(w=spec.w0 + buy)
 ```
@@ -100,7 +100,7 @@ otherwise the engine records the step's qualified name and its package version.
 ## 2. Name it in the config
 
 ```json
-"solve": "mypkg.fills:buy_the_underweights",
+"solve": "mypkg.fills:buy_the_best_alpha",
 "solver": {"name": "CLARABEL"}
 ```
 
@@ -119,7 +119,7 @@ The resolver imports the function, checks its signature against the contract (`r
 reported with the other config failures:
 
 ```text
-config rejected: 1 config resolution failure(s): solve: mypkg.fills:buy_the_underweights: missing required parameter 'request'
+config rejected: 1 config resolution failure(s): solve: mypkg.fills:buy_the_best_alpha: missing required parameter 'request'
 ```
 
 The step itself is not run here — the dummy problem `validate-config` constructs terms against is not

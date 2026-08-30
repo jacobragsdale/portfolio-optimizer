@@ -1021,7 +1021,7 @@
       "title": "SinkStep"
     },
     "SolveOrderStep": {
-      "$comment": "Shipped steps: ['furthest_from_target_first']",
+      "$comment": "Shipped steps: ['most_uninvested_first']",
       "anyOf": [
         {
           "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
@@ -1035,7 +1035,7 @@
               "if": {
                 "properties": {
                   "name": {
-                    "const": "furthest_from_target_first"
+                    "const": "most_uninvested_first"
                   }
                 },
                 "required": [
@@ -1046,7 +1046,7 @@
                 "properties": {
                   "params": {
                     "additionalProperties": false,
-                    "description": "`furthest_from_target_first` takes no parameters.",
+                    "description": "`most_uninvested_first` takes no parameters.",
                     "maxProperties": 0,
                     "type": "object"
                   }
@@ -1253,7 +1253,7 @@
       "type": "object"
     },
     "TermStep": {
-      "$comment": "Shipped steps: ['alpha', 'tax_cost', 'tracking_error', 'transaction_cost']",
+      "$comment": "Shipped steps: ['alpha', 'tax_cost', 'transaction_cost']",
       "anyOf": [
         {
           "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
@@ -1310,43 +1310,6 @@
                 "properties": {
                   "name": {
                     "const": "tax_cost"
-                  }
-                },
-                "required": [
-                  "name"
-                ]
-              },
-              "then": {
-                "properties": {
-                  "params": {
-                    "additionalProperties": false,
-                    "description": "A non-negative weight multiplying the term.",
-                    "properties": {
-                      "weight": {
-                        "anyOf": [
-                          {
-                            "minimum": 0.0,
-                            "type": "number"
-                          },
-                          {
-                            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-                            "type": "string"
-                          }
-                        ],
-                        "default": "1",
-                        "title": "Weight"
-                      }
-                    },
-                    "type": "object"
-                  }
-                }
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "name": {
-                    "const": "tracking_error"
                   }
                 },
                 "required": [
@@ -1464,8 +1427,7 @@
         "required": [
           "holdings",
           "universe",
-          "details",
-          "targets"
+          "details"
         ]
       }
     }
@@ -1504,11 +1466,11 @@
       "type": "array"
     },
     "datasets": {
-      "$comment": "Required unless an assembly step produces them: ['holdings', 'universe', 'details', 'targets']. `sector_bounds` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
+      "$comment": "Required unless an assembly step produces them: ['holdings', 'universe', 'details']. `sector_bounds` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
       "additionalProperties": {
         "$ref": "#/$defs/DatasetConfig"
       },
-      "description": "Named datasets, every one a frame. `holdings`, `universe`, `details`, and `targets` must be declared here unless an assembly step produces them; `sector_bounds` is engine-known but optional, and a run that omits it bounds no sector. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known.",
+      "description": "Named datasets, every one a frame. `holdings`, `universe`, and `details` must be declared here unless an assembly step produces them; `sector_bounds` and `constraints` are engine-known but optional, and a run that omits `sector_bounds` bounds no sector. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known.",
       "properties": {
         "details": {
           "$ref": "#/$defs/DatasetConfig"
@@ -1517,9 +1479,6 @@
           "$ref": "#/$defs/DatasetConfig"
         },
         "sector_bounds": {
-          "$ref": "#/$defs/DatasetConfig"
-        },
-        "targets": {
           "$ref": "#/$defs/DatasetConfig"
         },
         "universe": {

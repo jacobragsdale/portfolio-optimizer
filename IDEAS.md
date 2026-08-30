@@ -63,10 +63,11 @@ orders are noise. Two conclusions follow and one thread stays open:
 
 ### The solver thread
 
-Clarabel spends about 0.26 s per interior-point iteration here, in a KKT factorization over *A*. *P* is
-diagonal — the shipped `tracking_error` is a plain sum of squares — so this is very nearly an LP with
-300k variables and 900k rows, and the per-iteration cost is the sparse factorization, not the
-objective. Things to measure, in the order they are cheap:
+Clarabel spends about 0.26 s per interior-point iteration here, in a KKT factorization over *A*. Every
+shipped term is now linear, so *P* is absent altogether and this is an LP with 300k variables and 900k
+rows; the per-iteration cost is the sparse factorization, not the objective. (The numbers in this
+section were measured while `tracking_error` still shipped and made *P* diagonal, which is a smaller
+difference than it sounds — re-measure before leaning on them.) Things to measure, in the order they are cheap:
 
 1. **Clarabel's linear solver.** The default is QDLDL, single-threaded. Clarabel also offers `faer`
    (multi-threaded) and, where the wheel carries it, MKL, through `direct_solve_method` in
@@ -217,7 +218,7 @@ churn for reasons nobody can explain. Keep them, but as a *secondary* regression
 generates and a human diffs — never as the statement of intent.
 
 **A declarative scenario file.** Leaning. One JSON (or TOML) file per scenario: a `given` naming a tiny
-book — a handful of securities, two or three portfolios, their holdings, targets, and style constraints
+book — a handful of securities, two or three portfolios, their holdings, alphas, and style constraints
 — a run config, and an `expect` list drawn from a fixed vocabulary:
 
 ```json

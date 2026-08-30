@@ -197,7 +197,6 @@ def _dry_run_spec() -> ProblemSpec:
         price=one,
         shares_held=one * 0.5,
         lot_size=one,
-        w_target=one * 0.5,
         tax_per_dollar=np.zeros(1),
         tcost_per_dollar=np.zeros(1),
         lb=np.zeros(1),

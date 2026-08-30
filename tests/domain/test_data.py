@@ -23,21 +23,9 @@ def test_a_held_name_need_not_be_buyable(make: Factories, frames: Frames) -> Non
     assert data.holdings["security_id"].tolist() == ["Z"]
 
 
-def test_target_absent_from_both_holdings_and_universe_is_rejected(make: Factories, frames: Frames) -> None:
-    targets = frames.targets({"security_id": "A", "weight": Decimal("0.5")}, {"security_id": "Z", "weight": Decimal("0.5")})
-    with pytest.raises(PortfolioDataError, match="in neither holdings nor universe \\['Z'\\]"):
-        make.portfolio_data(targets=targets)
-    make.portfolio_data(holdings=frames.holdings({"security_id": "Z"}), targets=targets)  # held but not buyable is enough
-
-
 def test_holdings_of_another_portfolio_are_rejected(make: Factories, frames: Frames) -> None:
     with pytest.raises(PortfolioDataError, match="other portfolios \\['P2'\\]"):
         make.portfolio_data(holdings=frames.holdings({"portfolio_id": "P2"}))
-
-
-def test_targets_for_another_benchmark_are_rejected(make: Factories, frames: Frames) -> None:
-    with pytest.raises(PortfolioDataError, match="other benchmarks \\['B9'\\]"):
-        make.portfolio_data(targets=frames.targets({"benchmark_id": "B9"}))
 
 
 def test_sector_bound_for_unknown_sector_is_rejected(make: Factories, frames: Frames) -> None:
@@ -116,7 +104,6 @@ def test_prevalidated_frames_are_trusted_until_a_rule_replaces_them(make: Factor
         details=make.details(),
         holdings=frames.holdings(),
         universe=invalid,
-        targets=frames.targets(),
         sector_bounds=frames.sector_bounds(),
         constraints=frames.constraints(),
         as_of_date=AS_OF,

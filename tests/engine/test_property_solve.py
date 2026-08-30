@@ -15,19 +15,19 @@ from tests.conftest import SHIPPED_CONSTRAINTS, constraint_frame, make_spec, res
 def feasible_specs(draw: st.DrawFn) -> ProblemSpec:
     n = draw(st.integers(min_value=2, max_value=5))
     w0_raw = np.array(draw(st.lists(st.floats(min_value=0.01, max_value=1.0), min_size=n, max_size=n)))
-    target_raw = np.array(draw(st.lists(st.floats(min_value=0.01, max_value=1.0), min_size=n, max_size=n)))
+    alpha = np.array(draw(st.lists(st.floats(min_value=-0.1, max_value=0.1), min_size=n, max_size=n)))
     turnover = draw(st.floats(min_value=0.05, max_value=2.0))
-    return make_spec(n=n, w0=w0_raw / w0_raw.sum(), w_target=target_raw / target_raw.sum(), shares_held=w0_raw / w0_raw.sum() * 1e6 / 100.0, max_turnover=turnover)
+    return make_spec(n=n, w0=w0_raw / w0_raw.sum(), columns={"alpha": alpha}, shares_held=w0_raw / w0_raw.sum() * 1e6 / 100.0, max_turnover=turnover)
 
 
 @given(spec=feasible_specs())
 @settings(deadline=None, max_examples=15)
 def test_solutions_verify_and_never_do_worse_than_resting(spec: ProblemSpec) -> None:
-    resolved = resolved_example(objective={"terms": [{"name": "tracking_error", "params": {"weight": "1"}}]})
+    resolved = resolved_example(objective={"terms": [{"name": "alpha", "params": {"weight": "1"}}]})
     chain = ChainState.empty(spec.security_ids)
     solution = solve(spec, chain, resolved, constraint_frame(SHIPPED_CONSTRAINTS))
-    terms = [StepRef(qualname="portfolio_optimizer.terms:tracking_error", params={"weight": "1"}, label="tracking_error")]
+    terms = [StepRef(qualname="portfolio_optimizer.terms:alpha", params={"weight": "1"}, label="alpha")]
     report = verify(spec, solution, chain, terms, step_refs_for(SHIPPED_CONSTRAINTS), profile=TWO_SIDED)
     assert report.passed, (report.violated, report.objective_gap)
-    resting = float(((spec.w0 - spec.w_target) ** 2).sum())
+    resting = -float((spec.column("alpha") * spec.w0).sum())
     assert solution.objective is not None and solution.objective <= resting + 1e-7

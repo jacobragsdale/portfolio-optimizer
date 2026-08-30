@@ -1,4 +1,4 @@
-security_id,price,sector,adv_shares,lot_size,restricted
-A,100,TECH,1000000,1,false
-B,50,TECH,1000000,1,false
-C,10,HEALTH,100000,1,false
+security_id,price,sector,adv_shares,lot_size,restricted,alpha,tcost_bps
+A,100,TECH,1000000,1,false,0.03,5
+B,50,TECH,1000000,1,false,0.01,5
+C,10,HEALTH,100000,1,false,0.05,20

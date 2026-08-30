@@ -1,3 +1,3 @@
 portfolio_id,security_id,quantity,avg_cost,acquired_on
 P2,A,5000,100,2025-11-01T00:00:00Z
-P2,B,10000,50,2025-11-01T00:00:00Z
+P2,B,10000,40,2025-11-01T00:00:00Z

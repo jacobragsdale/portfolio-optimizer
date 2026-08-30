@@ -35,8 +35,7 @@ starts.
 Open `configs/example_run.json`. That one file is the whole run: the data to load, the steps that
 combine it, the rules to apply, the terms to minimize, the constraints to hold, the solver, the
 verifier's tolerances, and where the orders go. Each block is named by an ordinary Python function in
-`src/portfolio_optimizer/` — the `csv` loader, the `restrict_low_liquidity` rule, the `tracking_error`
-term. The README walks through the file
+`src/portfolio_optimizer/` — the `csv` loader, the `restrict_low_liquidity` rule, the `alpha` term. The README walks through the file
 [block by block](../README.md#the-run-config-block-by-block); keep it beside you for the rest of this
 tutorial.
 
@@ -104,13 +103,18 @@ uv run --env-file .env python -c "import json, glob; print(*[(d['name'], d['batc
 Expected: `('holdings', 2)` and `('details', 1)`, the rest 1 — every dataset's call count, recorded
 beside its content hash.
 
-P1 and P2 each hold $500,000 of A and $500,000 of B against an equal-weight target and may trade at
-most a quarter of each name's daily volume. C's daily volume is 100,000 shares at 10, so a portfolio can
-buy at most 25,000 shares (a 0.25 weight). P1 has first pick: the optimizer buys those 25,000 shares of
-C and puts the remaining weight equally into A and B. P2 wants exactly the same trade, but P1 has already
-used C's whole buying budget for the day, and with no cash allowed and A and B already balanced against
-each other there is nothing else worth doing — so P2 correctly produces no orders. That is the chain at
-work, and the manifest's `schedule` block records that P2 waited for P1 (`"edges": 1`).
+P1 and P2 each hold $500,000 of A and $500,000 of B, and each may trade at most a quarter of a name's
+daily volume. C has the best expected return of the three and the worst liquidity: 100,000 shares a day
+at 10, so a portfolio can buy at most 25,000 shares — a 0.25 weight. The two accounts differ in two
+ways that decide the answer. P1's style caps any one name at 40%, and it holds two at 50%, so it *must*
+trim; P2's cap is 60%, so it must do nothing. And both hold B at a fifth of unrealized gain, which P1
+would realize at its long-term rate and P2 at its short-term one.
+
+P1 has first pick. It raises the quarter of NAV that C's budget allows, selling A before B because A is
+at cost and selling B would realize a gain, then buys the 25,000 shares of C. P2 wants C too, but P1 has
+used the whole budget for the day; nothing else is worth doing at its short-term rate, so P2 correctly
+produces no orders. That is the chain at work, and the manifest's `schedule` block records that P2
+waited for P1 (`"edges": 1`).
 
 ## 5. Look at the orders
 
@@ -118,7 +122,7 @@ work, and the manifest's `schedule` block records that P2 waited for P1 (`"edges
 uv run --env-file .env python -c "import pandas as pd, glob; print(pd.read_parquet(glob.glob('out/*/orders/orders.parquet')[0]).to_string())"
 ```
 
-You should see exactly three orders: sell 1,250 A, sell 2,500 B, buy 25,000 C — the hand-computed
+You should see exactly three orders: sell 1,500 A, sell 2,000 B, buy 25,000 C — the hand-computed
 optimum, to the share.
 
 ## 6. Prove the run is reproducible

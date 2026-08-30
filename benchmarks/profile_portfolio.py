@@ -66,13 +66,12 @@ class Book:
     details: PortfolioDetails
     holdings: pd.DataFrame
     universe: pd.DataFrame
-    targets: pd.DataFrame
     sector_bounds: pd.DataFrame
     constraints: pd.DataFrame
 
 
 def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, held: int, sides: str) -> Book:
-    """``securities`` names across ``sectors``, ``held`` of them owned, a benchmark over every name, and populated sector bounds."""
+    """``securities`` names across ``sectors``, ``held`` of them owned, an alpha on every name, and populated sector bounds."""
     ids = [f"S{index:07d}" for index in range(securities)]
     prices = [Decimal(int(value)) / 100 for value in rng.integers(500, 50_000, size=securities)]
     adv = [int(value) for value in np.exp(rng.uniform(np.log(500), np.log(10_000_000), size=securities)).astype(np.int64)]
@@ -87,6 +86,7 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
             "lot_size": pd.Series([1] * securities, dtype="Int64"),
             "restricted": pd.Series([False] * securities, dtype="bool"),
             "tcost_bps": pd.Series([Decimal(5)] * securities, dtype="object"),
+            "alpha": pd.Series(rng.uniform(-0.05, 0.05, size=securities), dtype="Float64"),
         }
     )
     held_indexes = np.sort(rng.choice(securities, size=held, replace=False))
@@ -102,15 +102,6 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
             "acquired_on": pd.Series([AS_OF - timedelta(days=int(days)) for days in rng.integers(1, 1000, size=held)], dtype="datetime64[ns, UTC]"),
         }
     )
-    raw_weights = rng.integers(1, 1000, size=securities)
-    total = Decimal(int(raw_weights.sum()))
-    targets = pd.DataFrame(
-        {
-            "benchmark_id": pd.Series(["B1"] * securities, dtype="string"),
-            "security_id": pd.Series(ids, dtype="string"),
-            "weight": pd.Series([Decimal(int(value)) / total for value in raw_weights], dtype="object"),
-        }
-    )
     details = PortfolioDetails(
         portfolio_id="P1",
         name="Benchmark Book",
@@ -119,7 +110,6 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
         lt_tax_rate=Decimal("0.20"),
         cash=NAV * Decimal("0.1"),
         nav=NAV,
-        benchmark_id="B1",
         max_weight=Decimal("0.05"),
         max_turnover=Decimal(2),
         max_adv_participation=Decimal("0.25"),
@@ -136,7 +126,7 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
         }
     )
     constraints = pd.DataFrame({"portfolio_id": pd.Series(["P1"] * len(SHIPPED_CONSTRAINTS), dtype="string"), "name": pd.Series(list(SHIPPED_CONSTRAINTS), dtype="string")})
-    return Book(details=details, holdings=holdings, universe=universe, targets=targets, sector_bounds=sector_bounds, constraints=constraints)
+    return Book(details=details, holdings=holdings, universe=universe, sector_bounds=sector_bounds, constraints=constraints)
 
 
 @dataclass(slots=True)
@@ -204,7 +194,7 @@ def _sector_matrix_mb(spec: ProblemSpec) -> float:
 
 
 def _spec_mb(spec: ProblemSpec) -> float:
-    names = ("w0", "price", "shares_held", "lot_size", "w_target", "tax_per_dollar", "tcost_per_dollar", "lb", "ub", "adv_capacity", "sector_lb", "sector_ub")
+    names = ("w0", "price", "shares_held", "lot_size", "tax_per_dollar", "tcost_per_dollar", "lb", "ub", "adv_capacity", "sector_lb", "sector_ub")
     vectors = sum(int(getattr(spec, name).nbytes) for name in names)
     extras = sum(int(array.nbytes) for array in spec.columns.values()) + sum(int(array.nbytes) for array in spec.flags.values())
     return (vectors + extras) / MB + _sector_matrix_mb(spec)
@@ -227,9 +217,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     book = synthetic_book(rng, securities=securities, sectors=sectors, held=held, sides=sides)
     report = Report()
     with report.stage("validate bundle", f"{securities:,} securities in {sectors} sectors, {held:,} held; sides {sides}, terms {', '.join(step.name for step in resolved.terms)}") as row:
-        data = PortfolioData(
-            details=book.details, holdings=book.holdings, universe=book.universe, targets=book.targets, sector_bounds=book.sector_bounds, constraints=book.constraints, as_of_date=AS_OF
-        )
+        data = PortfolioData(details=book.details, holdings=book.holdings, universe=book.universe, sector_bounds=book.sector_bounds, constraints=book.constraints, as_of_date=AS_OF)
     with report.stage("rules", ", ".join(step.name for step in resolved.rules)):
         ruled, _ = apply_rules(data, resolved.rules)
     with report.stage("spec build") as row:

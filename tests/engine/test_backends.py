@@ -102,7 +102,7 @@ def test_a_buy_only_run_reproduces_the_hand_checked_buys_and_couples_through_the
     assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
     assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == HALF_CASH_ORDERS_P1
     assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == HALF_CASH_ORDERS_P2
-    assert p2.chain_state.traded_shares.tolist() == [1250.0, 2500.0, 25000.0] and p2.chain_state.predecessors == ("P1",), (
+    assert p2.chain_state.traded_shares.tolist() == [1500.0, 2000.0, 25000.0] and p2.chain_state.predecessors == ("P1",), (
         "every buy P1 made reaches P2: under buy-only the chain carries the whole trade"
     )
     for outcome in (p1, p2):
@@ -118,7 +118,7 @@ def test_a_sell_only_run_reproduces_the_hand_checked_sells_and_couples_through_t
     assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
     assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == SELL_BOOK_ORDERS_P1
     assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == SELL_BOOK_ORDERS_P2, "P1's sells of A used up its ADV budget"
-    assert p2.chain_state.traded_shares.tolist() == [1000.0, 3333.0, 0.0] and p2.chain_state.predecessors == ("P1",)
+    assert p2.chain_state.traded_shares.tolist() == [1000.0, 8000.0, 0.0] and p2.chain_state.predecessors == ("P1",)
     for outcome in (p1, p2):
         assert outcome.report.passed and (outcome.solution.w <= outcome.spec.w0 + 1e-9).all() and outcome.solution.buy.tolist() == [0.0, 0.0, 0.0]
     assert report.manifest.config.resolved["sides"] == "sell"
@@ -131,7 +131,7 @@ def test_nothing_reading_the_chain_means_no_portfolio_waits(tmp_path: Path) -> N
     schedule = report.manifest.schedule
     assert schedule is not None and (schedule.coupling, schedule.edges, schedule.components) == ("none", 0, 2)
     p1, p2 = report.solved
-    assert len(p1.orders) == 3 and len(p2.orders) == 3, "without the chained ADV cap P2 buys C too"
+    assert len(p1.orders) == 3 and len(p2.orders) == 2, "without the chained ADV cap P2 buys C too, selling A to pay for it"
     assert p2.chain_state.predecessors == ()
 
 

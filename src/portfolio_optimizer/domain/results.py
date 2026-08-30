@@ -27,7 +27,7 @@ type Flags = NDArray[np.bool_]
 type I64 = NDArray[np.int64]
 
 _SCALAR_FIELDS: tuple[str, ...] = ("nav", "max_turnover", "cash_lb", "cash_ub", "min_trade_notional")
-_VECTOR_FIELDS: tuple[str, ...] = ("w0", "price", "shares_held", "lot_size", "w_target", "tax_per_dollar", "tcost_per_dollar", "lb", "ub", "adv_capacity")
+_VECTOR_FIELDS: tuple[str, ...] = ("w0", "price", "shares_held", "lot_size", "tax_per_dollar", "tcost_per_dollar", "lb", "ub", "adv_capacity")
 
 
 class ProblemSpecError(ValueError):
@@ -93,7 +93,6 @@ class ProblemSpec:
     price: F64
     shares_held: F64
     lot_size: F64
-    w_target: F64
     tax_per_dollar: F64
     tcost_per_dollar: F64
     lb: F64

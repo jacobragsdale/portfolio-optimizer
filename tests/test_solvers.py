@@ -16,7 +16,7 @@ from portfolio_optimizer.solvers import pro_rata_fill
 from portfolio_optimizer.solving import SolveRequest
 from tests.conftest import Factories, constraint_frame, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
-from tests.engine.support import execute
+from tests.engine.support import execute, half_cash_book
 
 
 def _request(spec: ProblemSpec, chain: ChainState | None = None) -> SolveRequest:
@@ -26,28 +26,28 @@ def _request(spec: ProblemSpec, chain: ChainState | None = None) -> SolveRequest
     )
 
 
-def test_pro_rata_fill_spends_the_cash_on_the_underweights_in_proportion(make: Factories) -> None:
-    spec = make.spec(w0=np.array([0.3, 0.3, 0.3]), w_target=np.array([0.5, 0.35, 0.15]))
+def test_pro_rata_fill_spreads_the_cash_evenly_over_the_names_it_may_buy(make: Factories) -> None:
+    spec = make.spec(w0=np.array([0.3, 0.3, 0.3]))
     result = pro_rata_fill(_request(spec))
     assert result.w is not None and result.objective is None
-    np.testing.assert_allclose(result.w - spec.w0, [0.08, 0.02, 0.0], atol=1e-12, err_msg="0.1 of cash split 0.2:0.05 between the two underweights; the overweight name is untouched")
+    np.testing.assert_allclose(result.w - spec.w0, [0.1 / 3] * 3, atol=1e-12, err_msg="0.1 of cash split three ways; the fill has no view on which name is better")
     assert result.w.sum() == pytest.approx(1.0)
 
 
 def test_pro_rata_fill_respects_a_cap_and_gives_the_excess_to_the_rest(make: Factories) -> None:
-    spec = make.spec(w0=np.array([0.3, 0.3, 0.3]), w_target=np.array([0.5, 0.35, 0.15]), ub=np.array([0.32, 1.0, 1.0]))
+    spec = make.spec(w0=np.array([0.3, 0.3, 0.3]), ub=np.array([0.32, 1.0, 1.0]))
     result = pro_rata_fill(_request(spec))
     assert result.w is not None
-    np.testing.assert_allclose(result.w - spec.w0, [0.02, 0.08, 0.0], atol=1e-12, err_msg="S0 is capped at 0.02 of room; the remaining 0.08 goes to the other underweight")
+    np.testing.assert_allclose(result.w - spec.w0, [0.02, 0.04, 0.04], atol=1e-12, err_msg="S0 fills at 0.02 of room; the 0.08 it could not take is split between the two still open")
 
 
 def test_pro_rata_fill_reads_the_chain(make: Factories) -> None:
-    spec = make.spec(w0=np.array([0.3, 0.3, 0.3]), w_target=np.array([0.5, 0.35, 0.15]), adv_capacity=np.array([0.05, 1.0, 1.0]))
+    spec = make.spec(w0=np.array([0.3, 0.3, 0.3]), adv_capacity=np.array([0.05, 1.0, 1.0]))
     consumed = Contribution("P0", ("S0",), np.array([300.0]))  # 300 shares at 100 on NAV 1e6 is 0.03 of NAV
     chain = TWO_SIDED.chain_state(spec, [consumed])
     result = pro_rata_fill(_request(spec, chain))
     assert result.w is not None
-    np.testing.assert_allclose(result.w - spec.w0, [0.02, 0.08, 0.0], atol=1e-12, err_msg="S0 has 0.05 - 0.03 of ADV budget left after its predecessor")
+    np.testing.assert_allclose(result.w - spec.w0, [0.02, 0.04, 0.04], atol=1e-12, err_msg="S0 has 0.05 - 0.03 of ADV budget left after its predecessor")
 
 
 def test_pro_rata_fill_refuses_a_book_below_its_cash_floor(make: Factories) -> None:
@@ -70,7 +70,7 @@ def test_pro_rata_fill_verifies_like_a_solve(make: Factories) -> None:
 
 
 def test_the_example_runs_end_to_end_on_the_pro_rata_fill(tmp_path: Path) -> None:
-    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), solve="pro_rata_fill")
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=half_cash_book(tmp_path), solve="pro_rata_fill")
     assert report.exit_code == EXIT_OK
     for outcome in report.outcomes:
         assert isinstance(outcome, PortfolioResult) and outcome.report.passed and outcome.solution.solver == "portfolio_optimizer.solvers:pro_rata_fill"

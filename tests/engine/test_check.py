@@ -18,17 +18,22 @@ from portfolio_optimizer.engine.tasks import step_refs
 from tests.conftest import SHIPPED_CONSTRAINTS, Factories, Frames, constraint_frame, resolved_example, step_refs_for
 
 CONSTRAINTS = step_refs_for(SHIPPED_CONSTRAINTS)
-TERMS = [StepRef(qualname="portfolio_optimizer.terms:tracking_error", params={"weight": "1"}, label="tracking_error")]
+TERMS = [StepRef(qualname="portfolio_optimizer.terms:alpha", params={"weight": "1"}, label="alpha")]
+
+
+def resting_objective(spec: ProblemSpec) -> float:
+    """What ``TERMS`` scores at ``w0``: the objective a solution that trades nothing has to report for the verifier to agree with it."""
+    return -float((spec.column("alpha") * spec.w0).sum())
 
 
 def test_the_resting_portfolio_verifies_when_it_is_feasible(make: Factories) -> None:
     spec = make.spec()
-    report = verify(spec, make.solution(spec), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS, profile=TWO_SIDED)
+    report = verify(spec, make.solution(spec, objective=resting_objective(spec)), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS, profile=TWO_SIDED)
     assert report.passed
     assert report.violated == ()
     assert report.unverified == ()
-    assert report.objective_gap == 0.0, "at rest w0 is the target, so the tracking error is the factory's zero objective"
-    assert {name for name, _ in report.objective_terms} == {"portfolio_optimizer.terms:tracking_error"}
+    assert report.objective_gap == 0.0, "the twin recomputes exactly the alpha the resting book earns"
+    assert {name for name, _ in report.objective_terms} == {"portfolio_optimizer.terms:alpha"}
 
 
 Perturbation = Callable[[ProblemSpec, np.ndarray], dict[str, object]]
@@ -63,7 +68,7 @@ def test_sector_bounds_use_the_configured_tolerance(make: Factories) -> None:
     assert "sector_ub" in tight.violated
     loose = verify(
         spec,
-        make.solution(spec),
+        make.solution(spec, objective=resting_objective(spec)),
         ChainState.empty(spec.security_ids),
         TERMS,
         [StepRef(qualname="portfolio_optimizer.terms:sector_bounds", params={"tolerance": "0.5"}, label="sector_bounds")],
@@ -111,7 +116,7 @@ def test_objective_gap_is_checked_and_custom_steps_are_reported_unverified(make:
 def test_every_shipped_term_and_constraint_has_a_twin() -> None:
     from portfolio_optimizer import terms  # imported here so this module's header stays cvxpy-free
 
-    shipped_terms = {f"portfolio_optimizer.terms:{name}" for name in ("tracking_error", "alpha", "tax_cost", "transaction_cost")}
+    shipped_terms = {f"portfolio_optimizer.terms:{name}" for name in ("alpha", "tax_cost", "transaction_cost")}
     shipped_constraints = {f"portfolio_optimizer.terms:{name}" for name in SHIPPED_CONSTRAINTS}
     assert shipped_terms == set(TERM_TWINS)
     assert shipped_constraints == set(CONSTRAINT_TWINS)
@@ -122,7 +127,7 @@ def test_every_shipped_term_and_constraint_has_a_twin() -> None:
 def test_true_optimum_verifies_including_the_objective(make: Factories, frames: Frames) -> None:
     holdings = frames.holdings({"security_id": "A", "quantity": 5000, "avg_cost": Decimal(50)}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(50)})
     spec = build_problem_spec(make.portfolio_data(holdings=holdings, details=make.details(max_adv_participation=Decimal("0.25")))).spec
-    terms = [{"name": "tracking_error", "params": {"weight": "1"}}, {"name": "tax_cost", "params": {"weight": "1"}}, {"name": "transaction_cost", "params": {"weight": "1", "cost_bps": "10"}}]
+    terms = [{"name": "alpha", "params": {"weight": "1"}}, {"name": "tax_cost", "params": {"weight": "1"}}, {"name": "transaction_cost", "params": {"weight": "1", "cost_bps": "10"}}]
     resolved = resolved_example(objective={"terms": terms})
     chain = ChainState.empty(spec.security_ids)
     solution = solve(spec, chain, resolved, constraint_frame(SHIPPED_CONSTRAINTS))
@@ -133,7 +138,7 @@ def test_true_optimum_verifies_including_the_objective(make: Factories, frames: 
 
 def test_verification_works_from_persisted_files(make: Factories, tmp_path: Path) -> None:
     spec = make.spec()
-    solution = make.solution(spec)
+    solution = make.solution(spec, objective=resting_objective(spec))
     spec.to_npz(tmp_path / "spec.npz")
     solution.to_npz(tmp_path / "solution.npz")
     loaded_spec = ProblemSpec.from_npz(tmp_path / "spec.npz")

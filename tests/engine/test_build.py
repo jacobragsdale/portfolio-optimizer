@@ -19,7 +19,6 @@ def test_spec_aligns_to_the_sorted_universe(make: Factories) -> None:
     np.testing.assert_allclose(spec.w0, [0.5, 0.5, 0.0])
     np.testing.assert_array_equal(spec.shares_held, [5000.0, 10000.0, 0.0])
     np.testing.assert_array_equal(spec.price, [100.0, 50.0, 10.0])
-    np.testing.assert_allclose(spec.w_target, [1 / 3, 1 / 3, 1 / 3], atol=1e-15)
     np.testing.assert_array_equal(spec.lb, [0.0, 0.0, 0.0])
     np.testing.assert_array_equal(spec.ub, [1.0, 1.0, 1.0])
     np.testing.assert_allclose(spec.adv_capacity, [100.0, 50.0, 1.0])
@@ -119,7 +118,7 @@ def test_a_held_name_outside_the_universe_cannot_be_built(make: Factories, frame
 def test_holdings_analytics_columns_do_not_reach_the_spec(make: Factories, frames: Frames) -> None:
     holdings = frames.holdings({"security_id": "A"}).assign(lot_score=pd.Series([0.5], dtype="Float64"))
     spec = build_problem_spec(make.portfolio_data(holdings=holdings)).spec
-    assert spec.columns == {}
+    assert set(spec.columns) == {"alpha"}, "the universe's own analytics column reaches the spec; the holdings' does not"
 
 
 @pytest.mark.parametrize("bad", [[1.5], [True], [Decimal("NaN")], [Decimal("Infinity")], ["1"]])

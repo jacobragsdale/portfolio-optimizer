@@ -79,7 +79,7 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `portfolio_id`, `status` | `solved` or `failed`. Records are in solve order. |
 | `solve_order` | The portfolio's solve-order key as a decimal string: the `solve_order` step's value, else the column's, else `0`. |
 | `predecessors` | How many higher-priority portfolios this one waited for and folded into its chain. |
-| `rules[]` | `qualname`, `source_sha256`, `params_sha256`, `rows_in`, `rows_out` per rule; the row counts cover `holdings`, `universe`, `targets`, and every extra dataset in the bundle by name. |
+| `rules[]` | `qualname`, `source_sha256`, `params_sha256`, `rows_in`, `rows_out` per rule; the row counts cover `holdings`, `universe`, and every extra dataset in the bundle by name. |
 | `problem_spec_sha256` | Hash of every array and scalar the solver saw. |
 | `chain_inputs_sha256` | Hash of the chain state — the security ids and the shares predecessors traded on the coupled side, never which predecessors — so `overlap` and `all` runs hash alike. |
 | `solve` | `solver`, `solver_version`, `status`, `iterations`, `objective_value`, `solve_time_s`. For the `cvxpy` step, the cvxpy solver's name and the version of its distribution; the cvxpy version itself is in `versions.cvxpy`. A solve step that is not cvxpy records its qualified name as `solver` and its package version as `solver_version` unless it named a solver itself, and `objective_value` is `null` when it minimized nothing. |

@@ -12,7 +12,7 @@ from pydantic import Field, model_validator
 
 from portfolio_optimizer.domain.frames import FrameSchemaError, validate_frame
 from portfolio_optimizer.domain.optimizer_frame import column_dtype_conflicts, stack_frames
-from portfolio_optimizer.domain.schemas import CONSTRAINTS, HOLDINGS, RESERVED_DATASET_NAMES, SECTOR_BOUNDS, TARGETS, UNIVERSE
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, HOLDINGS, RESERVED_DATASET_NAMES, SECTOR_BOUNDS, UNIVERSE
 from portfolio_optimizer.domain.types import Clock, PortfolioId, StrictModel
 from portfolio_optimizer.ratelimit import RateLimiter
 
@@ -88,7 +88,6 @@ class PortfolioDetails(StrictModel):
     lt_tax_rate: Decimal = Field(ge=0, lt=1)
     cash: Decimal = Field(ge=0)
     nav: Decimal = Field(gt=0)
-    benchmark_id: str = Field(min_length=1)
     max_weight: Decimal = Field(gt=0, le=1)
     max_turnover: Decimal = Field(ge=0, le=2)
     max_adv_participation: Decimal = Field(ge=0, le=1)
@@ -122,7 +121,7 @@ def details_from_frame(frame: pd.DataFrame, portfolio_id: PortfolioId) -> Portfo
     return PortfolioDetails.model_validate(record)
 
 
-PREVALIDATED_FRAMES: frozenset[str] = frozenset({"holdings", "universe", "targets", "sector_bounds", "constraints"})
+PREVALIDATED_FRAMES: frozenset[str] = frozenset({"holdings", "universe", "sector_bounds", "constraints"})
 """The bundle's frames that have a schema: the only names ``prevalidated`` may carry, and what the engine marks when it slices from assembled datasets."""
 
 
@@ -149,7 +148,7 @@ class PortfolioData:
     against its schema and the cross-frame invariants, so a rule cannot hand the optimizer an
     inconsistent bundle. The one exception is deliberate: ``prevalidated`` names frames the engine
     already validated against the same schema before slicing (the shared universe, a row subset of
-    validated holdings or targets), and those are not checked again — a run over a thousand
+    validated holdings or constraints), and those are not checked again — a run over a thousand
     portfolios would otherwise validate the same universe a thousand times per rule. Only the
     engine sets it, and :meth:`with_changes` drops the name of any frame that is replaced, so a
     rule's output is always validated.
@@ -158,7 +157,6 @@ class PortfolioData:
     details: PortfolioDetails
     holdings: pd.DataFrame
     universe: pd.DataFrame
-    targets: pd.DataFrame
     sector_bounds: pd.DataFrame
     constraints: pd.DataFrame
     as_of_date: datetime
@@ -175,7 +173,6 @@ class PortfolioData:
         for name, frame, schema in (
             ("holdings", self.holdings, HOLDINGS),
             ("universe", self.universe, UNIVERSE),
-            ("targets", self.targets, TARGETS),
             ("sector_bounds", self.sector_bounds, SECTOR_BOUNDS),
             ("constraints", self.constraints, CONSTRAINTS),
         ):
@@ -209,13 +206,6 @@ class PortfolioData:
         foreign = sorted({str(p) for p in self.holdings["portfolio_id"]} - own)
         if foreign:
             failures.append(f"holdings contain other portfolios {foreign}")
-        foreign_benchmarks = sorted({str(b) for b in self.targets["benchmark_id"]} - {self.details.benchmark_id})
-        if foreign_benchmarks:
-            failures.append(f"targets contain other benchmarks {foreign_benchmarks}")
-        known = {str(s) for s in self.universe["security_id"]} | {str(s) for s in self.holdings["security_id"]}
-        missing_targets = sorted({str(s) for s in self.targets["security_id"]} - known)
-        if missing_targets:
-            failures.append(f"target securities in neither holdings nor universe {missing_targets}")
         sectors = {str(s) for s in self.universe["sector"]}
         unknown_sectors = sorted({str(s) for s in self.sector_bounds["sector"]} - sectors)
         if unknown_sectors:
@@ -257,7 +247,6 @@ class PortfolioData:
         details: PortfolioDetails | None = None,
         holdings: pd.DataFrame | None = None,
         universe: pd.DataFrame | None = None,
-        targets: pd.DataFrame | None = None,
         sector_bounds: pd.DataFrame | None = None,
         constraints: pd.DataFrame | None = None,
         extras: Mapping[str, pd.DataFrame] | None = None,
@@ -268,13 +257,12 @@ class PortfolioData:
         Adjusting ``constraints`` from what the holdings or the universe say is ordinary rule work:
         the frame carries the desk's own columns, and only the solve step interprets them.
         """
-        replaced = {name for name, frame in (("holdings", holdings), ("universe", universe), ("targets", targets), ("sector_bounds", sector_bounds), ("constraints", constraints)) if frame is not None}
+        replaced = {name for name, frame in (("holdings", holdings), ("universe", universe), ("sector_bounds", sector_bounds), ("constraints", constraints)) if frame is not None}
         return replace(
             self,
             details=self.details if details is None else details,
             holdings=self.holdings if holdings is None else holdings,
             universe=self.universe if universe is None else universe,
-            targets=self.targets if targets is None else targets,
             sector_bounds=self.sector_bounds if sector_bounds is None else sector_bounds,
             constraints=self.constraints if constraints is None else constraints,
             extras=self.extras if extras is None else extras,

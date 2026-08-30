@@ -7,10 +7,10 @@ import pandas as pd
 import pytest
 
 from portfolio_optimizer.domain.frames import ColumnSpec, FrameSchema, FrameSchemaError, coerce_frame, validate_frame
-from portfolio_optimizer.domain.schemas import DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
+from portfolio_optimizer.domain.schemas import DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, UNIVERSE
 from tests.conftest import Frames, empty_frame
 
-ALL_SCHEMAS = [PORTFOLIOS, DETAILS, HOLDINGS, UNIVERSE, TARGETS, ORDERS]
+ALL_SCHEMAS = [PORTFOLIOS, DETAILS, HOLDINGS, UNIVERSE, ORDERS]
 
 
 @pytest.mark.parametrize("schema", ALL_SCHEMAS, ids=[schema.name for schema in ALL_SCHEMAS])
@@ -34,7 +34,6 @@ REJECT_CASES: list[tuple[str, FrameSchema, Mapping[str, object], str]] = [
     ("NaN alpha", UNIVERSE, {"alpha": float("nan")}, "alpha"),
     ("tax rate of one", DETAILS, {"st_tax_rate": Decimal(1)}, "st_tax_rate"),
     ("zero nav", DETAILS, {"nav": Decimal(0)}, "nav"),
-    ("target weight above one", TARGETS, {"weight": Decimal("1.5")}, "weight"),
     ("order side unknown", ORDERS, {"side": "HOLD"}, "side"),
     ("order quantity zero", ORDERS, {"quantity": 0}, "quantity"),
     ("order notional mismatch", ORDERS, {"notional": Decimal(999)}, "notional"),
@@ -80,18 +79,12 @@ def test_every_failure_is_listed_at_once(frames: Frames) -> None:
     assert len(info.value.failures) == 2
 
 
-def test_target_weights_must_sum_to_one_per_benchmark(frames: Frames) -> None:
-    frame = frames.targets({"security_id": "A", "weight": Decimal("0.6")}, {"security_id": "B", "weight": Decimal("0.3")})
-    with pytest.raises(FrameSchemaError, match="do not sum to 1"):
-        validate_frame(frame, TARGETS)
-
-
 @pytest.mark.parametrize("schema", [HOLDINGS, UNIVERSE], ids=["holdings", "universe"])
 def test_analytics_tables_accept_columns_beyond_their_schema(frames: Frames, schema: FrameSchema) -> None:
     validate_frame(frames.for_schema(schema)().assign(score=pd.Series([0.5], dtype="Float64")), schema)
 
 
-@pytest.mark.parametrize("schema", [DETAILS, TARGETS], ids=["details", "targets"])
+@pytest.mark.parametrize("schema", [PORTFOLIOS, DETAILS], ids=["portfolios", "details"])
 def test_other_engine_frames_reject_unexpected_columns(frames: Frames, schema: FrameSchema) -> None:
     with pytest.raises(FrameSchemaError, match="unexpected columns \\['score'\\]"):
         validate_frame(frames.for_schema(schema)().assign(score=pd.Series([0.5], dtype="Float64")), schema)

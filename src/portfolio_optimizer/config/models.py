@@ -197,7 +197,7 @@ class RunConfig(StrictModel):
         description='The portfolio list (`portfolio_id`, optional `solve_order`): a bare loader step, or `{"loader": step, "rate_limit": ...}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, and a portfolio waits only for higher-priority portfolios whose tradable set — the securities it can trade on the side the run couples through — overlaps its own. A `solve_order` step replaces the column.'
     )
     datasets: dict[str, DatasetConfig] = Field(
-        description="Named datasets, every one a frame. `holdings`, `universe`, `details`, and `targets` must be declared here unless an assembly step produces them; `sector_bounds` is engine-known but optional, and a run that omits it bounds no sector. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known."
+        description="Named datasets, every one a frame. `holdings`, `universe`, and `details` must be declared here unless an assembly step produces them; `sector_bounds` and `constraints` are engine-known but optional, and a run that omits `sector_bounds` bounds no sector. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known."
     )
     rate_limits: dict[str, RateLimitConfig] = Field(
         default_factory=dict,

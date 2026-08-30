@@ -31,7 +31,7 @@ The schema cannot express one rule the models enforce: `as_of_date` must carry a
 |---|---|---|---|
 | `run` | object | yes | Run identity: `name` (non-empty), `as_of_date` (timezone-aware ISO-8601 timestamp), `tags` (string map, default `{}`). |
 | `portfolios` | step or input | yes | Loader returning the `portfolios` frame (`portfolio_id`, optional `solve_order`); a bare step, or `{"loader": step[, "rate_limit": ...]}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, values may repeat. |
-| `datasets` | object | yes | Named inputs, each `{"loader": step[, "scope": ..., "batch_size": n, "rate_limit": name or bound]}`. `holdings`, `universe`, `details`, and `targets` are required unless `assembly` is non-empty, in which case they may be produced by a step and are checked after assembly. `sector_bounds` and `constraints` are engine-known but optional. Any other name is an extra dataset: visible to every assembly step, and carried into each portfolio's bundle as `data.extras` unless dropped. All dataset loaders run concurrently. |
+| `datasets` | object | yes | Named inputs, each `{"loader": step[, "scope": ..., "batch_size": n, "rate_limit": name or bound]}`. `holdings`, `universe`, and `details` are required unless `assembly` is non-empty, in which case they may be produced by a step and are checked after assembly. `sector_bounds` and `constraints` are engine-known but optional. Any other name is an extra dataset: visible to every assembly step, and carried into each portfolio's bundle as `data.extras` unless dropped. All dataset loaders run concurrently. |
 | `rate_limits` | object | no | Named pools that inputs on the same backend share; see below. Default `{}`. |
 | `assembly` | step list | no | Assembly steps, run in order over every loaded dataset before schema validation. Default `[]`. See below. |
 | `rules` | step list | no | Business-logic rules, run in order on each portfolio's bundle; they never see other portfolios. Default `[]`. |
@@ -118,7 +118,7 @@ Each entry is a step of kind `assembly`: `(frames: Frames[, params]) -> Frames`,
 immutable mapping of dataset name to frame (see [the bundle reference](reference-portfolio-data.md)).
 Steps run in order, once per run, after every loader has returned. A step that raises `ValueError` or
 `KeyError` rejects the run as `assembly[i] <qualname>: <message>`. After the last step, `holdings`,
-`universe`, `details`, and `targets` must exist and satisfy their schemas; every other dataset still
+`universe`, and `details` must exist and satisfy their schemas; every other dataset still
 present is carried into each portfolio's bundle as an extra. The manifest records each step's
 `rows_in`, `rows_out`, and `columns_added`.
 
@@ -187,7 +187,7 @@ kind is declared for arrives as pandas inferred it. Assembly steps: `join`, `uni
 `cap_single_name` (`max_weight`), `add_zero_alpha`, `restrict_low_liquidity` (`min_adv_shares`),
 `attach_universe_columns` (`columns`; copies per-security columns from the universe onto holdings,
 matched on `security_id` — default every column the universe carries beyond its schema).
-Solve-order steps: `furthest_from_target_first`. Terms: `tracking_error`, `alpha` (`column`), `tax_cost`,
+Solve-order steps: `most_uninvested_first`. Terms: `alpha` (`column`), `tax_cost`,
 `transaction_cost` (`cost_bps`), each with `weight` (default `"1"`). Constraints:
 `long_only`, `max_weight`, `cash_bounds`, `sector_bounds` (`tolerance`), `turnover_cap`,
 `cumulative_adv_participation` (`chain`: `trade ≤ adv_capacity` and `coupled ≤ adv_capacity − predecessors' trades on the side the run couples through`).

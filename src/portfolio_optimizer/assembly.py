@@ -2,7 +2,7 @@
 
 An assembly step is an ordinary function ``(frames: Frames, params: P) -> Frames`` named in the run
 config's ``assembly`` list. It runs once per run, after every loader has returned and before the
-engine-known frames (``holdings``, ``universe``, ``details``, ``targets``) are validated against their
+engine-known frames (``holdings``, ``universe``, ``details``) are validated against their
 schemas, and it sees every loaded dataset by name. Steps are pure: same frames in, same frames out,
 no I/O. Each is recorded in the manifest with its source hash, its params hash, row counts per dataset
 before and after, and the columns it added.

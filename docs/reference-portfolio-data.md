@@ -18,7 +18,7 @@ returned by it.
 | `without(*names)` | A copy without `names`; every name must exist. |
 | `row_counts()` | `{name: rows}`, as recorded in the manifest. |
 
-After the last step, `holdings`, `universe`, `details`, and `targets` must exist and satisfy their
+After the last step, `holdings`, `universe`, and `details` must exist and satisfy their
 schemas. Every other dataset still present becomes an extra.
 
 ## `PortfolioData`
@@ -28,10 +28,9 @@ raises `PortfolioDataError` listing all failures.
 
 | Field | Type | Description |
 |---|---|---|
-| `details` | `PortfolioDetails` | This portfolio's `details` row: `portfolio_id`, `name`, `state`, `st_tax_rate`, `lt_tax_rate`, `cash`, `nav`, `benchmark_id`, and the style limits `max_weight`, `max_turnover`, `max_adv_participation`, `min_trade_notional`, `cash_lb`, `cash_ub`. |
+| `details` | `PortfolioDetails` | This portfolio's `details` row: `portfolio_id`, `name`, `state`, `st_tax_rate`, `lt_tax_rate`, `cash`, `nav`, and the style limits `max_weight`, `max_turnover`, `max_adv_participation`, `min_trade_notional`, `cash_lb`, `cash_ub`. |
 | `holdings` | frame | This portfolio's rows of `holdings`. Schema columns `portfolio_id`, `security_id`, `quantity`, `avg_cost`, `acquired_on`; any further columns allowed. |
 | `universe` | frame | The whole `universe`, identical for every portfolio. Schema columns `security_id`, `price`, `sector`, `adv_shares`, `lot_size`, `restricted`; optional `alpha`, `tcost_bps`, `min_weight`, `max_weight`; any further columns allowed. |
-| `targets` | frame | The rows of `targets` for `details.benchmark_id`. Schema columns only. |
 | `sector_bounds` | frame | This portfolio's rows of `sector_bounds`. Schema columns `portfolio_id`, `sector`, `lower`, `upper`; empty when the run declares no such dataset. |
 | `constraints` | frame | This portfolio's rows of `constraints`, in the desk's own shape. The engine validates only that `portfolio_id` is present and names this portfolio; every other column is carried untouched to the solve step. Empty when the run declares no such dataset. A rule may replace it. |
 | `as_of_date` | `datetime` | The run's `as_of_date`, timezone-aware UTC. |
@@ -41,19 +40,17 @@ raises `PortfolioDataError` listing all failures.
 
 ### Checks on construction
 
-1. `holdings`, `universe`, `targets`, `sector_bounds`, and `constraints` satisfy their frame schemas
-   (columns, dtypes, nullability, bounds, unique key, target weights summing to one, sector bounds
-   ordered). `constraints` declares only `portfolio_id`, so in practice only that is checked.
-2. `extras` values are frames, and no extra is named `holdings`, `universe`, `details`, `targets`,
-   `sector_bounds`, or `portfolios`.
+1. `holdings`, `universe`, `sector_bounds`, and `constraints` satisfy their frame schemas
+   (columns, dtypes, nullability, bounds, unique key, sector bounds ordered). `constraints` declares
+   only `portfolio_id`, so in practice only that is checked.
+2. `extras` values are frames, and no extra is named `holdings`, `universe`, `details`,
+   `sector_bounds`, `constraints`, or `portfolios`.
 3. `as_of_date` is timezone-aware UTC.
 4. `holdings.portfolio_id` contains only this portfolio.
-5. `targets.benchmark_id` contains only `details.benchmark_id`.
-6. Every target security is in `holdings` or `universe`.
-7. Every sector in `sector_bounds` occurs in `universe.sector`, and its rows — like the `constraints`
+5. Every sector in `sector_bounds` occurs in `universe.sector`, and its rows — like the `constraints`
    rows — name only this portfolio.
-8. Every column present in both `holdings` and `universe` has the same dtype in both.
-9. Every extra with a `portfolio_id` column contains only this portfolio.
+6. Every column present in both `holdings` and `universe` has the same dtype in both.
+7. Every extra with a `portfolio_id` column contains only this portfolio.
 
 A held security need not be in the universe. The shipped build requires it (a `BuildError` at stage
 `build`); a custom build consuming the optimizer frame need not.
@@ -62,7 +59,7 @@ A held security need not be in the universe. The shipped build requires it (a `B
 
 | Method | Description |
 |---|---|
-| `with_changes(*, details=None, holdings=None, universe=None, targets=None, sector_bounds=None, constraints=None, extras=None)` | A re-validated copy with the given parts replaced. |
+| `with_changes(*, details=None, holdings=None, universe=None, sector_bounds=None, constraints=None, extras=None)` | A re-validated copy with the given parts replaced. |
 | `with_rule_applied(qualname)` | A copy recording that a rule ran; called by the pipeline. |
 | `optimizer_frame(*, source_column="source")` | Holdings and universe stacked into one frame; see below. |
 

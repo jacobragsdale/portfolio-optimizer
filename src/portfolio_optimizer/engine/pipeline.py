@@ -27,4 +27,4 @@ def apply_rules(data: PortfolioData, rules: Sequence[ResolvedStep]) -> tuple[Por
 
 
 def _row_counts(data: PortfolioData) -> dict[str, int]:
-    return {"holdings": len(data.holdings), "universe": len(data.universe), "targets": len(data.targets), **{name: len(frame) for name, frame in data.extras.items()}}
+    return {"holdings": len(data.holdings), "universe": len(data.universe), **{name: len(frame) for name, frame in data.extras.items()}}

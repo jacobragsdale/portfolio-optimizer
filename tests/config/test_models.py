@@ -63,8 +63,8 @@ def test_unknown_keys_are_rejected(example_dict: dict[str, object]) -> None:
 
 def test_missing_required_dataset_is_rejected(example_dict: dict[str, object]) -> None:
     datasets = section(example_dict, "datasets")
-    del datasets["targets"]
-    with pytest.raises(ValidationError, match="missing \\['targets'\\]"):
+    del datasets["universe"]
+    with pytest.raises(ValidationError, match="missing \\['universe'\\]"):
         load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": []}))
 
 
@@ -120,8 +120,8 @@ def test_defaults_fill_optional_sections() -> None:
     minimal = {
         "run": {"name": "r", "as_of_date": "2026-01-01T00:00:00Z"},
         "portfolios": "csv",
-        "datasets": {name: {"loader": "csv"} for name in ("holdings", "universe", "details", "constraints", "targets")},
-        "objective": {"terms": ["tracking_error"]},
+        "datasets": {name: {"loader": "csv"} for name in ("holdings", "universe", "details", "constraints")},
+        "objective": {"terms": ["alpha"]},
         "sink": "orders_to_parquet",
     }
     config = RunConfig.model_validate_json(json.dumps(minimal))

@@ -8,16 +8,16 @@ with a solve-order step; the alternative is the `solve_order` column of the port
 
 ## 1. Decide what "first" means
 
-The shipped step puts the portfolio furthest from its target first, on the theory that the account
-in the worst shape should get the scarce liquidity:
+The shipped step puts the account with the most left to invest first, on the theory that whoever has
+the most to buy should get first pick of the scarce liquidity:
 
 ```python
-def furthest_from_target_first(data: PortfolioData) -> Decimal:
-    """Minus the portfolio's active share, so the portfolio furthest from its target solves first."""
+def most_uninvested_first(data: PortfolioData) -> Decimal:
+    """Minus the fraction of NAV the portfolio has yet to invest, so the account with the most to put to work solves first."""
 ```
 
 Lower keys solve first, so a "priority" that should go first returns a *smaller* number — the shipped
-step negates the active share. Equal keys tie, and ties break on `portfolio_id`, so the order is
+step returns the invested fraction minus one. Equal keys tie, and ties break on `portfolio_id`, so the order is
 deterministic whatever the data.
 
 ## 2. Write the function in `solve_order.py`

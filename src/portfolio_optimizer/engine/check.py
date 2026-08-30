@@ -78,10 +78,6 @@ def _adv_participation(spec: ProblemSpec, sol: Solution, chain: ChainState, para
     return [("adv_participation", sol.buy + sol.sell - spec.adv_capacity), ("cumulative_adv_participation", profile.coupled(sol) - remaining)]
 
 
-def _tracking_error(spec: ProblemSpec, sol: Solution, params: Mapping[str, object]) -> float:
-    return param(params, "weight", 1.0) * float(((sol.w - spec.w_target) ** 2).sum())
-
-
 def _alpha(spec: ProblemSpec, sol: Solution, params: Mapping[str, object]) -> float:
     column = params.get("column", "alpha")
     return -param(params, "weight", 1.0) * float((spec.column(str(column)) * sol.w).sum())
@@ -106,12 +102,7 @@ CONSTRAINT_TWINS: Mapping[str, ConstraintTwin] = {
 }
 """Numpy twin of every shipped constraint, keyed by the qualified name the manifest records."""
 
-TERM_TWINS: Mapping[str, TermTwin] = {
-    "portfolio_optimizer.terms:tracking_error": _tracking_error,
-    "portfolio_optimizer.terms:alpha": _alpha,
-    "portfolio_optimizer.terms:tax_cost": _tax_cost,
-    "portfolio_optimizer.terms:transaction_cost": _transaction_cost,
-}
+TERM_TWINS: Mapping[str, TermTwin] = {"portfolio_optimizer.terms:alpha": _alpha, "portfolio_optimizer.terms:tax_cost": _tax_cost, "portfolio_optimizer.terms:transaction_cost": _transaction_cost}
 """Numpy twin of every shipped objective term."""
 
 

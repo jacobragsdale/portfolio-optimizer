@@ -34,7 +34,7 @@ hash.
 
 **Resolution** (`config/resolve.py`) is where the one convention is enforced. Every step in the config —
 loaders, assembly steps, rules, the solve-order step, objective terms, constraints, the solve step, the
-sink — is a function name such as `"tracking_error"` or `"mypkg.mod:my_rule"`. Before any data loads,
+sink — is a function name such as `"transaction_cost"` or `"mypkg.mod:my_rule"`. Before any data loads,
 the resolver:
 
 - imports the function;
@@ -114,11 +114,11 @@ silently joins to a `string` key as `object`; a brought column the target alread
 `require_all_matched` uses the merge indicator to report unmatched keys by example. A custom step gets
 the same treatment: a `ValueError` it raises rejects the run under the step's name, and its source hash,
 row counts, and the columns it added go into the manifest. After the last step, `holdings`, `universe`,
-`details`, and `targets` must exist, and **every engine-known frame is validated against its schema** —
-column set, dtype, nullability, bounds, unique key, and frame-level invariants such as "target weights
-sum to one" — with all failures across all frames reported at once. `holdings` and `universe` may carry
-any further columns; that is where security analytics live. `sector_bounds` is engine-known but
-optional — a run that omits it bounds no sector. Finally, `details` must have a row for every
+and `details` must exist, and **every engine-known frame is validated against its schema** — column
+set, dtype, nullability, bounds, unique key, and frame-level invariants such as "cash_lb does not
+exceed cash_ub" — with all failures across all frames reported at once. `holdings` and `universe` may
+carry any further columns; that is where security analytics live. `sector_bounds` and `constraints` are
+engine-known but optional — a run that omits `sector_bounds` bounds no sector. Finally, `details` must have a row for every
 portfolio. Whatever datasets remain that the engine does not know become the run's extras.
 
 Anything failing here raises `InputRejectedError` and the run exits with code 2. Nothing was solved.
@@ -127,21 +127,19 @@ Anything failing here raises `InputRejectedError` and the run exits with code 2.
 
 `slice_portfolio` builds a `PortfolioData` bundle: this portfolio's `details` row typed into a
 `PortfolioDetails` model — which carries the account's style limits alongside its facts — its holdings,
-the full universe, its benchmark's targets, its own rows of `sector_bounds`, and its share of the
+the full universe, its own rows of `sector_bounds` and `constraints`, and its share of the
 extras — a dataset with a `portfolio_id` column reduced to this portfolio's rows, one without passed
 whole. This happens *in the worker*, which received the assembled
 datasets once: a task carries a portfolio id and nothing else.
 
 The frames the slice produces are marked `prevalidated`: assembly already checked them against their
-schemas, the universe is passed whole, and a row subset of validated holdings, targets, or sector
-bounds keeps every per-column check, the key's uniqueness, the bounds' ordering, and — because targets
-are sliced by whole benchmark — the sum-to-one invariant. So the bundle does not check them again, here or after a rule that leaves them
-untouched. A rule that returns a *new* frame loses that standing for it, and the new frame is validated.
+schemas, the universe is passed whole, and a row subset of validated holdings or sector bounds keeps
+every per-column check, the key's uniqueness, and the bounds' ordering. So the bundle does not check
+them again, here or after a rule that leaves them untouched. A rule that returns a *new* frame loses that standing for it, and the new frame is validated.
 
 `PortfolioData.__post_init__` (`domain/data.py`) holds the cross-frame invariants: `as_of_date` is UTC,
-holdings contain only this portfolio, targets belong to this benchmark and every target name is held or
-buyable, every sector named in `sector_bounds` exists, every extra with a `portfolio_id` column belongs
-to this portfolio, and — because the two tables will be stacked into one optimizer frame — every column
+holdings contain only this portfolio, every sector named in `sector_bounds` exists, every constraint row
+and every extra with a `portfolio_id` column belongs to this portfolio, and — because the two tables will be stacked into one optimizer frame — every column
 that `holdings` and `universe` share has the same dtype on both. A held name need not be in the
 universe; that is the shipped build's requirement, not the bundle's. A failure here is a per-portfolio
 failure at stage `slice`, not a run-level rejection; other portfolios proceed according to `on_error`.
@@ -160,7 +158,7 @@ constructs a new `PortfolioData` and therefore **re-runs every check from stage 
 the optimizer a broken bundle. Each rule gets an audit record of row counts before and after.
 
 The shipped rules (`rules.py`) show the patterns: `restrict_low_liquidity` freezes names below an ADV
-threshold, `add_zero_alpha` adds a column, `attach_universe_columns` copies the universe's analytics
+threshold, `add_zero_alpha` fills in a column the objective needs, `attach_universe_columns` copies the universe's analytics
 onto holdings for a book that loads holdings per account, `cap_single_name` tightens the style. A rule never sees other
 portfolios. What it *can* do is shrink the portfolio's tradable set — freeze a name, or cap it at its
 current weight in a run that couples through buys — and that is what lets portfolios solve
@@ -170,7 +168,7 @@ the side the run couples through.
 Between the rules and the build, the optional **solve-order step** (`solve_order.py`) reads the ruled
 bundle and returns the portfolio's solve-order key, a finite `Decimal`; lower solves first. It replaces
 the portfolios frame's column and answers "who gets first pick of a shared budget" from the data — the
-shipped `furthest_from_target_first` puts the portfolio with the largest active share first.
+shipped `most_uninvested_first` puts the account with the most left to put to work first.
 
 ## 5. Build: `Decimal` becomes float64, once
 
@@ -388,20 +386,25 @@ solve → orders. "Did the data change, or did the solver?" is a one-command que
 
 ## The example, stage by stage
 
-`configs/example_run.json` declares two portfolios over three securities, four global datasets and two
+`configs/example_run.json` declares two portfolios over three securities, three global datasets and two
 loaded per account (`holdings` and `details`, one call and one file per portfolio), no assembly steps,
-three rules, three terms (tracking error, tax cost, transaction cost), six constraints, the Clarabel
-solver, and `fail_fast`; how many workers the run has is the `PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting.
+one rule, three terms (alpha, tax cost, transaction cost), seven constraints, the Clarabel solver, and
+`fail_fast`; how many workers the run has is the `PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting.
 
-P1 and P2 each hold $500,000 of A and $500,000 of B (5,000 A at 100, 10,000 B at 50) against an
-equal-weight target. A and B are `TECH`, C is `HEALTH`, and the style's sector bands — `TECH` in
-`[0.5, 1]`, `HEALTH` in `[0, 0.5]` — do not bind. C trades 100,000 shares a day at 10, and the style
-allows 25% participation, so a portfolio may buy at most 25,000 shares of C. P1 solves first: it sells 1,250 A and 2,500 B and buys
-25,000 C — the hand-computable optimum, to the share. P2 can buy the same securities, so it waits for
-P1; when it solves, the chain state says C's budget is spent, and with cash bounds at zero and A and B
-already symmetric against the target, P2 produces no orders. Run the config twice and `diff-manifests`
-reports `no differences`; run it with `"dependencies": "all"` and every portfolio record is the same
-again (the diff names only the config). The [tutorial](tutorial-first-run.md) walks through exactly this.
+P1 and P2 each hold $500,000 of A and $500,000 of B (5,000 A at 100, 10,000 B at 50 against a cost of
+40, so B carries a fifth of unrealized gain). C has the best expected return and the worst liquidity: it
+trades 100,000 shares a day at 10, and the style allows 25% participation, so a portfolio may buy at
+most 25,000 shares — a quarter of its NAV. A and B are `TECH`, C is `HEALTH`, and the sector bands —
+`TECH` in `[0.5, 1]`, `HEALTH` in `[0, 0.5]` — do not bind.
+
+P1 solves first. Its 40% single-name cap puts both holdings over the line, so it must trim; it raises
+the quarter of NAV that C's budget allows and takes A down first, because A is at cost and B is not:
+sell 1,500 A, sell 2,000 B to the cap, buy 25,000 C — the hand-computable optimum, to the share. P2 can
+buy the same securities, so it waits for P1; when it solves, the chain state says C's budget is spent,
+and with a 60% cap forcing nothing and a short-term rate on B's gain making every A/B swap uneconomic,
+P2 produces no orders. Run the config twice and `diff-manifests` reports `no differences`; run it with
+`"dependencies": "all"` and every portfolio record is the same again (the diff names only the config).
+The [tutorial](tutorial-first-run.md) walks through exactly this.
 
 ## Where validation happens, in one list
 

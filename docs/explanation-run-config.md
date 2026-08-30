@@ -133,29 +133,30 @@ of reading this column.
   "details":     {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
                   "scope": "per_portfolio", "batch_size": 1},
   "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
-  "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
-  "targets":     {"loader": {"name": "csv", "params": {"path": "targets.csv"}}}
+  "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}}
 }
 ```
 
 Each key is a dataset name and each value says how to load it. The names fall into three groups, and
 the engine treats them differently.
 
-**Four names are required**, because the build cannot produce a problem without them: `holdings`
+**Three names are required**, because the build cannot produce a problem without them: `holdings`
 (what each portfolio owns, with cost basis and acquisition date), `universe` (every security the
-portfolio may buy, with its sector, ADV, lot size, and restricted flag), `details` (per-portfolio NAV,
-cash, tax rates, benchmark, and the account's style limits), and `targets` (per-benchmark target
-weights). They must be declared here unless the config has assembly steps, in which case a step may
+portfolio may buy, with its price, sector, ADV, lot size, restricted flag, and whatever per-security
+analytics the terms read), and `details` (per-portfolio NAV, cash, tax rates, and the account's style
+limits). They must be declared here unless the config has assembly steps, in which case a step may
 produce them — two custodians' files stacked into one `holdings`, say — and their presence is checked
 after assembly instead. Each frame is validated against a fixed schema after assembly — column set,
-dtypes, nullability, bounds, unique key, and invariants such as "target weights sum to one" — with one
-deliberate opening: `holdings` and `universe` accept any columns beyond their schemas, because that is
-where security analytics go.
+dtypes, nullability, bounds, unique key, and cross-column invariants — with one deliberate opening:
+`holdings` and `universe` accept any columns beyond their schemas, because that is where security
+analytics go.
 
-**`sector_bounds` is engine-known but optional.** It is one row per portfolio and sector
-(`portfolio_id`, `sector`, `lower`, `upper`), validated against its own schema when present; a run
-that declares no such dataset bounds no sector. It exists as its own dataset because a per-sector limit
-is the one style limit that does not fit in an account's row.
+**`sector_bounds` and `constraints` are engine-known but optional.** `sector_bounds` is one row per
+portfolio and sector (`portfolio_id`, `sector`, `lower`, `upper`), validated against its own schema
+when present; a run that declares no such dataset bounds no sector. It exists as its own dataset
+because a per-sector limit is the one style limit that does not fit in an account's row.
+`constraints` is the opposite: the engine knows only which portfolio each row belongs to, and the
+section below explains why.
 
 **Any other name is an extra dataset.** The engine knows nothing about its columns. It is visible to
 every assembly step by name, and whatever is still present after the last step is carried into each
@@ -185,12 +186,12 @@ sees such a dataset; attach its columns in a rule instead.
 
 The example is deliberately mixed, because a real book is. `holdings` and `details` are the two
 account-shaped inputs — a custodian says what an account owns, an account master says its NAV, cash,
-tax rates, benchmark, and style limits — so both are `per_portfolio`, and their `batch_size` records the difference
+tax rates, and style limits — so both are `per_portfolio`, and their `batch_size` records the difference
 between the two kinds of source. `holdings` asks for `1`: a call per account, for a backend that
 answers one at a time. `details` asks for `2`: the engine hands its loader two ids per call, for a
 backend that takes a list — one call on this two-account book, two hundred and fifty on a book of five
 hundred, and the number to tune when a source has a maximum request size or charges per call.
-`universe`, `targets`, `constraints`, and `sector_bounds` are book-wide by nature, so those four are
+`universe`, `constraints`, and `sector_bounds` are book-wide by nature, so those three are
 global.
 
 Making `holdings` per-account has a consequence worth understanding before you copy it, because
@@ -320,14 +321,14 @@ portfolios this one has to wait for; see `execution`.
 ## `solve_order`
 
 ```json
-"solve_order": "furthest_from_target_first"
+"solve_order": "most_uninvested_first"
 ```
 
 The example does not set this — its portfolios file carries the priority — but a real book usually
 should. A solve-order step is `(data: PortfolioData[, params]) -> Decimal`, run on each portfolio's
 ruled bundle in the worker that built it; lower keys solve first and ties break on `portfolio_id`. It
-answers "who gets first pick of a shared budget" from the data — the shipped step puts the portfolio
-furthest from its target first — instead of from a hand-maintained column, and it is part of the
+answers "who gets first pick of a shared budget" from the data — the shipped step puts the account with
+the most left to invest first — instead of from a hand-maintained column, and it is part of the
 config hash, so two runs with different priorities are visibly different runs.
 
 ## `sides`
@@ -352,7 +353,7 @@ covers what the profile owns and why the side is a config value rather than a pa
 "objective": {
   "sense": "minimize",
   "terms": [
-    {"name": "tracking_error", "params": {"weight": "1.0"}},
+    {"name": "alpha", "params": {"weight": "1.0"}},
     {"name": "tax_cost", "params": {"weight": "1.0"}},
     {"name": "transaction_cost", "params": {"weight": "1.0"}}
   ]
@@ -372,8 +373,11 @@ later recomputes every shipped term in numpy and compares the sum with what the 
 is why the weights here are the only tuning knobs on the objective: the shape of each term is fixed in
 code so that its numpy twin stays in step with it.
 
-The example's three terms make the solver trade off closeness to the benchmark against the taxes and
-trading costs of getting there. One term carries a condition worth knowing: `tax_cost` refuses to run
+The example's three terms make the solver trade the expected return of a name off against the tax on
+realising a gain to reach it and the cost of the trade itself. `alpha` is the one that reads a
+per-security column — `alpha` by default, any numeric universe column through its `column` parameter —
+which is how a signal a desk computes elsewhere reaches the objective without the engine knowing
+anything about it. One term carries a condition worth knowing: `tax_cost` refuses to run
 when losses could be harvested but nothing charges for trading (no `transaction_cost` term with a
 positive `cost_bps` and no `tcost_bps` column), because that combination lets the solver sell and
 rebuy a name for free.

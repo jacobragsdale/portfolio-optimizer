@@ -106,7 +106,6 @@ class AssembledDatasets:
     holdings: pd.DataFrame
     universe: pd.DataFrame
     details: pd.DataFrame
-    targets: pd.DataFrame
     sector_bounds: pd.DataFrame
     constraints: pd.DataFrame
     extras: Mapping[str, pd.DataFrame]
@@ -387,7 +386,6 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -
         holdings=frames["holdings"],
         universe=frames["universe"],
         details=details,
-        targets=frames["targets"],
         sector_bounds=frames.get("sector_bounds", empty_frame(SECTOR_BOUNDS)),
         constraints=frames.get("constraints", empty_frame(CONSTRAINTS)),
         extras={name: frame for name, frame in frames.items() if name not in DATASET_SCHEMAS},
@@ -437,22 +435,19 @@ def _columns_added(before: Frames, after: Frames) -> dict[str, tuple[str, ...]]:
 
 
 def slice_portfolio(assembled: AssembledDatasets, portfolio_id: PortfolioId) -> PortfolioData:
-    """Build the validated per-portfolio bundle: its own holdings, sector bounds, constraints, and extras rows; its benchmark's targets; the whole universe.
+    """Build the validated per-portfolio bundle: its own holdings, sector bounds, constraints, and extras rows, and the whole universe.
 
     The schema frames are marked prevalidated: :func:`assemble` validated them, the universe is
-    passed whole, and the holdings, sector-bounds, and targets slices are row subsets, which keep every
-    per-column check, the key's uniqueness, the sector bounds' ordering, and — because targets are
-    sliced by whole benchmark — the sum-to-one invariant.
+    passed whole, and the holdings and sector-bounds slices are row subsets, which keep every
+    per-column check, the key's uniqueness, and the sector bounds' ordering.
     """
     details = details_from_frame(assembled.details, portfolio_id)
     holdings = assembled.holdings[assembled.holdings["portfolio_id"] == portfolio_id].reset_index(drop=True)
-    targets = assembled.targets[assembled.targets["benchmark_id"] == details.benchmark_id].reset_index(drop=True)
     extras = {name: _rows_for(frame, portfolio_id) for name, frame in assembled.extras.items()}
     return PortfolioData(
         details=details,
         holdings=holdings,
         universe=assembled.universe.reset_index(drop=True),
-        targets=targets,
         sector_bounds=_rows_for(assembled.sector_bounds, portfolio_id),
         constraints=_rows_for(assembled.constraints, portfolio_id),
         as_of_date=assembled.as_of_date,

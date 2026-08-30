@@ -15,15 +15,15 @@ from decimal import Decimal
 from portfolio_optimizer.domain.data import PortfolioData
 
 
-def furthest_from_target_first(data: PortfolioData) -> Decimal:
-    """Minus the portfolio's active share, so the portfolio furthest from its target solves first.
+def most_uninvested_first(data: PortfolioData) -> Decimal:
+    """Minus the fraction of NAV the portfolio has yet to invest, so the account with the most to put to work solves first.
 
-    Active share is half the sum of absolute weight differences against the benchmark, in exact
-    ``Decimal`` from holdings, prices, and NAV. Two portfolios at the same distance tie.
+    The uninvested fraction is one minus the market value of the holdings over NAV, in exact
+    ``Decimal`` from holdings, prices, and NAV — the same quantity the cash bounds constrain. It is the
+    key that matters when the scarce thing is liquidity: whoever has the most to buy gets first pick of
+    each name's budget. Two portfolios equally invested tie.
     """
     prices = {str(security): Decimal(str(price)) if not isinstance(price, Decimal) else price for security, price in zip(data.universe["security_id"], data.universe["price"], strict=True)}
     nav = data.details.nav
-    current = {str(security): Decimal(int(quantity)) * prices[str(security)] / nav for security, quantity in zip(data.holdings["security_id"], data.holdings["quantity"], strict=True)}
-    target = {str(security): weight if isinstance(weight, Decimal) else Decimal(str(weight)) for security, weight in zip(data.targets["security_id"], data.targets["weight"], strict=True)}
-    distance = sum((abs(current.get(security, Decimal(0)) - target.get(security, Decimal(0))) for security in current.keys() | target.keys()), Decimal(0))
-    return -(distance / 2)
+    invested = sum((Decimal(int(quantity)) * prices[str(security)] / nav for security, quantity in zip(data.holdings["security_id"], data.holdings["quantity"], strict=True)), Decimal(0))
+    return invested - 1

@@ -44,9 +44,9 @@ The quickest way to see what the engine does is to read the run it ships with,
     // No `scope` means `global`: one call for the whole book, and the only datasets assembly sees.
     "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
 
-    // The account master: NAV, cash, tax rates, benchmark, and the account's style limits
-    // (`max_weight`, `max_turnover`, `max_adv_participation`, `min_trade_notional`, `cash_lb`,
-    // `cash_ub`). `batch_size: 2` hands the loader two ids per call — a source that takes a list.
+    // The account master: NAV, cash, tax rates, and the account's style limits (`max_weight`,
+    // `max_turnover`, `max_adv_participation`, `min_trade_notional`, `cash_lb`, `cash_ub`).
+    // `batch_size: 2` hands the loader two ids per call — a source that takes a list.
     "details": {
       "loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
       "scope": "per_portfolio",
@@ -61,27 +61,20 @@ The quickest way to see what the engine does is to read the run it ships with,
     // `cvxpy` step reads this convention: a `name` naming a step in terms.py, an optional `label`, and
     // optional `params` as JSON text. Optional, like any dataset: omit it and nothing is constrained
     // beyond the trade identity.
-    "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
-
-    "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}}
+    "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}}
   },
 
   // Business logic, applied in order to each portfolio's bundle. A rule never sees another portfolio.
-  "rules": [
-    // Freezing a name shrinks the tradable set, which is what lets portfolios solve concurrently.
-    {"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}},
-    "add_zero_alpha",
-    // The per-portfolio counterpart of an assembly `join`, needed here because `holdings` is
-    // per-portfolio and so never reaches assembly.
-    "attach_universe_columns"
-  ],
+  // Freezing a name shrinks the tradable set, which is what lets portfolios solve concurrently.
+  "rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}],
 
-  // The sum of these terms is minimized; express a reward as a negative term. Weights are strings so
-  // the manifest records an exact Decimal.
+  // The sum of these terms is minimized; express a reward as a negative term — `alpha` is one, so
+  // the run buys expected return and pays for it in tax and trading cost. Weights are strings so the
+  // manifest records an exact Decimal.
   "objective": {
     "sense": "minimize",
     "terms": [
-      {"name": "tracking_error", "params": {"weight": "1.0"}},
+      {"name": "alpha", "params": {"weight": "1.0"}},
       {"name": "tax_cost", "params": {"weight": "1.0"}},
       {"name": "transaction_cost", "params": {"weight": "1.0"}}
     ]
@@ -115,22 +108,22 @@ that kind of step, or by `package.module:function`, with optional `params` (see
   short-term.
 - **`portfolios`** — the one loader that runs first and alone. It returns the portfolio ids and,
   optionally, a `solve_order` priority; every other loader is told which ids to fetch.
-- **`datasets`** — everything else to load, all at once, every one a frame. Four names are required and
-  validated against fixed schemas: `holdings`, `universe`, `details` (the account's facts *and* its
-  style limits), and `targets`; `sector_bounds` is engine-known but optional, since a per-sector limit
-  is the one style limit that does not fit in an account's row. Any other name is an extra dataset the
-  engine does not interpret: assembly steps see it, and whatever survives assembly reaches each
+- **`datasets`** — everything else to load, all at once, every one a frame. Three names are required and
+  validated against fixed schemas: `holdings`, `universe`, and `details` (the account's facts *and* its
+  style limits); `sector_bounds` and `constraints` are engine-known but optional, since a per-sector
+  limit is the one style limit that does not fit in an account's row. Any other name is an extra dataset
+  the engine does not interpret: assembly steps see it, and whatever survives assembly reaches each
   portfolio's rules as `data.extras`. Each entry also says how its loader is called.
-  `universe`, `targets`, and `sector_bounds` say nothing and are `global`: one call for the
+  `universe`, `constraints`, and `sector_bounds` say nothing and are `global`: one call for the
   whole book, and the only datasets assembly sees. `holdings` and `details` are `per_portfolio`, so the engine calls their loaders per
   account rather than once for the book, and `batch_size` says how finely: `1` is a call per account,
   the shape of a custodian that answers one at a time; `2` hands the loader two ids per call, the shape
   of an account master that takes a list. It is also why a portfolio whose own inputs are missing fails
   alone instead of stopping the run. An input from a throttled source adds a `rate_limit`.
 - **`rules`** — business logic, run per portfolio in order: each takes one portfolio's validated bundle
-  and returns a modified one, and never sees other portfolios. The example restricts illiquid names,
-  adds a zero `alpha` column, and copies the universe's analytics columns onto holdings — the
-  attachment an assembly `join` would do if holdings were global.
+  and returns a modified one, and never sees other portfolios. The example runs one, freezing names too
+  illiquid to trade; `rules.py` also ships a rule that copies the universe's analytics columns onto
+  holdings — the attachment an assembly `join` would do if holdings were global.
 - **`objective`** — the sum of the listed terms, always minimized; a reward is a negative term. Each term
   is a function returning a convex expression, and its `weight` is a string so the manifest records an
   exact `Decimal`.

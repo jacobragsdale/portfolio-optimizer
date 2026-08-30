@@ -2,7 +2,6 @@
 
 from decimal import Decimal
 
-import numpy as np
 import pandas as pd
 import pytest
 from hypothesis import given, settings
@@ -27,17 +26,15 @@ def test_cap_single_name_only_tightens(make: Factories, style_limit: str, param:
 
 
 def test_add_zero_alpha_adds_a_float_column_only_when_missing(make: Factories, frames: Frames) -> None:
-    added = add_zero_alpha(make.portfolio_data())
+    added = add_zero_alpha(make.portfolio_data(universe=frames.three_security_universe().drop(columns=["alpha"])))
     assert str(added.universe["alpha"].dtype) == "Float64"
     assert added.universe["alpha"].tolist() == [0.0, 0.0, 0.0]
-    universe = frames.three_security_universe().assign(alpha=np.array([0.1, 0.2, 0.3]))
-    universe["alpha"] = universe["alpha"].astype("Float64")
-    kept = add_zero_alpha(make.portfolio_data(universe=universe))
-    assert kept.universe["alpha"].tolist() == [0.1, 0.2, 0.3]
+    kept = add_zero_alpha(make.portfolio_data())
+    assert kept.universe["alpha"].tolist() == [0.03, 0.01, 0.05]
 
 
 def test_add_zero_alpha_on_an_empty_universe(make: Factories, frames: Frames) -> None:
-    data = make.portfolio_data(holdings=frames.holdings().iloc[0:0], universe=frames.universe().iloc[0:0], targets=frames.targets().iloc[0:0])
+    data = make.portfolio_data(holdings=frames.holdings().iloc[0:0], universe=frames.universe().iloc[0:0])
     assert add_zero_alpha(data).universe["alpha"].tolist() == []
 
 

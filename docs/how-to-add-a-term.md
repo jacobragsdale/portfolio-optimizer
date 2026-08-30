@@ -6,7 +6,7 @@ signal column and a constraint that uses earlier portfolios' results, and keeps 
 ## Prerequisites
 
 - The data the term needs is in the per-portfolio spec. `ProblemSpec` carries fixed arrays aligned to
-  `spec.security_ids` (`w0`, `price`, `w_target`, `tax_per_dollar`, `tcost_per_dollar`, `lb`, `ub`,
+  `spec.security_ids` (`w0`, `price`, `tax_per_dollar`, `tcost_per_dollar`, `lb`, `ub`,
   `adv_capacity`, sector matrix and bounds) plus every extra column of the universe frame, exported by
   name: numeric ones as float64 in `spec.column(name)`, boolean ones as `np.bool_` masks in
   `spec.flag(name)`.
@@ -66,7 +66,7 @@ round trip to reward.
 A term is config — the engine minimizes the sum of the objective's terms:
 
 ```json
-"objective": {"terms": ["tracking_error", {"name": "signal_tilt", "params": {"weight": "0.5", "column": "momentum"}}]}
+"objective": {"terms": ["transaction_cost", {"name": "signal_tilt", "params": {"weight": "0.5", "column": "momentum"}}]}
 ```
 
 A **constraint is data**, one row per portfolio in the `constraints` dataset, under the convention the

@@ -74,7 +74,7 @@ REJECTED: list[tuple[str, dict[str, object], str]] = [
     ("shipped rule with required params given as a string", {"rules": ["restrict_low_liquidity"]}, "rules/0"),
     ("shipped rule with a wrong param type", {"rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": "many"}}]}, "rules/0"),
     ("shipped rule with an unknown param", {"rules": [{"name": "add_zero_alpha", "params": {"fill": 0}}]}, "rules/0"),
-    ("shipped term with a negative weight", {"objective": {"terms": [{"name": "tracking_error", "params": {"weight": -1}}]}}, "objective/terms/0"),
+    ("shipped term with a negative weight", {"objective": {"terms": [{"name": "alpha", "params": {"weight": -1}}]}}, "objective/terms/0"),
     ("execution mechanics in the config", {"execution": {"on_error": "fail_fast", "max_workers": 2}}, "execution"),
     ("the removed execution mode", {"execution": {"mode": "sequential"}}, "execution"),
     ("shipped assembly step missing a required param", {"assembly": [{"name": "join", "params": {"into": "universe", "source": "analytics", "on": ["security_id"]}}]}, "assembly/0"),
@@ -108,7 +108,7 @@ def as_object(value: object) -> dict[str, object]:
 def test_every_shipped_step_is_described(schema: dict[str, object]) -> None:
     defs = as_object(schema["$defs"])
     assert "cap_single_name" in str(as_object(defs["RuleStep"])["$comment"])
-    assert "tracking_error" in str(as_object(defs["TermStep"])["$comment"])
+    assert "transaction_cost" in str(as_object(defs["TermStep"])["$comment"])
     assert "orders_to_parquet" in str(as_object(defs["SinkStep"])["$comment"])
     assert "union" in str(as_object(defs["AssemblyStep"])["$comment"])
     assert "csv_per_portfolio" in str(as_object(defs["LoaderStep"])["$comment"])
