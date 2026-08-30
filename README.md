@@ -173,6 +173,43 @@ Behavior is never in the config either; it lives in the functions the config nam
 [Reading a run config](docs/explanation-run-config.md) explains each block in depth, and
 [the reference](docs/reference-run-config.md) lists every key with its type and default.
 
+## The solve schedule is a derived graph
+
+The state of the art in production rebalancing is parallel builds and a *sequential* solve, because a
+chain-aware constraint seems to force one: when account *j* may only take what is left of a name's
+daily volume after the accounts ahead of it took theirs, the safe reading of that dependency is a
+line — *N* solves end to end. The line is the worst case, not the truth. Two accounts that cannot
+trade a security in common cannot affect each other's feasible set, whatever their constraints read.
+So the engine derives the real object: every portfolio builds in parallel and reports its tradable
+set, and a portfolio waits only for the higher-priority portfolios whose tradable set intersects its
+own. Wall clock is the graph's critical path times a solve, not *N* times a solve, independent
+components solve at once, and the head of the book is solving while the tail is still building.
+
+![Eight accounts: the line a chain-aware book seems to force, and the graph the engine derives from mandate overlap — three components, critical path three, same orders either way](docs/images/derived-schedule.svg)
+
+What makes that a result rather than a claim: `execution.dependencies: "all"` runs the same book as
+the strict line, and produces **byte-identical orders and chain hashes** — a property test asserts
+it, and `benchmarks/run_book.py` runs both schedules over synthetic books on a real cluster.
+Measured 2026-08-30 (8 local workers, Clarabel; the manifest's own `schedule` and `timing` blocks):
+
+| Book | Derived: edges · components · critical path | Wall clock |
+|---|---|---:|
+| 100 accounts, 10 disjoint mandates, 2,000 names (~0.14s solves) | 450 · 10 · 10 | **6.9s** |
+| — the same book as the line (`dependencies: all`) | 4,950 · 1 · 100 | 14.9s |
+| 12 accounts, 4 disjoint mandates, 30,000 names (~2s solves) | 12 · 4 · 3 | **14.0s** |
+| — the same book as the line | 66 · 1 · 12 | 24.6s |
+| 1,000 accounts, 10 disjoint mandates | 49,500 · 10 · 100 | 34.1s — capacity-bound, 6.1× parallel on 8 workers |
+
+The honest counterweight: overlap is on *any* shared tradable name, so the win belongs to books
+partitioned by mandate, universe, or restriction list (`restrict_to_mandate` is the shipped shape).
+A book whose accounts all buy from one universe is a complete DAG — the shipped example is
+deliberately that case, and its own manifest says so: `edges 4950, critical_path 100` — and a single
+sector shared between neighbouring mandates is enough to chain the book back into a line (1,450
+edges, critical path 100 again). Narrowing coupling from "any shared name" to the names a constraint
+can actually bind on is the open thread in `IDEAS.md`. How the graph is derived and why it is exact
+is in [the architecture explanation](docs/explanation-architecture.md#a-run-couples-through-its-one-side-so-the-schedule-is-a-graph);
+`portfolio-optimizer timeline` draws where any run's wall clock went.
+
 ## Quick start
 
 ```bash

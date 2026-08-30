@@ -10,10 +10,14 @@ The book is generated from a seed. Every portfolio holds and may buy only names 
 (``--groups`` mandate groups over ``--sectors`` sectors, portfolio *i* in group ``i % groups``), so the
 overlap structure — and therefore the schedule — is a parameter: ``--groups 1`` is the degenerate
 single-universe book where every portfolio couples to every earlier one, larger values partition the
-book into that many independent components. ``--dependencies all`` runs the same book as a strict
-line for comparison.
+book into that many independent components, and ``--mandate-overlap M`` extends each mandate over the
+next *M* groups' sectors as well, ring-wise — disjoint components become one connected component whose
+critical path sits between the partitioned book's and the line's, which is what a real book of
+overlapping mandates looks like. ``--dependencies all`` runs the same book as a strict line for
+comparison.
 
     uv run python benchmarks/run_book.py --portfolios 100 --groups 10
+    uv run python benchmarks/run_book.py --portfolios 100 --groups 10 --mandate-overlap 1
     uv run python benchmarks/run_book.py --portfolios 100 --groups 1 --dependencies all
 """
 
@@ -44,8 +48,12 @@ NO_LATENCY = {"min_latency_s": 0, "max_latency_s": 0}
 SHIPPED_CONSTRAINTS = ("long_only", "max_weight", "cash_bounds", "turnover_cap", "cumulative_adv_participation")
 
 
-def write_book(root: Path, rng: np.random.Generator, *, portfolios: int, securities: int, sectors: int, groups: int, held: int) -> None:
-    """Write the CSV tables of one synthetic book: a shared universe, and per account a mandate, holdings inside it, details, and constraint rows."""
+def write_book(root: Path, rng: np.random.Generator, *, portfolios: int, securities: int, sectors: int, groups: int, held: int, mandate_overlap: int) -> None:
+    """Write the CSV tables of one synthetic book: a shared universe, and per account a mandate, holdings inside it, details, and constraint rows.
+
+    ``mandate_overlap`` widens each group's mandate over the next that many groups' sectors, ring-wise,
+    so neighbouring groups share names and the graph connects without collapsing to the complete DAG.
+    """
     root.mkdir(parents=True, exist_ok=True)
     sector_names = [f"SEC{index:03d}" for index in range(sectors)]
     sector_of = [index % sectors for index in range(securities)]
@@ -66,9 +74,9 @@ def write_book(root: Path, rng: np.random.Generator, *, portfolios: int, securit
     nav = Decimal(50_000_000)
     cap = max(Decimal("0.05"), (Decimal("1.8") / Decimal(held)).quantize(Decimal("0.0001")))  # twice the starting position weight, so no start sits above its cap
     for index, portfolio_id in enumerate(portfolio_ids):
-        group = index % groups
-        mandates.extend(f"{portfolio_id},{name}" for sector, name in enumerate(sector_names) if sector % groups == group)
-        eligible = [security for security in range(securities) if sector_of[security] % groups == group]
+        allowed = {(index + step) % groups for step in range(mandate_overlap + 1)}
+        mandates.extend(f"{portfolio_id},{name}" for sector, name in enumerate(sector_names) if sector % groups in allowed)
+        eligible = [security for security in range(securities) if sector_of[security] % groups in allowed]
         positions = sorted(rng.choice(len(eligible), size=min(held, len(eligible)), replace=False).tolist())
         per_position = nav * Decimal("0.9") / Decimal(len(positions))
         for position in positions:
@@ -156,6 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--securities", type=int, default=2_000)
     parser.add_argument("--sectors", type=int, default=40)
     parser.add_argument("--groups", type=int, default=10, help="mandate groups; 1 is the degenerate single-universe book")
+    parser.add_argument("--mandate-overlap", type=int, default=0, help="how many neighbouring groups' sectors each mandate also covers, ring-wise; 0 keeps the groups disjoint")
     parser.add_argument("--held", type=int, default=50, help="positions per portfolio")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--dependencies", default="overlap", choices=("overlap", "all", "none"))
@@ -165,16 +174,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.groups < 1 or args.groups > args.sectors:
         parser.error("--groups must be between 1 and --sectors")
+    if not 0 <= args.mandate_overlap < args.groups:
+        parser.error("--mandate-overlap must be between 0 and --groups - 1")
     out = Path(tempfile.mkdtemp(prefix="run-book-")) if args.out is None else Path(args.out)
     if args.out is not None and out.exists():
         shutil.rmtree(out)
     book = out / "book"
     started = datetime.now(tz=UTC)
-    write_book(book, np.random.default_rng(int(args.seed)), portfolios=int(args.portfolios), securities=int(args.securities), sectors=int(args.sectors), groups=int(args.groups), held=int(args.held))
-    sys.stdout.write(
-        f"book: {args.portfolios} portfolios x {args.securities} securities, {args.groups} mandate group(s), under {out} (generated in {(datetime.now(tz=UTC) - started).total_seconds():.1f}s)\n"
+    write_book(
+        book,
+        np.random.default_rng(int(args.seed)),
+        portfolios=int(args.portfolios),
+        securities=int(args.securities),
+        sectors=int(args.sectors),
+        groups=int(args.groups),
+        held=int(args.held),
+        mandate_overlap=int(args.mandate_overlap),
     )
-    run_id = f"book-p{args.portfolios}-g{args.groups}-{args.dependencies}"
+    sys.stdout.write(
+        f"book: {args.portfolios} portfolios x {args.securities} securities, {args.groups} mandate group(s) at overlap {args.mandate_overlap}, "
+        f"under {out} (generated in {(datetime.now(tz=UTC) - started).total_seconds():.1f}s)\n"
+    )
+    run_id = f"book-p{args.portfolios}-g{args.groups}-m{args.mandate_overlap}-{args.dependencies}"
     report = execute(book, out, run_id, str(args.dependencies), int(args.workers))
     sys.stdout.write("\n".join(report_lines(report, limit=int(args.limit))))
     return 0 if report.exit_code == 0 else 1

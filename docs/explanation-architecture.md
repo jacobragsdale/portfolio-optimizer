@@ -178,6 +178,8 @@ through may limit what a later one trades there; nothing else reaches anyone.** 
 that side is buys, under `sell` it is sells; a two-sided run's sells reach no one. That is a product
 decision (2026-08-29), and it is what makes the schedule derivable instead of configured.
 
+![Eight accounts: the line dependencies-all forces, and the graph overlap derives — three components, critical path three, identical orders either way](images/derived-schedule.svg)
+
 Every portfolio builds at once, chain-free: rules never see other portfolios. A build reports its
 **tradable set** — the securities the profile lets it trade on that side: buyable (`ub > w0`) or
 sellable (held, `lb < w0`) — and its solve-order key, a priority from an optional `solve_order` step or
@@ -207,6 +209,23 @@ on the coupled side — as dependencies and runs where its build lives. Outcomes
 order whatever finished first, so the number of workers and the order in which they finish never affect
 the output. Coupling across sides in one run — a two-sided run's sells limiting someone's buys, wash
 sales, internal crossing — is a recorded non-goal; `IDEAS.md` says what it would cost.
+
+The shape this produces is measured, not assumed (`benchmarks/run_book.py`, 2026-08-30, 8 local
+workers). A book of 100 accounts across 10 disjoint mandates derives 450 edges, 10 components,
+critical path 10, and finishes in 6.9s where the same book as a line takes 14.9s — with byte-identical
+orders and chain hashes both ways; at ~2s solves (30,000 names, 12 accounts, 4 mandates) the ratio is
+14.0s against 24.6s, and at 1,000 accounts the graph stops being the constraint at all: 34s,
+capacity-bound at 6.1× parallelism on 8 workers. The same harness shows where the graph degenerates:
+overlap is on *any* shared tradable name, so one sector shared between neighbouring mandates
+reconnects the book and the critical path is the line again — 1,450 edges instead of 4,950, critical
+path still 100 — and the shipped example, 100 accounts over three securities, is deliberately the
+degenerate case (its manifest records `edges 4950, critical_path 100`). Two consequences worth
+stating. The win belongs to books partitioned by mandate, universe, or restriction list, and
+narrowing coupling from any shared name to the names a constraint can actually bind on is the open
+thread in `IDEAS.md`. And the graph's per-link cost — a contribution round-trip of ~40–120ms under
+load — means it pays once solves dominate that, which a 100,000-name book's multi-second solves do
+by two orders of magnitude; a book of many sub-second solves is bounded by the scheduler, not the
+chain, whatever the graph looks like.
 
 ## Where the work runs is a setting, and the run owns its cluster
 
