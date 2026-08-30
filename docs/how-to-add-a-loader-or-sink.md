@@ -7,7 +7,7 @@ dependency.
 ## Prerequisites
 
 - You know the dataset's shape. Engine-known datasets (`portfolios`, `holdings`, `universe`, `details`,
-  `sector_bounds`) must satisfy the schemas in `src/portfolio_optimizer/domain/schemas.py`
+  `constraints`) must satisfy the schemas in `src/portfolio_optimizer/domain/schemas.py`
   after assembly (`holdings` and `universe` may carry any further columns); any other dataset only
   needs the columns your assembly steps and rules use, typed the way you want them to arrive — declare
   `dtypes` for its key columns (`{"security_id": "string"}`) so a join never has to guess.

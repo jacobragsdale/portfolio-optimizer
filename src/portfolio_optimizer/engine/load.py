@@ -36,7 +36,7 @@ from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.data import PREVALIDATED_FRAMES, Frames, LoadRequest, PortfolioData, details_from_frame
 from portfolio_optimizer.domain.frames import FrameSchemaError, empty_frame, validate_frame
 from portfolio_optimizer.domain.results import AssemblyAuditRecord, PortfolioFailure
-from portfolio_optimizer.domain.schemas import CONSTRAINTS, DATASET_SCHEMAS, PORTFOLIOS, REQUIRED_FRAMES, SECTOR_BOUNDS
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, DATASET_SCHEMAS, PORTFOLIOS, REQUIRED_FRAMES
 from portfolio_optimizer.domain.types import PortfolioId, StrictModel
 from portfolio_optimizer.engine.hashing import frame_sha256
 from portfolio_optimizer.ratelimit import RateLimiter
@@ -106,7 +106,6 @@ class AssembledDatasets:
     holdings: pd.DataFrame
     universe: pd.DataFrame
     details: pd.DataFrame
-    sector_bounds: pd.DataFrame
     constraints: pd.DataFrame
     extras: Mapping[str, pd.DataFrame]
     rejected: Mapping[PortfolioId, PortfolioFailure]
@@ -371,7 +370,7 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -
     failures: list[str] = []
     for name, schema in DATASET_SCHEMAS.items():
         if name not in frames:
-            continue  # only REQUIRED_FRAMES must exist; sector_bounds is engine-known but optional
+            continue  # only REQUIRED_FRAMES must exist; constraints is engine-known but optional
         try:
             validate_frame(frames[name], schema)
         except FrameSchemaError as error:
@@ -386,7 +385,6 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -
         holdings=frames["holdings"],
         universe=frames["universe"],
         details=details,
-        sector_bounds=frames.get("sector_bounds", empty_frame(SECTOR_BOUNDS)),
         constraints=frames.get("constraints", empty_frame(CONSTRAINTS)),
         extras={name: frame for name, frame in frames.items() if name not in DATASET_SCHEMAS},
         rejected=rejected,
@@ -435,11 +433,11 @@ def _columns_added(before: Frames, after: Frames) -> dict[str, tuple[str, ...]]:
 
 
 def slice_portfolio(assembled: AssembledDatasets, portfolio_id: PortfolioId) -> PortfolioData:
-    """Build the validated per-portfolio bundle: its own holdings, sector bounds, constraints, and extras rows, and the whole universe.
+    """Build the validated per-portfolio bundle: its own holdings, constraint rows, and extras rows, and the whole universe.
 
     The schema frames are marked prevalidated: :func:`assemble` validated them, the universe is
-    passed whole, and the holdings and sector-bounds slices are row subsets, which keep every
-    per-column check, the key's uniqueness, and the sector bounds' ordering.
+    passed whole, and the holdings slice is a row subset, which keeps every per-column check and the
+    key's uniqueness.
     """
     details = details_from_frame(assembled.details, portfolio_id)
     holdings = assembled.holdings[assembled.holdings["portfolio_id"] == portfolio_id].reset_index(drop=True)
@@ -448,7 +446,6 @@ def slice_portfolio(assembled: AssembledDatasets, portfolio_id: PortfolioId) -> 
         details=details,
         holdings=holdings,
         universe=assembled.universe.reset_index(drop=True),
-        sector_bounds=_rows_for(assembled.sector_bounds, portfolio_id),
         constraints=_rows_for(assembled.constraints, portfolio_id),
         as_of_date=assembled.as_of_date,
         extras=extras,

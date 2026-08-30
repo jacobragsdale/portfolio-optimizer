@@ -99,8 +99,6 @@ class ProblemSpec:
     ub: F64
     adv_capacity: F64
     sector_matrix: csr_array
-    sector_lb: F64
-    sector_ub: F64
     max_turnover: float
     cash_lb: float
     cash_ub: float
@@ -112,8 +110,6 @@ class ProblemSpec:
         for name in _VECTOR_FIELDS:
             object.__setattr__(self, name, _readonly(getattr(self, name)))
         object.__setattr__(self, "sector_matrix", _readonly_sparse(self.sector_matrix))
-        object.__setattr__(self, "sector_lb", _readonly(self.sector_lb))
-        object.__setattr__(self, "sector_ub", _readonly(self.sector_ub))
         object.__setattr__(self, "columns", {name: _readonly(array) for name, array in sorted(self.columns.items())})
         object.__setattr__(self, "flags", {name: _readonly_flags(array) for name, array in sorted(self.flags.items())})
         failures = list(self._failures())
@@ -135,8 +131,6 @@ class ProblemSpec:
                 yield f"{name} is not finite"
         if np.any(self.lb > self.ub):
             yield "lb > ub for some security"
-        if np.any(self.sector_lb > self.sector_ub):
-            yield "sector_lb > sector_ub for some sector"
         if self.cash_lb > self.cash_ub:
             yield "cash_lb > cash_ub"
         if self.nav <= 0.0:
@@ -168,14 +162,10 @@ class ProblemSpec:
             yield f"names {shared} are both a column and a flag"
         if self.sector_matrix.shape != (k, n):
             yield f"sector_matrix has shape {self.sector_matrix.shape}, expected {(k, n)}"
-        if self.sector_lb.shape != (k,) or self.sector_ub.shape != (k,):
-            yield f"sector bounds have shapes {self.sector_lb.shape}, {self.sector_ub.shape}, expected {(k,)}"
 
     def _arrays(self) -> Iterator[tuple[str, F64]]:
         for name in _VECTOR_FIELDS:
             yield name, getattr(self, name)
-        yield "sector_lb", self.sector_lb
-        yield "sector_ub", self.sector_ub
         for name, array in self.columns.items():
             yield f"columns.{name}", array
 
@@ -221,6 +211,19 @@ class ProblemSpec:
             return self.flags[name]
         except KeyError as error:
             raise MissingSpecColumnError(name, tuple(self.flags), kind="flag") from error
+
+    def sector(self, name: str) -> csr_array:
+        """Return the one row of :attr:`sector_matrix` that ``name`` selects — which securities belong to that sector — kept sparse.
+
+        A constraint that bounds a sector reads its membership here and its numbers from its own
+        params, so the engine carries the grouping and the desk carries the limit. Sparse because a
+        dense row per sector is what made the old spec enormous.
+        """
+        try:
+            index = self.sector_names.index(name)
+        except ValueError:
+            raise MissingSpecColumnError(name, self.sector_names, kind="sector") from None
+        return csr_array(self.sector_matrix[[index], :])
 
     def content_hash(self) -> str:
         """Deterministic sha256 of every input the solver will see."""
@@ -285,8 +288,6 @@ class ProblemSpec:
             cash_ub=float(meta["cash_ub"]),
             min_trade_notional=float(meta["min_trade_notional"]),
             sector_matrix=csr_array(parts, shape=shape),
-            sector_lb=loaded["sector_lb"],
-            sector_ub=loaded["sector_ub"],
             columns=columns,
             flags=flags,
             **vectors,

@@ -1,6 +1,7 @@
 """Tier 3/5: the shipped file loaders declare dtypes at the boundary and reject malformed input."""
 
 import asyncio
+import json
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 
 from portfolio_optimizer.domain.data import LoadRequest
 from portfolio_optimizer.domain.frames import validate_frame
-from portfolio_optimizer.domain.schemas import HOLDINGS, SECTOR_BOUNDS, UNIVERSE
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, HOLDINGS, UNIVERSE
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.loaders import CsvParams, CsvPerPortfolioParams, ParquetParams, csv, csv_per_portfolio, parquet
 from portfolio_optimizer.ratelimit import RateLimit, RateLimiter
@@ -67,10 +68,12 @@ def test_parquet_extra_dataset_converts_float_columns_to_decimal(tmp_path: Path)
     assert loaded["price"].iloc[0] == Decimal("0.1")
 
 
-def test_csv_loads_the_example_sector_bounds_with_schema_dtypes() -> None:
-    bounds = csv(request("sector_bounds"), CsvParams(path="sector_bounds.csv"))
-    validate_frame(bounds, SECTOR_BOUNDS)
-    assert bounds.loc[bounds["sector"] == "TECH", "lower"].iloc[0] == Decimal("0.5")
+def test_csv_loads_the_example_constraints_with_the_desks_own_columns_untouched() -> None:
+    constraints = csv(request("constraints"), CsvParams(path="constraints.csv"))
+    validate_frame(constraints, CONSTRAINTS)
+    assert set(constraints.columns) == {"portfolio_id", "name", "label", "params"}, "the schema declares only portfolio_id; the rest arrive as the desk wrote them"
+    band = constraints.loc[constraints["label"] == "tech", "params"].iloc[0]
+    assert json.loads(str(band)) == {"sector": "TECH", "lower": "0.5", "upper": "1"}
 
 
 def _per_portfolio_files(root: Path) -> None:

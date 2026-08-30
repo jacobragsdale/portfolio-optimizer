@@ -145,7 +145,6 @@ def reflect(spec: ProblemSpec) -> ProblemSpec:
     constant ``alpha.sum()``.
     """
     ones = np.ones(spec.n)
-    rowsum = np.asarray(spec.sector_matrix @ ones, dtype=np.float64)
     return ProblemSpec(
         portfolio_id=spec.portfolio_id,
         as_of_date=spec.as_of_date,
@@ -162,8 +161,6 @@ def reflect(spec: ProblemSpec) -> ProblemSpec:
         ub=ones - spec.lb,
         adv_capacity=spec.adv_capacity,
         sector_matrix=spec.sector_matrix,
-        sector_lb=rowsum - spec.sector_ub,
-        sector_ub=rowsum - spec.sector_lb,
         max_turnover=spec.max_turnover,
         cash_lb=2.0 - spec.n - spec.cash_ub,
         cash_ub=2.0 - spec.n - spec.cash_lb,
@@ -182,7 +179,6 @@ def test_a_sell_only_run_over_the_reflected_book_is_the_buy_only_run_over_the_or
         tcost_per_dollar=np.array([0.001, 0.002, 0.0]),
         cash_lb=0.0,
         cash_ub=0.2,
-        sector_ub=np.array([0.95]),
     )
     mirrored = reflect(spec)
     chain = ChainState(spec.security_ids, np.array([200.0, 0.0, 0.0]), predecessors=("P0",))  # 200 shares at 100 on 1,000,000 is 0.02 of ADV's 0.05

@@ -203,8 +203,6 @@ def _dry_run_spec() -> ProblemSpec:
         ub=one,
         adv_capacity=one,
         sector_matrix=csr_array(np.ones((1, 1))),
-        sector_lb=np.zeros(1),
-        sector_ub=one,
         max_turnover=2.0,
         cash_lb=0.0,
         cash_ub=1.0,

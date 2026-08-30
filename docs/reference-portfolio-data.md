@@ -31,7 +31,6 @@ raises `PortfolioDataError` listing all failures.
 | `details` | `PortfolioDetails` | This portfolio's `details` row: `portfolio_id`, `name`, `state`, `st_tax_rate`, `lt_tax_rate`, `cash`, `nav`, and the style limits `max_weight`, `max_turnover`, `max_adv_participation`, `min_trade_notional`, `cash_lb`, `cash_ub`. |
 | `holdings` | frame | This portfolio's rows of `holdings`. Schema columns `portfolio_id`, `security_id`, `quantity`, `avg_cost`, `acquired_on`; any further columns allowed. |
 | `universe` | frame | The whole `universe`, identical for every portfolio. Schema columns `security_id`, `price`, `sector`, `adv_shares`, `lot_size`, `restricted`; optional `alpha`, `tcost_bps`, `min_weight`, `max_weight`; any further columns allowed. |
-| `sector_bounds` | frame | This portfolio's rows of `sector_bounds`. Schema columns `portfolio_id`, `sector`, `lower`, `upper`; empty when the run declares no such dataset. |
 | `constraints` | frame | This portfolio's rows of `constraints`, in the desk's own shape. The engine validates only that `portfolio_id` is present and names this portfolio; every other column is carried untouched to the solve step. Empty when the run declares no such dataset. A rule may replace it. |
 | `as_of_date` | `datetime` | The run's `as_of_date`, timezone-aware UTC. |
 | `extras` | `Mapping[str, frame]` | Every non-engine dataset that remained after assembly. A dataset with a `portfolio_id` column is reduced to this portfolio's rows; one without is passed whole. Default `{}`. |
@@ -40,15 +39,14 @@ raises `PortfolioDataError` listing all failures.
 
 ### Checks on construction
 
-1. `holdings`, `universe`, `sector_bounds`, and `constraints` satisfy their frame schemas
-   (columns, dtypes, nullability, bounds, unique key, sector bounds ordered). `constraints` declares
-   only `portfolio_id`, so in practice only that is checked.
+1. `holdings`, `universe`, and `constraints` satisfy their frame schemas (columns, dtypes,
+   nullability, bounds, unique key). `constraints` declares only `portfolio_id`, so in practice only
+   that is checked.
 2. `extras` values are frames, and no extra is named `holdings`, `universe`, `details`,
-   `sector_bounds`, `constraints`, or `portfolios`.
+   `constraints`, or `portfolios`.
 3. `as_of_date` is timezone-aware UTC.
 4. `holdings.portfolio_id` contains only this portfolio.
-5. Every sector in `sector_bounds` occurs in `universe.sector`, and its rows — like the `constraints`
-   rows — name only this portfolio.
+5. `constraints.portfolio_id` contains only this portfolio.
 6. Every column present in both `holdings` and `universe` has the same dtype in both.
 7. Every extra with a `portfolio_id` column contains only this portfolio.
 
@@ -59,7 +57,7 @@ A held security need not be in the universe. The shipped build requires it (a `B
 
 | Method | Description |
 |---|---|
-| `with_changes(*, details=None, holdings=None, universe=None, sector_bounds=None, constraints=None, extras=None)` | A re-validated copy with the given parts replaced. |
+| `with_changes(*, details=None, holdings=None, universe=None, constraints=None, extras=None)` | A re-validated copy with the given parts replaced. |
 | `with_rule_applied(qualname)` | A copy recording that a rule ran; called by the pipeline. |
 | `optimizer_frame(*, source_column="source")` | Holdings and universe stacked into one frame; see below. |
 

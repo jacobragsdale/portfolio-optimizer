@@ -53,14 +53,12 @@ The quickest way to see what the engine does is to read the run it ships with,
       "batch_size": 2
     },
 
-    // Engine-known but optional: one row per portfolio and sector. Omit the dataset to bound no sector.
-    "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
-
-    // Which constraints bind each account, as data. The engine knows only which portfolio a row
-    // belongs to — every other column is yours, and only the solve step interprets them. The shipped
-    // `cvxpy` step reads this convention: a `name` naming a step in terms.py, an optional `label`, and
-    // optional `params` as JSON text. Optional, like any dataset: omit it and nothing is constrained
-    // beyond the trade identity.
+    // Which constraints bind each account and how tight they are, as data. The engine knows only
+    // which portfolio a row belongs to — every other column is yours, and only the solve step
+    // interprets them. The shipped `cvxpy` step reads this convention: a `name` naming a step in
+    // terms.py, an optional `label`, and optional `params` as JSON text — which is where a sector
+    // band's numbers live. Optional, like any dataset: omit it and nothing is constrained beyond
+    // the trade identity.
     "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}}
   },
 
@@ -110,11 +108,10 @@ that kind of step, or by `package.module:function`, with optional `params` (see
   optionally, a `solve_order` priority; every other loader is told which ids to fetch.
 - **`datasets`** — everything else to load, all at once, every one a frame. Three names are required and
   validated against fixed schemas: `holdings`, `universe`, and `details` (the account's facts *and* its
-  style limits); `sector_bounds` and `constraints` are engine-known but optional, since a per-sector
-  limit is the one style limit that does not fit in an account's row. Any other name is an extra dataset
+  style limits); `constraints` is engine-known but optional. Any other name is an extra dataset
   the engine does not interpret: assembly steps see it, and whatever survives assembly reaches each
   portfolio's rules as `data.extras`. Each entry also says how its loader is called.
-  `universe`, `constraints`, and `sector_bounds` say nothing and are `global`: one call for the
+  `universe` and `constraints` say nothing and are `global`: one call for the
   whole book, and the only datasets assembly sees. `holdings` and `details` are `per_portfolio`, so the engine calls their loaders per
   account rather than once for the book, and `batch_size` says how finely: `1` is a call per account,
   the shape of a custodian that answers one at a time; `2` hands the loader two ids per call, the shape
@@ -127,11 +124,11 @@ that kind of step, or by `package.module:function`, with optional `params` (see
 - **`objective`** — the sum of the listed terms, always minimized; a reward is a negative term. Each term
   is a function returning a convex expression, and its `weight` is a string so the manifest records an
   exact `Decimal`.
-- **`constraints`** — *which* constraints apply; *how tight* they are comes from the data (the style
-  limits on each account's `details` row, the `sector_bounds` dataset, and per-security columns in the
-  universe). The last one is
-  chain-aware — it reads what higher-priority portfolios have already traded — and that is the only
-  reason one portfolio ever waits for another.
+- **`constraints`** — *which* constraints apply and *how tight* they are, both from the data: a row per
+  constraint per account, its numbers either on the row itself (a sector band's `lower` and `upper`) or
+  in the style limits on the account's `details` row and the per-security columns of the universe. One
+  of them is chain-aware — it reads what higher-priority portfolios have already traded — and that is
+  the only reason one portfolio ever waits for another.
 - **`solver`** — the cvxpy solver and its options. Its presence is checked when the config resolves, its
   version is recorded in the manifest, and there is no silent fallback to another solver.
 - **`post_solve`** — tolerances for the verifier that re-checks every solution in plain numpy without

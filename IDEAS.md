@@ -420,10 +420,12 @@ model naming a column the universe does not carry cannot be caught at resolve, w
 loads; the check moves to a gate just after assembly, with the same collected-failures shape, so the
 run still dies before it does any work.
 
-The spec generalizes `sector_matrix` / `sector_lb` / `sector_ub` to `groups`: one sparse membership
-block per categorical universe column (a megabyte each at 100k names, however many groups), built the
-way the sector matrix already is, and `sector_bounds` becomes `group_bounds(column="sector")` — the
-shipped constraint as one instance of the general one.
+The spec generalizes `sector_matrix` to `groups`: one sparse membership block per categorical universe
+column (a megabyte each at 100k names, however many groups), built the way the sector matrix already
+is, and `sector_bound` becomes `group_bound(column="sector")` — the shipped constraint as one instance
+of the general one. Half of this landed on 2026-08-30: the *numbers* left the spec, so `sector_bound`
+is one row per sector carrying its own band and reading only the membership (`spec.sector(name)`, one
+sparse row). What is left is generalizing the column.
 
 ### Where the line has to hold
 
@@ -441,8 +443,8 @@ promise something the solver will not deliver.
 1. `residual` *on* the model. The first kind, the labels, and the solve seam are built (above); the
    shipped constraints' twins are still the table in `check.py`, keyed by qualname, and move onto the
    model when the second kind arrives and needs it.
-2. `groups` on the spec and the row-block family (`bound_on`, `group_bound`), with `sector_bounds` as
-   an instance.
+2. `groups` on the spec and the row-block family (`bound_on`, `group_bound`), with `sector_bound` as
+   an instance — its band already lives on the row, so what remains is the column.
 3. The style schema derived from the config (property 7).
 4. The GUI, which by then is a form renderer over the schema plus a call to `validate-config`.
 

@@ -14,7 +14,6 @@
       "scope": "per_portfolio",
       "batch_size": 2
     },
-    "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
     "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}}
   },
   "rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}],

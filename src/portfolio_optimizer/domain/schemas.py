@@ -22,13 +22,6 @@ def _cash_bounds_ordered(frame: pd.DataFrame) -> str | None:
     return None
 
 
-def _sector_bounds_ordered(frame: pd.DataFrame) -> str | None:
-    off = [f"{portfolio}/{sector}" for portfolio, sector, low, high in zip(frame["portfolio_id"], frame["sector"], frame["lower"], frame["upper"], strict=True) if low > high]
-    if off:
-        return f"lower exceeds upper for {off}"
-    return None
-
-
 def _orders_notional_matches(frame: pd.DataFrame) -> str | None:
     mismatched = [
         str(security)
@@ -53,8 +46,8 @@ DETAILS = FrameSchema(
         ColumnSpec("lt_tax_rate", "decimal", ge=ZERO, lt=ONE),
         ColumnSpec("cash", "decimal", ge=ZERO),
         ColumnSpec("nav", "decimal", gt=ZERO),
-        # The account's management-style limits. Every constraint reads its bounds from here or from
-        # `sector_bounds`, so what a run permits is data that changes daily, not config.
+        # The account's management-style limits. A constraint reads its numbers from here or from its
+        # own row in `constraints`, so what a run permits is data that changes daily, not config.
         ColumnSpec("max_weight", "decimal", gt=ZERO, le=ONE),
         ColumnSpec("max_turnover", "decimal", ge=ZERO, le=TWO),
         ColumnSpec("max_adv_participation", "decimal", ge=ZERO, le=ONE),
@@ -65,14 +58,6 @@ DETAILS = FrameSchema(
     key=("portfolio_id",),
     checks=(FrameCheck("cash_bounds_ordered", _cash_bounds_ordered),),
 )
-
-SECTOR_BOUNDS = FrameSchema(
-    name="sector_bounds",
-    columns=(ColumnSpec("portfolio_id", "string"), ColumnSpec("sector", "string"), ColumnSpec("lower", "decimal", ge=ZERO, le=ONE), ColumnSpec("upper", "decimal", ge=ZERO, le=ONE)),
-    key=("portfolio_id", "sector"),
-    checks=(FrameCheck("bounds_ordered", _sector_bounds_ordered),),
-)
-"""Per-account sector limits, one row per portfolio and sector. Optional: a run that declares no such dataset bounds no sector."""
 
 HOLDINGS = FrameSchema(
     name="holdings",
@@ -138,11 +123,11 @@ Optional: a run whose solve step needs no constraints declares no such dataset, 
 gets the empty frame.
 """
 
-DATASET_SCHEMAS: dict[str, FrameSchema] = {"holdings": HOLDINGS, "universe": UNIVERSE, "details": DETAILS, "sector_bounds": SECTOR_BOUNDS, "constraints": CONSTRAINTS}
+DATASET_SCHEMAS: dict[str, FrameSchema] = {"holdings": HOLDINGS, "universe": UNIVERSE, "details": DETAILS, "constraints": CONSTRAINTS}
 """Engine-known frames and the schema each must satisfy after assembly. Any other dataset name is an extra."""
 
 REQUIRED_DATASETS: tuple[str, ...] = ("holdings", "universe", "details")
-"""Datasets a run cannot do without, loaded directly or produced by an assembly step. ``sector_bounds`` and ``constraints`` are engine-known but optional."""
+"""Datasets a run cannot do without, loaded directly or produced by an assembly step. ``constraints`` is engine-known but optional."""
 
 REQUIRED_FRAMES: tuple[str, ...] = REQUIRED_DATASETS
 """Every dataset is a frame, so these are the same names; both spellings are kept because each reads better in its own place."""

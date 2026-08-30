@@ -24,7 +24,7 @@ from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails
 from portfolio_optimizer.domain.frames import FrameSchema
 from portfolio_optimizer.domain.results import F64, ProblemSpec, Solution, SolveStatus, StepRef
-from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, SECTOR_BOUNDS, UNIVERSE
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, UNIVERSE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
@@ -65,7 +65,6 @@ _DEFAULTS: dict[str, Row] = {
         "cash_lb": Decimal(0),
         "cash_ub": Decimal(0),
     },
-    SECTOR_BOUNDS.name: {"portfolio_id": "P1", "sector": "TECH", "lower": Decimal(0), "upper": Decimal(1)},
     CONSTRAINTS.name: {"portfolio_id": "P1", "name": "long_only", "label": None, "params": None},
     HOLDINGS.name: {"portfolio_id": "P1", "security_id": "A", "quantity": 5000, "avg_cost": Decimal(90), "acquired_on": ACQUIRED},
     UNIVERSE.name: {"security_id": "A", "price": Decimal(100), "sector": "TECH", "adv_shares": 1_000_000, "lot_size": 1, "restricted": False, "alpha": 0.0},
@@ -114,10 +113,6 @@ class Frames:
         """Build a ``universe`` frame."""
         return build(UNIVERSE, *rows)
 
-    def sector_bounds(self, *rows: Row) -> pd.DataFrame:
-        """Build a ``sector_bounds`` frame; with no rows, the empty frame that bounds no sector."""
-        return build(SECTOR_BOUNDS, *rows) if rows else empty_frame(SECTOR_BOUNDS)
-
     def constraints(self, *names: str, portfolio_id: str = "P1") -> pd.DataFrame:
         """Build a ``constraints`` frame under the shipped convention; with no names, the empty frame that constrains nothing."""
         return build(CONSTRAINTS, *({"portfolio_id": portfolio_id, "name": name} for name in names)) if names else empty_frame(CONSTRAINTS)
@@ -145,7 +140,6 @@ def make_portfolio_data(
     details: PortfolioDetails | None = None,
     holdings: pd.DataFrame | None = None,
     universe: pd.DataFrame | None = None,
-    sector_bounds: pd.DataFrame | None = None,
     constraints: pd.DataFrame | None = None,
     as_of_date: datetime = AS_OF,
     extras: Mapping[str, pd.DataFrame] | None = None,
@@ -157,7 +151,6 @@ def make_portfolio_data(
         details=details if details is not None else make_details(),
         holdings=holdings if holdings is not None else frames.holdings({"security_id": "A", "quantity": 5000}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(60)}),
         universe=universe if universe is not None else frames.three_security_universe(),
-        sector_bounds=sector_bounds if sector_bounds is not None else frames.sector_bounds(),
         constraints=constraints if constraints is not None else frames.constraints(*SHIPPED_CONSTRAINTS),
         as_of_date=as_of_date,
         extras=extras if extras is not None else {},
@@ -190,8 +183,6 @@ def make_spec(n: int = 3, **overrides: object) -> ProblemSpec:
         "ub": np.ones(n),
         "adv_capacity": np.full(n, 10.0),
         "sector_matrix": np.ones((1, n)),
-        "sector_lb": np.zeros(1),
-        "sector_ub": np.ones(1),
         "max_turnover": 2.0,
         "cash_lb": 0.0,
         "cash_ub": 0.0,
@@ -241,8 +232,8 @@ def make() -> Factories:
 
 # --- the shipped constraints, and the example config with its steps swapped for no-ops or kept real ---
 
-SHIPPED_CONSTRAINTS = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation"]
-"""Every constraint the template ships, in the example's order."""
+SHIPPED_CONSTRAINTS = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "cumulative_adv_participation"]
+"""Every constraint the template ships that needs no params, in the example's order; ``sector_bound`` takes a band and is named per case."""
 NO_CHAIN_CONSTRAINTS = [name for name in SHIPPED_CONSTRAINTS if name != "cumulative_adv_participation"]
 """The shipped constraints without the chain-aware ADV cap; a run over them can declare `dependencies: none`."""
 UNCOUPLED: dict[str, object] = {"on_error": "continue", "dependencies": "none"}

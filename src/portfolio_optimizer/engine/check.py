@@ -57,13 +57,15 @@ def _cash_bounds(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Ma
     return [("cash_lb", np.array([spec.cash_lb - cash])), ("cash_ub", np.array([cash - spec.cash_ub]))]
 
 
-def _sector_bounds(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object], profile: SideProfile) -> list[tuple[str, F64]]:
+def _sector_bound(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object], profile: SideProfile) -> list[tuple[str, F64]]:
     del chain, profile
-    if len(spec.sector_names) == 0:
-        return []
+    sector = params.get("sector")
+    if not isinstance(sector, str):
+        msg = f"sector_bound needs a 'sector' parameter naming one of {list(spec.sector_names)}, got {sector!r}"
+        raise TypeError(msg)
     tolerance = param(params, "tolerance", 0.0)
-    exposure = np.asarray(spec.sector_matrix @ sol.w, dtype=np.float64)
-    return [("sector_lb", spec.sector_lb - tolerance - exposure), ("sector_ub", exposure - spec.sector_ub - tolerance)]
+    exposure = np.asarray(spec.sector(sector) @ sol.w, dtype=np.float64)
+    return [("sector_lb", param(params, "lower", 0.0) - tolerance - exposure), ("sector_ub", exposure - param(params, "upper", 1.0) - tolerance)]
 
 
 def _turnover_cap(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object], profile: SideProfile) -> list[tuple[str, F64]]:
@@ -96,7 +98,7 @@ CONSTRAINT_TWINS: Mapping[str, ConstraintTwin] = {
     "portfolio_optimizer.terms:long_only": _long_only,
     "portfolio_optimizer.terms:max_weight": _max_weight,
     "portfolio_optimizer.terms:cash_bounds": _cash_bounds,
-    "portfolio_optimizer.terms:sector_bounds": _sector_bounds,
+    "portfolio_optimizer.terms:sector_bound": _sector_bound,
     "portfolio_optimizer.terms:turnover_cap": _turnover_cap,
     "portfolio_optimizer.terms:cumulative_adv_participation": _adv_participation,
 }

@@ -80,9 +80,6 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
     lb, ub = _bounds(data, universe, ids, w0)
     sector_names = tuple(sorted({str(value) for value in universe["sector"]}))
     sector_matrix = _membership(universe["sector"], sector_names)
-    bounds = _sector_bounds(data.sector_bounds)
-    sector_lb = [bounds[name][0] if name in bounds else Decimal(0) for name in sector_names]
-    sector_ub = [bounds[name][1] if name in bounds else Decimal(1) for name in sector_names]
     adv_capacity = [data.details.max_adv_participation * Decimal(int(adv)) * px / nav for adv, px in zip(universe["adv_shares"], price, strict=True)]
     columns, flags = _extra_columns(universe)
     spec = ProblemSpec(
@@ -101,8 +98,6 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
         ub=to_float64(ub, "ub"),
         adv_capacity=to_float64(adv_capacity, "adv_capacity"),
         sector_matrix=sector_matrix,
-        sector_lb=to_float64(sector_lb, "sector_lb"),
-        sector_ub=to_float64(sector_ub, "sector_ub"),
         max_turnover=float(data.details.max_turnover),
         cash_lb=float(data.details.cash_lb),
         cash_ub=float(data.details.cash_ub),
@@ -114,11 +109,6 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
         security_ids=ids, price=tuple(price), shares_held=tuple(shares_held), lot_size=tuple(lot_size), w0=tuple(w0), ub=tuple(ub), nav=nav, min_trade_notional=data.details.min_trade_notional
     )
     return BuildOutput(spec=spec, order_inputs=inputs)
-
-
-def _sector_bounds(frame: pd.DataFrame) -> dict[str, tuple[Decimal, Decimal]]:
-    """The portfolio's sector limits by sector name; a sector with no row is unbounded, `[0, 1]`."""
-    return {str(sector): (_decimal(low), _decimal(high)) for sector, low, high in zip(frame["sector"], frame["lower"], frame["upper"], strict=True)}
 
 
 def _membership(column: pd.Series, names: tuple[str, ...]) -> csr_array:

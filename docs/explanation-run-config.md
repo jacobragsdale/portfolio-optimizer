@@ -132,7 +132,6 @@ of reading this column.
   "universe":    {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
   "details":     {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
                   "scope": "per_portfolio", "batch_size": 1},
-  "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
   "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}}
 }
 ```
@@ -151,12 +150,9 @@ dtypes, nullability, bounds, unique key, and cross-column invariants — with on
 `holdings` and `universe` accept any columns beyond their schemas, because that is where security
 analytics go.
 
-**`sector_bounds` and `constraints` are engine-known but optional.** `sector_bounds` is one row per
-portfolio and sector (`portfolio_id`, `sector`, `lower`, `upper`), validated against its own schema
-when present; a run that declares no such dataset bounds no sector. It exists as its own dataset
-because a per-sector limit is the one style limit that does not fit in an account's row.
-`constraints` is the opposite: the engine knows only which portfolio each row belongs to, and the
-section below explains why.
+**`constraints` is engine-known but optional**, and unlike the three above the engine knows only which
+portfolio each row belongs to. A run that declares no such dataset is constrained by nothing beyond the
+trade identity its side implies. The section below explains why it is data rather than a config block.
 
 **Any other name is an extra dataset.** The engine knows nothing about its columns. It is visible to
 every assembly step by name, and whatever is still present after the last step is carried into each
@@ -191,7 +187,7 @@ between the two kinds of source. `holdings` asks for `1`: a call per account, fo
 answers one at a time. `details` asks for `2`: the engine hands its loader two ids per call, for a
 backend that takes a list — one call on this two-account book, two hundred and fifty on a book of five
 hundred, and the number to tune when a source has a maximum request size or charges per call.
-`universe`, `constraints`, and `sector_bounds` are book-wide by nature, so those three are
+`universe` and `constraints` are book-wide by nature, so both are
 global.
 
 Making `holdings` per-account has a consequence worth understanding before you copy it, because
@@ -411,13 +407,28 @@ text — builds a `ConstraintSet` from each, and reports back on `SolveResult.co
 applied. The dataset is optional: a run whose solve step needs no constraints, or that is a pure
 function rather than an optimizer, declares none and every portfolio gets an empty frame.
 
-*How tight* a constraint is still comes from elsewhere in the data. `max_weight`, `cash_bounds`, and
-`turnover_cap` read their limits from the account's `details` row (`max_weight`, `cash_lb`/`cash_ub`,
-`max_turnover`), `cumulative_adv_participation` from its `max_adv_participation`, and `sector_bounds`
-from the `sector_bounds` dataset — all tightened where the universe carries per-security
+*How tight* a constraint is comes from the data too, in one of two places. A limit that is one scalar
+per account is a column of `details`: `max_weight`, `cash_bounds`, and `turnover_cap` read
+`max_weight`, `cash_lb`/`cash_ub`, and `max_turnover`, and `cumulative_adv_participation` reads
+`max_adv_participation` — all tightened where the universe carries per-security
 `min_weight`/`max_weight` columns or a restricted flag. A constraint and the column it reads often
 share a name without being the same thing: `cash_bounds` is the function a row turns on,
 `cash_lb`/`cash_ub` are the numbers it reads.
+
+A limit that is *not* one scalar per account carries its numbers on the row instead. `sector_bound` is
+the shipped example: one row per sector, each with its own label and a `params` object naming the
+sector and its band.
+
+```csv
+portfolio_id,name,label,params
+P1,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
+P1,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
+```
+
+The engine supplies only the grouping — one sparse row of the membership matrix the build derives from
+`universe.sector`, reachable as `spec.sector(name)` — and the row supplies the band. Bounding a second
+sector is a second row; bounding by country instead would be a function that reads a country column,
+not a schema change.
 
 **Rules may change them**, and that is ordinary rule work rather than a special power: the frame is on
 the bundle, so a rule that tightens a cap because of what the holdings say returns

@@ -78,13 +78,22 @@ def test_npz_round_trip_preserves_hash(make: Factories, tmp_path: Path) -> None:
 
 def test_sector_matrix_is_stored_sparse_whatever_form_it_arrives_in(make: Factories) -> None:
     membership = np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
-    dense = make.spec(sector_names=("A", "B"), sector_matrix=membership, sector_lb=np.zeros(2), sector_ub=np.ones(2))
-    sparse = make.spec(sector_names=("A", "B"), sector_matrix=csr_array(membership), sector_lb=np.zeros(2), sector_ub=np.ones(2))
+    dense = make.spec(sector_names=("A", "B"), sector_matrix=membership)
+    sparse = make.spec(sector_names=("A", "B"), sector_matrix=csr_array(membership))
     assert isinstance(dense.sector_matrix, csr_array) and dense.sector_matrix.nnz == 3
     assert dense.content_hash() == sparse.content_hash()
-    assert dense.content_hash() != make.spec(sector_names=("A", "B"), sector_matrix=membership[::-1], sector_lb=np.zeros(2), sector_ub=np.ones(2)).content_hash()
+    assert dense.content_hash() != make.spec(sector_names=("A", "B"), sector_matrix=membership[::-1]).content_hash()
     with pytest.raises(ProblemSpecError, match="sector_matrix has shape"):
-        make.spec(sector_names=("A", "B"), sector_matrix=membership[:1], sector_lb=np.zeros(2), sector_ub=np.ones(2))
+        make.spec(sector_names=("A", "B"), sector_matrix=membership[:1])
+
+
+def test_one_sector_row_comes_back_sparse_and_an_unknown_name_is_refused(make: Factories) -> None:
+    spec = make.spec(sector_names=("A", "B"), sector_matrix=np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]]))
+    row = spec.sector("B")
+    assert isinstance(row, csr_array) and row.shape == (1, 3) and row.nnz == 1, "a dense row per sector is what made the old spec enormous"
+    np.testing.assert_array_equal(row.toarray(), [[0.0, 1.0, 0.0]])
+    with pytest.raises(MissingSpecColumnError, match=r"spec has no sector 'ENERGY'; available: \['A', 'B'\]"):
+        spec.sector("ENERGY")
 
 
 def test_missing_column_names_what_is_available(make: Factories) -> None:

@@ -55,8 +55,8 @@ EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
 AS_OF = datetime(2026, 8, 28, tzinfo=UTC)
 NAV = Decimal(1_000_000_000)
 MB = 1e6
-SHIPPED_CONSTRAINTS: tuple[str, ...] = ("long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds", "cumulative_adv_participation")
-"""Every constraint the template ships, as the shipped convention names them in the constraints frame."""
+SHIPPED_CONSTRAINTS: tuple[str, ...] = ("long_only", "max_weight", "cash_bounds", "turnover_cap", "cumulative_adv_participation")
+"""Every constraint the template ships that needs no params, as the shipped convention names them in the constraints frame; `sector_bound` is added once per sector, with its band."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,12 +66,11 @@ class Book:
     details: PortfolioDetails
     holdings: pd.DataFrame
     universe: pd.DataFrame
-    sector_bounds: pd.DataFrame
     constraints: pd.DataFrame
 
 
 def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, held: int, sides: str) -> Book:
-    """``securities`` names across ``sectors``, ``held`` of them owned, an alpha on every name, and populated sector bounds."""
+    """``securities`` names across ``sectors``, ``held`` of them owned, an alpha on every name, and a band on every sector."""
     ids = [f"S{index:07d}" for index in range(securities)]
     prices = [Decimal(int(value)) / 100 for value in rng.integers(500, 50_000, size=securities)]
     adv = [int(value) for value in np.exp(rng.uniform(np.log(500), np.log(10_000_000), size=securities)).astype(np.int64)]
@@ -117,16 +116,18 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
         cash_lb=Decimal(0),
         cash_ub=Decimal(1) if sides == "sell" else Decimal(0),
     )
-    sector_bounds = pd.DataFrame(
+    names = [*SHIPPED_CONSTRAINTS, *["sector_bound"] * len(sector_names)]  # one row per sector: what the row block costs at K bands is part of what this measures
+    labels = [*SHIPPED_CONSTRAINTS, *(name.lower() for name in sector_names)]
+    params = [*[""] * len(SHIPPED_CONSTRAINTS), *(json.dumps({"sector": name, "upper": "0.5"}) for name in sector_names)]
+    constraints = pd.DataFrame(
         {
-            "portfolio_id": pd.Series(["P1"] * len(sector_names), dtype="string"),
-            "sector": pd.Series(list(sector_names), dtype="string"),
-            "lower": pd.Series([Decimal(0)] * len(sector_names), dtype="object"),
-            "upper": pd.Series([Decimal("0.5")] * len(sector_names), dtype="object"),
+            "portfolio_id": pd.Series(["P1"] * len(names), dtype="string"),
+            "name": pd.Series(names, dtype="string"),
+            "label": pd.Series(labels, dtype="string"),
+            "params": pd.Series(params, dtype="string"),
         }
     )
-    constraints = pd.DataFrame({"portfolio_id": pd.Series(["P1"] * len(SHIPPED_CONSTRAINTS), dtype="string"), "name": pd.Series(list(SHIPPED_CONSTRAINTS), dtype="string")})
-    return Book(details=details, holdings=holdings, universe=universe, sector_bounds=sector_bounds, constraints=constraints)
+    return Book(details=details, holdings=holdings, universe=universe, constraints=constraints)
 
 
 @dataclass(slots=True)
@@ -194,7 +195,7 @@ def _sector_matrix_mb(spec: ProblemSpec) -> float:
 
 
 def _spec_mb(spec: ProblemSpec) -> float:
-    names = ("w0", "price", "shares_held", "lot_size", "tax_per_dollar", "tcost_per_dollar", "lb", "ub", "adv_capacity", "sector_lb", "sector_ub")
+    names = ("w0", "price", "shares_held", "lot_size", "tax_per_dollar", "tcost_per_dollar", "lb", "ub", "adv_capacity")
     vectors = sum(int(getattr(spec, name).nbytes) for name in names)
     extras = sum(int(array.nbytes) for array in spec.columns.values()) + sum(int(array.nbytes) for array in spec.flags.values())
     return (vectors + extras) / MB + _sector_matrix_mb(spec)
@@ -217,7 +218,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     book = synthetic_book(rng, securities=securities, sectors=sectors, held=held, sides=sides)
     report = Report()
     with report.stage("validate bundle", f"{securities:,} securities in {sectors} sectors, {held:,} held; sides {sides}, terms {', '.join(step.name for step in resolved.terms)}") as row:
-        data = PortfolioData(details=book.details, holdings=book.holdings, universe=book.universe, sector_bounds=book.sector_bounds, constraints=book.constraints, as_of_date=AS_OF)
+        data = PortfolioData(details=book.details, holdings=book.holdings, universe=book.universe, constraints=book.constraints, as_of_date=AS_OF)
     with report.stage("rules", ", ".join(step.name for step in resolved.rules)):
         ruled, _ = apply_rules(data, resolved.rules)
     with report.stage("spec build") as row:

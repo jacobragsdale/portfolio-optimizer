@@ -77,11 +77,11 @@ def test_engine_frames_may_come_from_assembly_steps(example_dict: dict[str, obje
     assert [step.name for step in config.assembly] == ["union"]
 
 
-def test_sector_bounds_is_optional(example_dict: dict[str, object]) -> None:
+def test_constraints_is_optional(example_dict: dict[str, object]) -> None:
     datasets = section(example_dict, "datasets")
-    del datasets["sector_bounds"]
+    del datasets["constraints"]
     config = load_run_config(json.dumps(example_dict | {"datasets": datasets}))
-    assert "sector_bounds" not in config.datasets, "a run that bounds no sector simply does not declare the dataset"
+    assert "constraints" not in config.datasets, "a run constrained only by the trade identity simply does not declare the dataset"
 
 
 @pytest.mark.parametrize("mechanic", [{"executor": "thread"}, {"max_workers": 2}])

@@ -15,9 +15,10 @@ it couples through. A term that reads a side the run lacks fails at ``validate-c
 """
 
 from decimal import Decimal
+from typing import Self
 
 import numpy as np
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, at_least, at_most, dot, matvec, scale, total
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec
@@ -81,19 +82,31 @@ def cash_bounds(x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
     return ConstraintSet("cash_bounds", (at_most(invested, 1.0 - spec.cash_lb), at_least(invested, 1.0 - spec.cash_ub)))
 
 
-class SectorBoundsParams(Params):
-    """Slack applied symmetrically to every sector bound."""
+class SectorBoundParams(Params):
+    """One sector's exposure band, and the slack the verifier allows on it.
 
+    The numbers live on the constraint row, not in the spec: a run bounds a sector by giving the
+    account a row naming it, and bounds another by adding a second row with its own label.
+    """
+
+    sector: str = Field(min_length=1)
+    lower: Decimal = Field(default=Decimal(0), ge=0, le=1)
+    upper: Decimal = Field(default=Decimal(1), ge=0, le=1)
     tolerance: Decimal = Field(default=Decimal(0), ge=0)
 
+    @model_validator(mode="after")
+    def _bounds_are_ordered(self) -> Self:
+        if self.lower > self.upper:
+            msg = f"lower must not exceed upper, got {self.lower} > {self.upper}"
+            raise ValueError(msg)
+        return self
 
-def sector_bounds(x: DecisionVars, spec: ProblemSpec, params: SectorBoundsParams) -> ConstraintSet:
-    """``sector_lb - tol ≤ G w ≤ sector_ub + tol`` for the style's sector limits."""
-    if len(spec.sector_names) == 0:
-        return ConstraintSet("sector_bounds", ())
-    exposure = matvec(spec.sector_matrix, x.w)
+
+def sector_bound(x: DecisionVars, spec: ProblemSpec, params: SectorBoundParams) -> ConstraintSet:
+    """``lower - tol ≤ sum of w over one sector ≤ upper + tol``; the sector's membership comes from the spec, its band from this row."""
+    exposure = matvec(spec.sector(params.sector), x.w)
     tolerance = float(params.tolerance)
-    return ConstraintSet("sector_bounds", (at_least(exposure, spec.sector_lb - tolerance), at_most(exposure, spec.sector_ub + tolerance)))
+    return ConstraintSet("sector_bound", (at_least(exposure, float(params.lower) - tolerance), at_most(exposure, float(params.upper) + tolerance)))
 
 
 def turnover_cap(x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:

@@ -28,22 +28,9 @@ def test_holdings_of_another_portfolio_are_rejected(make: Factories, frames: Fra
         make.portfolio_data(holdings=frames.holdings({"portfolio_id": "P2"}))
 
 
-def test_sector_bound_for_unknown_sector_is_rejected(make: Factories, frames: Frames) -> None:
-    bounds = frames.sector_bounds({"sector": "ENERGY", "lower": Decimal(0), "upper": Decimal("0.5")})
-    with pytest.raises(PortfolioDataError, match="sectors absent from universe \\['ENERGY'\\]"):
-        make.portfolio_data(sector_bounds=bounds)
-
-
-def test_sector_bounds_for_another_portfolio_are_rejected(make: Factories, frames: Frames) -> None:
-    bounds = frames.sector_bounds({"portfolio_id": "P9", "sector": "TECH"})
-    with pytest.raises(PortfolioDataError, match="sector_bounds contain other portfolios \\['P9'\\]"):
-        make.portfolio_data(sector_bounds=bounds)
-
-
-def test_unordered_sector_bounds_are_rejected(make: Factories, frames: Frames) -> None:
-    bounds = frames.sector_bounds({"sector": "TECH", "lower": Decimal("0.5"), "upper": Decimal("0.1")})
-    with pytest.raises(PortfolioDataError, match="lower exceeds upper"):
-        make.portfolio_data(sector_bounds=bounds)
+def test_constraints_for_another_portfolio_are_rejected(make: Factories, frames: Frames) -> None:
+    with pytest.raises(PortfolioDataError, match="constraints contain other portfolios \\['P9'\\]"):
+        make.portfolio_data(constraints=frames.constraints("long_only", portfolio_id="P9"))
 
 
 def test_shared_analytics_column_must_agree_on_dtype_between_holdings_and_universe(make: Factories, frames: Frames) -> None:
@@ -100,15 +87,7 @@ def test_with_changes_revalidates_and_records_the_rule(make: Factories, frames: 
 
 def test_prevalidated_frames_are_trusted_until_a_rule_replaces_them(make: Factories, frames: Frames) -> None:
     invalid = frames.universe({"price": Decimal(0)})  # fails the universe schema; the bundle would normally refuse it
-    trusted = PortfolioData(
-        details=make.details(),
-        holdings=frames.holdings(),
-        universe=invalid,
-        sector_bounds=frames.sector_bounds(),
-        constraints=frames.constraints(),
-        as_of_date=AS_OF,
-        prevalidated=frozenset({"universe"}),
-    )
+    trusted = PortfolioData(details=make.details(), holdings=frames.holdings(), universe=invalid, constraints=frames.constraints(), as_of_date=AS_OF, prevalidated=frozenset({"universe"}))
     assert trusted.universe is invalid
     assert trusted.with_changes(details=make.details()).prevalidated == frozenset({"universe"})  # untouched frames keep their standing
     with pytest.raises(PortfolioDataError, match="universe: column 'price'"):

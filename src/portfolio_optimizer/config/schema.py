@@ -168,12 +168,12 @@ def _params_schema(model: type[Params], defs: JsonObject) -> JsonObject:
 
 def _datasets_schema(datasets: object) -> JsonObject:
     schema = _object(datasets)
-    properties: JsonObject = {name: {"$ref": "#/$defs/DatasetConfig"} for name in (*REQUIRED_FRAMES, "sector_bounds")}
+    properties: JsonObject = {name: {"$ref": "#/$defs/DatasetConfig"} for name in (*REQUIRED_FRAMES, "constraints")}
     return {
         **schema,
         "properties": dict(sorted(properties.items())),
         "additionalProperties": {"$ref": "#/$defs/DatasetConfig"},
-        "$comment": f"Required unless an assembly step produces them: {list(REQUIRED_FRAMES)}. `sector_bounds` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
+        "$comment": f"Required unless an assembly step produces them: {list(REQUIRED_FRAMES)}. `constraints` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
     }
 
 

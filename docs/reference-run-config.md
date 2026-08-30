@@ -31,7 +31,7 @@ The schema cannot express one rule the models enforce: `as_of_date` must carry a
 |---|---|---|---|
 | `run` | object | yes | Run identity: `name` (non-empty), `as_of_date` (timezone-aware ISO-8601 timestamp), `tags` (string map, default `{}`). |
 | `portfolios` | step or input | yes | Loader returning the `portfolios` frame (`portfolio_id`, optional `solve_order`); a bare step, or `{"loader": step[, "rate_limit": ...]}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, values may repeat. |
-| `datasets` | object | yes | Named inputs, each `{"loader": step[, "scope": ..., "batch_size": n, "rate_limit": name or bound]}`. `holdings`, `universe`, and `details` are required unless `assembly` is non-empty, in which case they may be produced by a step and are checked after assembly. `sector_bounds` and `constraints` are engine-known but optional. Any other name is an extra dataset: visible to every assembly step, and carried into each portfolio's bundle as `data.extras` unless dropped. All dataset loaders run concurrently. |
+| `datasets` | object | yes | Named inputs, each `{"loader": step[, "scope": ..., "batch_size": n, "rate_limit": name or bound]}`. `holdings`, `universe`, and `details` are required unless `assembly` is non-empty, in which case they may be produced by a step and are checked after assembly. `constraints` is engine-known but optional. Any other name is an extra dataset: visible to every assembly step, and carried into each portfolio's bundle as `data.extras` unless dropped. All dataset loaders run concurrently. |
 | `rate_limits` | object | no | Named pools that inputs on the same backend share; see below. Default `{}`. |
 | `assembly` | step list | no | Assembly steps, run in order over every loaded dataset before schema validation. Default `[]`. See below. |
 | `rules` | step list | no | Business-logic rules, run in order on each portfolio's bundle; they never see other portfolios. Default `[]`. |
@@ -189,7 +189,7 @@ kind is declared for arrives as pandas inferred it. Assembly steps: `join`, `uni
 matched on `security_id` — default every column the universe carries beyond its schema).
 Solve-order steps: `most_uninvested_first`. Terms: `alpha` (`column`), `tax_cost`,
 `transaction_cost` (`cost_bps`), each with `weight` (default `"1"`). Constraints:
-`long_only`, `max_weight`, `cash_bounds`, `sector_bounds` (`tolerance`), `turnover_cap`,
+`long_only`, `max_weight`, `cash_bounds`, `sector_bound` (`sector`, `lower`, `upper`, `tolerance`), `turnover_cap`,
 `cumulative_adv_participation` (`chain`: `trade ≤ adv_capacity` and `coupled ≤ adv_capacity − predecessors' trades on the side the run couples through`).
 Solve steps: `cvxpy` (default), `pro_rata_fill`. Sinks: `orders_to_parquet`, `orders_to_csv` (`subdir`, default `orders`).
 
@@ -218,7 +218,18 @@ A row naming `trade_balance` is refused: the trade identity comes from `sides`. 
 checked until the solve step uses it, so a bad row fails that portfolio at stage `solve` and the rest
 of the book runs.
 
-## Style limits (columns of `details`, and the `sector_bounds` dataset)
+A limit that is not a per-account scalar carries its numbers on the row. `sector_bound` is the shipped
+example: one row per sector, each with its own `label`, and `params` naming the `sector` and its
+`lower` and `upper` band (`tolerance` is the slack the verifier allows). The spec supplies the sector's
+membership — one sparse row of the matrix the build derives from `universe.sector` — and the row
+supplies the band, so bounding a second sector is a second row rather than a schema change.
+
+```csv
+portfolio_id,name,label,params
+P1,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
+```
+
+## Style limits (columns of `details`)
 
 Every bounded constraint reads its limits from the data, not from the config. The per-account scalars
 are columns of the `details` frame:
@@ -232,17 +243,8 @@ are columns of the `details` frame:
 | `cash_lb` | decimal in [0, 1] | Lower bound on `1 − Σw`. |
 | `cash_ub` | decimal in [0, 1] | Upper bound on `1 − Σw`; `cash_lb = cash_ub = 0` is full investment. Must be at least `cash_lb`. |
 
-Per-sector limits do not fit a row, so they are their own dataset, `sector_bounds` — engine-known but
-optional, and a run that omits it bounds no sector:
-
-| Column | Type | Description |
-|---|---|---|
-| `portfolio_id` | string | The account the bound applies to. |
-| `sector` | string | Must exist in the universe. |
-| `lower` | decimal in [0, 1] | Lower bound on the sector's weight; must not exceed `upper`. |
-| `upper` | decimal in [0, 1] | Upper bound on the sector's weight. |
-
-Key is (`portfolio_id`, `sector`). A sector with no row is unbounded — `[0, 1]`.
+A limit that is not one scalar per account — a per-sector band — lives on its constraint row instead;
+see the section above.
 
 ## Environment
 

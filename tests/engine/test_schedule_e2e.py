@@ -48,7 +48,6 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
     (root / "buy_list.csv").write_text("\n".join(buy_list) + "\n")
     universe_rows = (f"{security},{PRICES[security]},TECH,20000,1,false,{ALPHAS[security]}" for security in SECURITIES)
     (root / "universe.csv").write_text("\n".join(["security_id,price,sector,adv_shares,lot_size,restricted,alpha", *universe_rows]) + "\n")
-    (root / "sector_bounds.csv").write_text("portfolio_id,sector,lower,upper\n")  # one sector and no rows: nothing is bounded
     constraints = ["portfolio_id,name,label,params"]
     constraints.extend(f"{portfolio_id},{name}," for portfolio_id in portfolio_ids for name in SHIPPED_CONSTRAINTS)
     (root / "constraints.csv").write_text("\n".join(constraints) + "\n")

@@ -117,8 +117,8 @@ row counts, and the columns it added go into the manifest. After the last step, 
 and `details` must exist, and **every engine-known frame is validated against its schema** — column
 set, dtype, nullability, bounds, unique key, and frame-level invariants such as "cash_lb does not
 exceed cash_ub" — with all failures across all frames reported at once. `holdings` and `universe` may
-carry any further columns; that is where security analytics live. `sector_bounds` and `constraints` are
-engine-known but optional — a run that omits `sector_bounds` bounds no sector. Finally, `details` must have a row for every
+carry any further columns; that is where security analytics live. `constraints` is engine-known but
+optional — a run that omits it is bound by nothing but the trade identity. Finally, `details` must have a row for every
 portfolio. Whatever datasets remain that the engine does not know become the run's extras.
 
 Anything failing here raises `InputRejectedError` and the run exits with code 2. Nothing was solved.
@@ -127,7 +127,7 @@ Anything failing here raises `InputRejectedError` and the run exits with code 2.
 
 `slice_portfolio` builds a `PortfolioData` bundle: this portfolio's `details` row typed into a
 `PortfolioDetails` model — which carries the account's style limits alongside its facts — its holdings,
-the full universe, its own rows of `sector_bounds` and `constraints`, and its share of the
+the full universe, its own rows of `constraints`, and its share of the
 extras — a dataset with a `portfolio_id` column reduced to this portfolio's rows, one without passed
 whole. This happens *in the worker*, which received the assembled
 datasets once: a task carries a portfolio id and nothing else.
@@ -138,8 +138,8 @@ every per-column check, the key's uniqueness, and the bounds' ordering. So the b
 them again, here or after a rule that leaves them untouched. A rule that returns a *new* frame loses that standing for it, and the new frame is validated.
 
 `PortfolioData.__post_init__` (`domain/data.py`) holds the cross-frame invariants: `as_of_date` is UTC,
-holdings contain only this portfolio, every sector named in `sector_bounds` exists, every constraint row
-and every extra with a `portfolio_id` column belongs to this portfolio, and — because the two tables will be stacked into one optimizer frame — every column
+holdings contain only this portfolio, every constraint row and every extra with a `portfolio_id` column
+belongs to this portfolio, and — because the two tables will be stacked into one optimizer frame — every column
 that `holdings` and `universe` share has the same dtype on both. A held name need not be in the
 universe; that is the shipped build's requirement, not the bundle's. A failure here is a per-portfolio
 failure at stage `slice`, not a run-level rejection; other portfolios proceed according to `on_error`.

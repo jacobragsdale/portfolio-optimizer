@@ -102,11 +102,11 @@ def test_a_failed_build_is_treated_as_overlapping_everything_after_it(tmp_path: 
 
 
 def test_a_portfolio_whose_bundle_is_inconsistent_fails_at_slice(tmp_path: Path, scheduler_address: str) -> None:
-    bounds = (EXAMPLE_DATA / "sector_bounds.csv").read_text().replace(",TECH,", ",ENERGY,")
-    data_root = example_book(tmp_path, **{"sector_bounds.csv": bounds})
+    details = {f"details/{pid}.csv": details_csv(pid, state="NEW YORK") for pid in ("P1", "P2")}  # a string the frame schema types but the account model refuses
+    data_root = example_book(tmp_path, **details)
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
     assert [outcome.stage for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)] == ["slice", "slice"]
-    assert "sector_bounds reference sectors absent from universe ['ENERGY']" in report.outcomes[0].message  # ty: ignore[unresolved-attribute]  # both outcomes are failures, asserted above
+    assert "String should match pattern" in report.outcomes[0].message  # ty: ignore[unresolved-attribute]  # both outcomes are failures, asserted above
 
 
 def test_sink_failure_is_infrastructure_and_the_manifest_still_records_it(tmp_path: Path, scheduler_address: str) -> None:
@@ -146,7 +146,7 @@ def test_manifest_records_provenance_for_every_stage(tmp_path: Path, scheduler_a
     manifest = execute(tmp_path, scheduler_address=scheduler_address).manifest
     assert manifest.git_sha == GIT.sha
     assert manifest.config.sha256 == resolved_example_real(sink="orders_to_parquet").config_sha256
-    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "sector_bounds", "constraints"}
+    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "constraints"}
     p1 = manifest.portfolios[0]
     assert [r.qualname for r in p1.rules] == ["portfolio_optimizer.rules:restrict_low_liquidity"]
     assert p1.solve is not None

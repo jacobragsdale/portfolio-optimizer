@@ -1466,19 +1466,19 @@
       "type": "array"
     },
     "datasets": {
-      "$comment": "Required unless an assembly step produces them: ['holdings', 'universe', 'details']. `sector_bounds` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
+      "$comment": "Required unless an assembly step produces them: ['holdings', 'universe', 'details']. `constraints` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
       "additionalProperties": {
         "$ref": "#/$defs/DatasetConfig"
       },
-      "description": "Named datasets, every one a frame. `holdings`, `universe`, and `details` must be declared here unless an assembly step produces them; `sector_bounds` and `constraints` are engine-known but optional, and a run that omits `sector_bounds` bounds no sector. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known.",
+      "description": "Named datasets, every one a frame. `holdings`, `universe`, and `details` must be declared here unless an assembly step produces them; `constraints` is engine-known but optional, and a run that omits it constrains nothing beyond the trade identity. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known.",
       "properties": {
+        "constraints": {
+          "$ref": "#/$defs/DatasetConfig"
+        },
         "details": {
           "$ref": "#/$defs/DatasetConfig"
         },
         "holdings": {
-          "$ref": "#/$defs/DatasetConfig"
-        },
-        "sector_bounds": {
           "$ref": "#/$defs/DatasetConfig"
         },
         "universe": {

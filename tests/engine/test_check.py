@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, StepRef, Tolerances
+from portfolio_optimizer.domain.results import ChainState, MissingSpecColumnError, ProblemSpec, Solution, StepRef, Tolerances
 from portfolio_optimizer.domain.sides import TWO_SIDED
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.check import CONSTRAINT_TWINS, TERM_TWINS, verify
@@ -62,19 +62,27 @@ def test_each_violation_is_detected(make: Factories, name: str, perturb: Perturb
     assert report.max_violation > 0
 
 
-def test_sector_bounds_use_the_configured_tolerance(make: Factories) -> None:
-    spec = make.spec(sector_ub=np.array([0.5]))
-    tight = verify(spec, make.solution(spec), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS, profile=TWO_SIDED)
-    assert "sector_ub" in tight.violated
+def test_a_sector_bound_reads_its_band_and_tolerance_from_the_row(make: Factories) -> None:
+    spec = make.spec(sector_names=("TECH",))  # every security in one sector, so its exposure is the whole invested weight
+    capped = StepRef(qualname="portfolio_optimizer.terms:sector_bound", params={"sector": "TECH", "upper": "0.5"}, label="tech")
+    tight = verify(spec, make.solution(spec), ChainState.empty(spec.security_ids), TERMS, [capped], profile=TWO_SIDED)
+    assert "sector_ub" in tight.violated, "the whole book is TECH, so its exposure of 1 is twice the band the row allows"
     loose = verify(
         spec,
         make.solution(spec, objective=resting_objective(spec)),
         ChainState.empty(spec.security_ids),
         TERMS,
-        [StepRef(qualname="portfolio_optimizer.terms:sector_bounds", params={"tolerance": "0.5"}, label="sector_bounds")],
+        [StepRef(qualname="portfolio_optimizer.terms:sector_bound", params={"sector": "TECH", "upper": "0.5", "tolerance": "0.5"}, label="tech")],
         profile=TWO_SIDED,
     )
     assert loose.passed
+
+
+def test_a_sector_bound_naming_a_sector_the_universe_lacks_is_refused(make: Factories) -> None:
+    spec = make.spec(sector_names=("TECH",))
+    unknown = StepRef(qualname="portfolio_optimizer.terms:sector_bound", params={"sector": "ENERGY"}, label="energy")
+    with pytest.raises(MissingSpecColumnError, match=r"spec has no sector 'ENERGY'"):
+        verify(spec, make.solution(spec), ChainState.empty(spec.security_ids), TERMS, [unknown], profile=TWO_SIDED)
 
 
 def test_a_violation_exactly_at_tolerance_passes(make: Factories) -> None:
@@ -117,7 +125,7 @@ def test_every_shipped_term_and_constraint_has_a_twin() -> None:
     from portfolio_optimizer import terms  # imported here so this module's header stays cvxpy-free
 
     shipped_terms = {f"portfolio_optimizer.terms:{name}" for name in ("alpha", "tax_cost", "transaction_cost")}
-    shipped_constraints = {f"portfolio_optimizer.terms:{name}" for name in SHIPPED_CONSTRAINTS}
+    shipped_constraints = {f"portfolio_optimizer.terms:{name}" for name in (*SHIPPED_CONSTRAINTS, "sector_bound")}
     assert shipped_terms == set(TERM_TWINS)
     assert shipped_constraints == set(CONSTRAINT_TWINS)
     for qualname in shipped_terms | shipped_constraints:
