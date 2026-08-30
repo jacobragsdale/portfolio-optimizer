@@ -189,7 +189,7 @@ def test_two_runs_over_the_same_inputs_are_identical_except_for_identity(tmp_pat
 def test_a_typed_only_book_derives_an_edge_free_schedule_that_still_matches_the_line(tmp_path: Path) -> None:
     """No typed constraint reads the chain, and the engine can see that — so nothing waits, where the same book under function rows would couple through every shared name."""
     book = example_book(tmp_path)
-    params = json.dumps({"direction": "le", "bounds": "0.3"})  # inside both accounts' style caps: order rounding clamps a buy to the spec's ub, which a typed-only solve must therefore respect
+    params = json.dumps({"direction": "<=", "bounds": "0.3"})  # inside both accounts' style caps: order rounding clamps a buy to the spec's ub, which a typed-only solve must therefore respect
     typed = pd.DataFrame({"portfolio_id": ["P1", "P2"], "kind": ["weight_limit"] * 2, "label": ["cap"] * 2, "params": [params] * 2})
     typed.to_csv(book / "constraints.csv", index=False)
     overlap = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=book, run_id="narrow")

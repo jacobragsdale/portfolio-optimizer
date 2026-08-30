@@ -36,6 +36,7 @@ from portfolio_optimizer.domain.constraints import (
     ParticipationLimit,
     Vector,
     WeightLimit,
+    bounds_above,
     effective_bounds,
     opaque_frame,
     parse_constraints,
@@ -155,7 +156,7 @@ def _render_group(model: GroupLimit, x: DecisionVars, spec: ProblemSpec) -> Cons
     exposure = matvec(membership, _vector(x, model.vector))
     current = np.asarray(membership @ starting_values(spec, model.vector), dtype=np.float64)
     bounds = effective_bounds(model.direction, model.allow_current_weight, np.array([float(bound) for _, bound in pairs]), current)
-    return ConstraintSet(model.name, (at_most(exposure, bounds) if model.direction == "le" else at_least(exposure, bounds),))
+    return ConstraintSet(model.name, (at_most(exposure, bounds) if bounds_above(model.direction) else at_least(exposure, bounds),))
 
 
 def _render_exposure(model: ExposureLimit, x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
@@ -163,7 +164,7 @@ def _render_exposure(model: ExposureLimit, x: DecisionVars, spec: ProblemSpec) -
     exposure = dot(loadings, _vector(x, model.vector))
     current = float((loadings * starting_values(spec, model.vector)).sum())
     bound = float(effective_bounds(model.direction, model.allow_current_weight, np.array([float(model.bounds)]), np.array([current]))[0])
-    return ConstraintSet(model.name, (at_most(exposure, bound) if model.direction == "le" else at_least(exposure, bound),))
+    return ConstraintSet(model.name, (at_most(exposure, bound) if bounds_above(model.direction) else at_least(exposure, bound),))
 
 
 def _render_weight(model: WeightLimit, x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
@@ -171,7 +172,7 @@ def _render_weight(model: WeightLimit, x: DecisionVars, spec: ProblemSpec) -> Co
     mask = flags.astype(np.float64)
     values = masked(flags, _vector(x, model.vector))
     bounds = effective_bounds(model.direction, model.allow_current_weight, np.full(spec.n, float(model.bounds)), starting_values(spec, model.vector)) * mask
-    return ConstraintSet(model.name, (at_most(values, bounds) if model.direction == "le" else at_least(values, bounds),))
+    return ConstraintSet(model.name, (at_most(values, bounds) if bounds_above(model.direction) else at_least(values, bounds),))
 
 
 def _render_participation(model: ParticipationLimit, x: DecisionVars, spec: ProblemSpec, chain: ChainState) -> ConstraintSet:

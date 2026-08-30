@@ -50,32 +50,32 @@ def test_frames_that_do_not_speak_the_spec_parse_to_none() -> None:
 
 def test_typed_and_opaque_rows_split_and_the_label_column_names_the_model() -> None:
     parsed = parse_constraints(
-        rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "le", "bounds": "0.1"}}, {"kind": None, "name": "long_only"}, {"kind": "function", "name": "max_weight"})
+        rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "<=", "bounds": "0.1"}}, {"kind": None, "name": "long_only"}, {"kind": "function", "name": "max_weight"})
     )
     assert parsed is not None
     assert parsed.opaque_rows == 2
     assert [constraint.name for constraint in parsed.typed] == ["cap"]
-    assert parsed.typed[0] == WeightLimit(name="cap", direction="le", bounds=Decimal("0.1"))
+    assert parsed.typed[0] == WeightLimit(name="cap", direction="<=", bounds=Decimal("0.1"))
     assert parsed.reads_chain, "opaque rows might read anything"
 
 
 def test_a_malformed_typed_row_names_itself_and_duplicate_names_are_refused() -> None:
     with pytest.raises(ConstraintSpecError, match=r"constraints\[0\]"):
         parse_constraints(rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "sideways", "bounds": "0.1"}}))
-    duplicated = rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "le", "bounds": "0.1"}}, {"kind": "weight_limit", "label": "cap", "params": {"direction": "ge", "bounds": "0"}})
+    duplicated = rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "<=", "bounds": "0.1"}}, {"kind": "weight_limit", "label": "cap", "params": {"direction": ">=", "bounds": "0"}})
     with pytest.raises(ConstraintSpecError, match="'cap' is also used"):
         parse_constraints(duplicated)
 
 
 def test_typed_constraints_are_hashable_and_bounds_dictionaries_canonicalize() -> None:
-    one = GroupLimit(name="bands", direction="le", column="sector", bounds={"TECH": Decimal("0.5"), "HEALTH": Decimal("0.3")})
-    other = GroupLimit(name="bands", direction="le", column="sector", bounds={"HEALTH": Decimal("0.3"), "TECH": Decimal("0.5")})
+    one = GroupLimit(name="bands", direction="<=", column="sector", bounds={"TECH": Decimal("0.5"), "HEALTH": Decimal("0.3")})
+    other = GroupLimit(name="bands", direction="<=", column="sector", bounds={"HEALTH": Decimal("0.3"), "TECH": Decimal("0.5")})
     assert one == other
-    assert len({one, other, ParticipationLimit(name="adv", direction="le")}) == 2
+    assert len({one, other, ParticipationLimit(name="adv", direction="<=")}) == 2
 
 
 def test_opaque_frame_keeps_exactly_the_rows_the_spec_does_not_type() -> None:
-    frame = rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "le", "bounds": "0.1"}}, {"kind": None, "name": "long_only"}, {"kind": "function", "name": "max_weight"})
+    frame = rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "<=", "bounds": "0.1"}}, {"kind": None, "name": "long_only"}, {"kind": "function", "name": "max_weight"})
     opaque = opaque_frame(frame)
     assert opaque["name"].tolist() == ["long_only", "max_weight"]
     assert "kind" not in opaque.columns
@@ -88,16 +88,16 @@ def test_opaque_frame_keeps_exactly_the_rows_the_spec_does_not_type() -> None:
 
 def test_nothing_that_reads_the_chain_means_no_consume_set(make: Factories) -> None:
     spec = flagged_spec(make)
-    parsed = parse_constraints(rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "le", "bounds": "0.9"}}))
+    parsed = parse_constraints(rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "<=", "bounds": "0.9"}}))
     assert consumed_securities(parsed, spec, TWO_SIDED, chain_aware_terms=False, opaque_solve=False, opaque_rows=0) == ()
     assert consumed_securities(None, spec, TWO_SIDED, chain_aware_terms=False, opaque_solve=False, opaque_rows=0) == (), "no constraints at all reads nothing"
 
 
 def test_a_scoped_chain_constraint_consumes_its_scope_of_the_tradable_set(make: Factories) -> None:
     spec = flagged_spec(make)
-    parsed = parse_constraints(rows({"kind": "participation_limit", "label": "adv", "params": {"direction": "le", "scope": "is_thin"}}))
+    parsed = parse_constraints(rows({"kind": "participation_limit", "label": "adv", "params": {"direction": "<=", "scope": "is_thin"}}))
     assert consumed_securities(parsed, spec, TWO_SIDED, chain_aware_terms=False, opaque_solve=False, opaque_rows=0) == ("S2",)
-    unscoped = parse_constraints(rows({"kind": "participation_limit", "label": "adv", "params": {"direction": "le"}}))
+    unscoped = parse_constraints(rows({"kind": "participation_limit", "label": "adv", "params": {"direction": "<="}}))
     assert consumed_securities(unscoped, spec, TWO_SIDED, chain_aware_terms=False, opaque_solve=False, opaque_rows=0) == ("S0", "S1", "S2")
 
 
@@ -110,7 +110,7 @@ def test_anything_opaque_widens_the_consume_set_to_the_whole_tradable_set(make: 
 
 def test_the_consume_set_respects_the_side_profiles_tradable_set(make: Factories) -> None:
     spec = flagged_spec(make, w0=np.array([0.5, 0.5, 0.0]))
-    parsed = parse_constraints(rows({"kind": "participation_limit", "label": "adv", "params": {"direction": "le"}}))
+    parsed = parse_constraints(rows({"kind": "participation_limit", "label": "adv", "params": {"direction": "<="}}))
     assert consumed_securities(parsed, spec, SELL_ONLY, chain_aware_terms=False, opaque_solve=False, opaque_rows=0) == ("S0", "S1"), (
         "a sell-only run couples through what is sellable, and S2 is not held"
     )
@@ -122,16 +122,17 @@ def test_the_consume_set_respects_the_side_profiles_tradable_set(make: Factories
 def test_effective_bounds_loosen_to_the_current_value_only_when_allowed() -> None:
     bounds = np.array([0.4, 0.4])
     current = np.array([0.5, 0.3])
-    np.testing.assert_allclose(effective_bounds("le", False, bounds, current), [0.4, 0.4])
-    np.testing.assert_allclose(effective_bounds("le", True, bounds, current), [0.5, 0.4], err_msg="a breached start holds; a clean one keeps the bound")
-    np.testing.assert_allclose(effective_bounds("ge", True, np.array([0.2, 0.2]), np.array([0.1, 0.3])), [0.1, 0.2])
+    np.testing.assert_allclose(effective_bounds("<=", False, bounds, current), [0.4, 0.4])
+    np.testing.assert_allclose(effective_bounds("<=", True, bounds, current), [0.5, 0.4], err_msg="a breached start holds; a clean one keeps the bound")
+    np.testing.assert_allclose(effective_bounds(">=", True, np.array([0.2, 0.2]), np.array([0.1, 0.3])), [0.1, 0.2])
+    np.testing.assert_allclose(effective_bounds("<", True, bounds, current), effective_bounds("<=", True, bounds, current), err_msg="the strict spelling binds identically")
 
 
 def test_participation_limit_refuses_shapes_that_mean_nothing() -> None:
-    with pytest.raises(ValueError, match="direction must be 'le'"):
-        ParticipationLimit(name="adv", direction="ge")
+    with pytest.raises(ValueError, match="only bounds from above"):
+        ParticipationLimit(name="adv", direction=">=")
     with pytest.raises(ValueError, match="allow_current_weight does not apply"):
-        ParticipationLimit(name="adv", direction="le", allow_current_weight=True)
+        ParticipationLimit(name="adv", direction="<=", allow_current_weight=True)
 
 
 # --- residuals: the verifier's half of the contract ---
@@ -141,13 +142,13 @@ def test_weight_limit_residual_checks_only_the_scope_and_honours_the_start_polic
     spec = flagged_spec(make, w0=np.array([0.5, 0.3, 0.2]))
     chain = ChainState.empty(spec.security_ids)
     solution = make.solution(spec, w=np.array([0.5, 0.3, 0.2]))
-    strict = WeightLimit(name="cap", direction="le", bounds=Decimal("0.4"))
+    strict = WeightLimit(name="cap", direction="<=", bounds=Decimal("0.4"))
     ((_, residual),) = strict.residual(spec, solution, chain, TWO_SIDED)
     np.testing.assert_allclose(residual, [0.1, -0.1, -0.2], err_msg="S0 breaches the cap it started above")
-    held = WeightLimit(name="cap", direction="le", bounds=Decimal("0.4"), allow_current_weight=True)
+    held = WeightLimit(name="cap", direction="<=", bounds=Decimal("0.4"), allow_current_weight=True)
     ((_, residual),) = held.residual(spec, solution, chain, TWO_SIDED)
     np.testing.assert_allclose(residual, [0.0, -0.1, -0.2], err_msg="the breached start loosens its own bound to the holding, exactly")
-    scoped = WeightLimit(name="cap", direction="le", bounds=Decimal("0.1"), scope="is_thin")
+    scoped = WeightLimit(name="cap", direction="<=", bounds=Decimal("0.1"), scope="is_thin")
     ((_, residual),) = scoped.residual(spec, solution, chain, TWO_SIDED)
     np.testing.assert_allclose(residual, [0.0, 0.0, 0.1], err_msg="outside the scope the residual is zero by construction")
 
@@ -156,22 +157,22 @@ def test_group_limit_residual_bounds_named_groups_and_refuses_unknown_ones(make:
     spec = make.spec()  # one sector, TECH, holding everything
     chain = ChainState.empty(spec.security_ids)
     solution = make.solution(spec)
-    bands = GroupLimit(name="bands", direction="le", column="sector", bounds={"TECH": Decimal("0.8")})
+    bands = GroupLimit(name="bands", direction="<=", column="sector", bounds={"TECH": Decimal("0.8")})
     ((_, residual),) = bands.residual(spec, solution, chain, TWO_SIDED)
     assert residual[0] == pytest.approx(1.0 - 0.8)
     with pytest.raises(ConstraintSpecError, match=r"group\(s\) \['ENERGY'\]"):
-        GroupLimit(name="bands", direction="le", column="sector", bounds={"ENERGY": Decimal("0.8")}).residual(spec, solution, chain, TWO_SIDED)
+        GroupLimit(name="bands", direction="<=", column="sector", bounds={"ENERGY": Decimal("0.8")}).residual(spec, solution, chain, TWO_SIDED)
     with pytest.raises(ConstraintSpecError, match="not a grouping the spec carries"):
-        GroupLimit(name="bands", direction="le", column="country", bounds=Decimal("0.5")).residual(spec, solution, chain, TWO_SIDED)
+        GroupLimit(name="bands", direction="<=", column="country", bounds=Decimal("0.5")).residual(spec, solution, chain, TWO_SIDED)
 
 
 def test_exposure_limit_residual_is_the_scoped_dot_product(make: Factories) -> None:
     spec = make.spec(columns={"beta": np.array([1.0, 2.0, 3.0])})
     solution = make.solution(spec)  # w0 = 1/3 each -> beta 2.0
-    tight = ExposureLimit(name="beta_cap", direction="le", column="beta", bounds=Decimal("1.5"))
+    tight = ExposureLimit(name="beta_cap", direction="<=", column="beta", bounds=Decimal("1.5"))
     ((_, residual),) = tight.residual(spec, solution, ChainState.empty(spec.security_ids), TWO_SIDED)
     assert residual[0] == pytest.approx(0.5)
-    floor = ExposureLimit(name="beta_floor", direction="ge", column="beta", bounds=Decimal("2.5"))
+    floor = ExposureLimit(name="beta_floor", direction=">", column="beta", bounds=Decimal("2.5"))  # the strict spelling: same closed bound
     ((_, residual),) = floor.residual(spec, solution, ChainState.empty(spec.security_ids), TWO_SIDED)
     assert residual[0] == pytest.approx(0.5), "a ge bound is violated from below"
 
@@ -180,7 +181,7 @@ def test_participation_residual_scopes_both_checks_and_reads_the_chain(make: Fac
     spec = flagged_spec(make, adv_capacity=np.array([0.05, 0.05, 0.05]), price=np.full(3, 100.0))
     consumed = Contribution("P0", ("S2",), np.array([300.0]))  # 300 shares at 100 on NAV 1e6 = 0.03 of NAV
     chain = TWO_SIDED.chain_state(spec, [consumed], np.ones(3, dtype=np.bool_))
-    adv = ParticipationLimit(name="adv", direction="le", scope="is_thin")
+    adv = ParticipationLimit(name="adv", direction="<=", scope="is_thin")
     solution = make.solution(spec, w=spec.w0 + np.array([0.0, 0.0, 0.04]), buy=np.array([0.0, 0.0, 0.04]))
     residuals = dict(adv.residual(spec, solution, chain, TWO_SIDED))
     assert residuals["participation"][2] == pytest.approx(-0.01), "own budget has room in the scoped name; unscoped entries are zero by construction"
@@ -202,9 +203,9 @@ def test_vector_values_and_starting_values_cover_the_four_quantities(make: Facto
 def test_check_against_spec_collects_every_missing_column_flag_and_group(make: Factories) -> None:
     spec = make.spec()
     constraints = (
-        WeightLimit(name="cap", direction="le", bounds=Decimal("0.4"), scope="no_such_flag"),
-        ExposureLimit(name="beta_cap", direction="le", column="beta", bounds=Decimal(1)),
-        GroupLimit(name="bands", direction="le", column="sector", bounds={"ENERGY": Decimal("0.5")}),
+        WeightLimit(name="cap", direction="<=", bounds=Decimal("0.4"), scope="no_such_flag"),
+        ExposureLimit(name="beta_cap", direction="<=", column="beta", bounds=Decimal(1)),
+        GroupLimit(name="bands", direction="<=", column="sector", bounds={"ENERGY": Decimal("0.5")}),
     )
     problems = list(check_against_spec(constraints, spec))
     assert len(problems) == 3

@@ -49,8 +49,18 @@ from portfolio_optimizer.domain.results import F64, ChainState, Flags, MissingSp
 from portfolio_optimizer.domain.sides import SideProfile
 from portfolio_optimizer.domain.types import StrictModel
 
-type Direction = Literal["le", "ge"]
-"""``le``: the expression stays at or below the bound; ``ge``: at or above. An equality is two rows."""
+type Direction = Literal["<=", "<", ">=", ">"]
+"""Which side of the bound the expression must stay on; an equality is two rows.
+
+The strict and non-strict spellings bind identically: a convex solver enforces the closed bound, and
+the verifier's ``tolerance`` is the only real slack. Both are accepted because desks write both.
+"""
+
+
+def bounds_above(direction: Direction) -> bool:
+    """True for the ``<=``/``<`` spellings: the expression is held at or below the bound."""
+    return direction in ("<=", "<")
+
 
 type Vector = Literal["w", "buy", "sell", "trade"]
 """The decision quantity the constraint bounds. ``trade`` is ``buy + sell``, or the one side a one-sided run has."""
@@ -104,7 +114,7 @@ class TypedConstraint(StrictModel):
     def _signed(self, values: F64, bounds: F64) -> F64:
         """Residual of ``values`` against ``bounds`` under the direction, net of tolerance: positive is a violation either way."""
         slack = float(self.tolerance)
-        if self.direction == "le":
+        if bounds_above(self.direction):
             return values - bounds - slack
         return bounds - values - slack
 
@@ -121,7 +131,7 @@ def effective_bounds(direction: Direction, allow_current: bool, bounds: F64, cur
     """
     if not allow_current:
         return bounds
-    return np.maximum(bounds, current) if direction == "le" else np.minimum(bounds, current)
+    return np.maximum(bounds, current) if bounds_above(direction) else np.minimum(bounds, current)
 
 
 def vector_values(solution: Solution, vector: Vector) -> F64:
@@ -246,8 +256,8 @@ class ParticipationLimit(TypedConstraint):
 
     @model_validator(mode="after")
     def _shape_is_meaningful(self) -> Self:
-        if self.direction != "le":
-            msg = f"{self.name}: participation_limit only bounds from above; direction must be 'le'"
+        if not bounds_above(self.direction):
+            msg = f"{self.name}: participation_limit only bounds from above; direction must be '<='"
             raise ValueError(msg)
         if self.allow_current_weight:
             msg = f"{self.name}: allow_current_weight does not apply to participation_limit; a trade starts at zero and cannot begin breached"
