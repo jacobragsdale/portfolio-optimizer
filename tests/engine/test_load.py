@@ -1,6 +1,7 @@
 """Tier 2: loading, assembly steps with declared cardinality, extras that flow into bundles, and per-portfolio isolation."""
 
 import asyncio
+from dataclasses import replace
 from decimal import Decimal
 
 import pandas as pd
@@ -10,10 +11,12 @@ from portfolio_optimizer.config.resolve import ResolvedConfig
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.load import AssemblyError, LoadedDatasets, LoadError, assemble, load_datasets, load_datasets_async, slice_portfolio
-from tests.conftest import AS_OF, EXAMPLE_DATA, Frames, resolved_example
+from tests import steps
+from tests.conftest import AS_OF, EXAMPLE_DATA, Frames, example_body, resolved_example
 
 JOIN_PRICES_PARAMS: dict[str, object] = {"into": "universe", "source": "prices", "on": ["security_id"], "cardinality": "one_to_one", "require_all_matched": True}
 JOIN_PRICES: dict[str, object] = {"name": "join", "params": JOIN_PRICES_PARAMS}
+P2 = PortfolioId("P2")
 
 
 @pytest.fixture
@@ -31,8 +34,7 @@ def _with_assembly(*steps: object) -> ResolvedConfig:
 
 
 def _loaded_with(example_loaded: LoadedDatasets, **frames: object) -> LoadedDatasets:
-    merged = {**example_loaded.frames, **frames}
-    return LoadedDatasets(portfolio_ids=example_loaded.portfolio_ids, solve_orders=example_loaded.solve_orders, frames=merged, constraints=example_loaded.constraints, audits=example_loaded.audits)  # ty: ignore[invalid-argument-type]  # frames are DataFrames by construction in every caller
+    return replace(example_loaded, frames={**example_loaded.frames, **frames})  # frames are DataFrames by construction in every caller
 
 
 def test_example_data_loads_in_solve_order_with_audit_records(example_loaded: LoadedDatasets) -> None:
@@ -144,16 +146,13 @@ def test_analytics_dtype_conflicts_between_holdings_and_universe_fail_at_slice(e
         slice_portfolio(assembled, PortfolioId("P1"))
 
 
-def test_missing_constraints_for_a_portfolio_fail_loudly(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
-    partial = LoadedDatasets(
-        portfolio_ids=example_loaded.portfolio_ids,
-        solve_orders=example_loaded.solve_orders,
-        frames=example_loaded.frames,
-        constraints={"P1": example_loaded.constraints["P1"]},
-        audits=example_loaded.audits,
-    )
-    with pytest.raises(LoadError, match="constraints missing for portfolios \\['P2'\\]"):
-        assemble(partial, example_resolved, run_id="test")
+def test_a_portfolio_without_constraints_is_rejected_alone(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
+    partial = replace(example_loaded, constraints={"P1": example_loaded.constraints["P1"]})
+    assembled = assemble(partial, example_resolved, run_id="test")
+    assert set(assembled.rejected) == {P2}, "a portfolio the inputs do not cover fails alone; P1 still has everything it needs"
+    assert (assembled.rejected[P2].stage, assembled.rejected[P2].error_type) == ("load", "MissingInput")
+    assert "no constraints for this portfolio" in assembled.rejected[P2].message
+    assert assembled.portfolio_ids == ("P1", "P2"), "the book is unchanged; the rejection travels beside it"
 
 
 def test_loader_returning_the_wrong_type_is_rejected() -> None:
@@ -245,3 +244,62 @@ def test_the_portfolio_list_input_can_be_bounded_too() -> None:
     assert load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test").portfolio_ids == ("portfolios",)
     resolved = resolved_example(portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": "shared"}, rate_limits={"shared": {"max_in_flight": 1}})
     assert load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test").portfolio_ids == ("shared",)
+
+
+# --- per-portfolio datasets: the engine owns the fan-out ---
+
+
+def _sharded(batch_size: int | None, **overrides: object) -> dict[str, object]:
+    """The example datasets with ``holdings`` loaded per portfolio by the recording loader."""
+    datasets = example_body()["datasets"]
+    assert isinstance(datasets, dict)
+    named = {str(name): spec for name, spec in datasets.items()}
+    holdings: dict[str, object] = {
+        "loader": {"name": "tests.steps:recording_csv", "params": {"path": "holdings.csv", "decimal_columns": ["avg_cost"], "utc_datetime_columns": ["acquired_on"], **overrides}},
+        "scope": "per_portfolio",
+    }
+    if batch_size is not None:
+        holdings["batch_size"] = batch_size
+    return {**named, "holdings": holdings}
+
+
+def test_a_per_portfolio_dataset_is_called_once_per_batch() -> None:
+    steps.BATCHES.clear()
+    loaded = load_datasets(resolved_example(datasets=_sharded(1)), data_root=EXAMPLE_DATA, run_id="test")
+    assert sorted(steps.BATCHES) == [("P1",), ("P2",)], (
+        "batch_size 1 is one call per portfolio, driven by the engine rather than inside the loader; the calls run concurrently, so their order is the sources'"
+    )
+    audit = {record.name: record for record in loaded.audits}["holdings"]
+    assert (audit.batches, audit.rejected, audit.rows) == (2, 0, 4), "the batches are concatenated back into one dataset, and the audit records the partition"
+    assert set(loaded.per_portfolio) == {"holdings"} and "holdings" not in loaded.frames, "assembly sees the global datasets only"
+
+
+def test_the_whole_book_goes_in_one_call_when_no_batch_size_is_given() -> None:
+    steps.BATCHES.clear()
+    load_datasets(resolved_example(datasets=_sharded(None)), data_root=EXAMPLE_DATA, run_id="test")
+    assert steps.BATCHES == [("P1", "P2")], "a source that takes an id list is still one call; the scope only says the dataset is not assembly's to see"
+
+
+def test_a_failed_batch_rejects_its_own_portfolios_and_no_others() -> None:
+    steps.BATCHES.clear()
+    resolved = resolved_example(datasets=_sharded(1, fails_for=["P2"]))
+    loaded = load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test")
+    assert set(loaded.rejected) == {P2}
+    assert (loaded.rejected[P2].stage, loaded.rejected[P2].error_type) == ("load", "ValueError")
+    assert "dataset 'holdings' did not load for this portfolio" in loaded.rejected[P2].message
+    assert {record.name: record for record in loaded.audits}["holdings"].rejected == 1
+    assembled = assemble(loaded, resolved, run_id="test")
+    assert set(assembled.rejected) == {P2} and assembled.portfolio_ids == ("P1", "P2")
+
+
+def test_a_per_portfolio_dataset_no_batch_of_which_loads_rejects_the_run() -> None:
+    steps.BATCHES.clear()
+    with pytest.raises(LoadError, match="no data for"):
+        load_datasets(resolved_example(datasets=_sharded(1, fails_for=["P1", "P2"])), data_root=EXAMPLE_DATA, run_id="test")
+
+
+def test_assembly_is_told_why_a_per_portfolio_dataset_is_not_there() -> None:
+    resolved = resolved_example(datasets=_sharded(1), assembly=[{"name": "drop", "params": {"datasets": ["holdings"]}}])
+    loaded = load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test")
+    with pytest.raises(AssemblyError, match="'holdings' is a per_portfolio dataset, which assembly never sees"):
+        assemble(loaded, resolved, run_id="test")

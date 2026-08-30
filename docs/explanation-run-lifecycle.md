@@ -71,13 +71,28 @@ schema, and sorts it by `solve_order` then `portfolio_id`. `solve_order` is a *p
 first, ties break on the id, and the column may be omitted or repeated — and this loaded order is only
 the order builds are submitted in and the fallback key when no `solve_order` step is configured. The
 tuple of ids is part of every other request, which is why this one loader cannot overlap with the rest. Then
-**every dataset loader starts at once**, each called exactly once with a `LoadRequest` (dataset name,
-portfolio ids, `as_of`, `data_root`, `run_id`, and a rate limiter): an `async def` loader runs as a task
-on the event loop, a plain `def` loader in a worker thread so a blocking driver never stalls the loop.
-Every outcome is collected — one failing dataset does not cancel the others — and all failures are
-reported together. Every loaded frame gets an audit record — loader name, source hash, params hash,
-row count, columns, how long it took, and a **content hash** that ignores row order, column order, and
-index.
+**every dataset loader starts at once**, called with a `LoadRequest` (dataset name, portfolio ids,
+`as_of`, `data_root`, `run_id`, and a rate limiter): an `async def` loader runs as a task on the event
+loop, a plain `def` loader in a worker thread so a blocking driver never stalls the loop.
+
+How many times each loader is called is the dataset's `scope`. A **global** dataset is one call for the
+whole book, and is what the assembly steps see. A **per-portfolio** dataset is the engine's own
+fan-out: the ids are cut into batches of `batch_size` and the loader is called once per batch, so a
+source that answers one account at a time is driven by the engine rather than privately inside a
+loader. The batches share the dataset's one rate limiter and run alongside the global loaders, so on a
+book whose global stage is the long pole they cost nothing.
+
+Failure is split along the same line. A **structural** problem rejects the whole run — a required
+dataset missing, a schema violated, a global loader that raised, a per-portfolio dataset no batch of
+which came back. A **coverage** problem fails only the portfolios it touches — one batch that raised,
+a portfolio with no `details` row or no `constraints` entry — recorded as a failure at stage `load` so
+that every other portfolio still solves. A portfolio rejected here never entered the run, so it traded
+nothing and couples to nobody: it appears in the manifest as failed and blocks no one in the schedule.
+Otherwise every outcome is collected — one failing dataset does not cancel the others — and all
+failures are reported together. Every loaded frame gets an audit record — loader name, source hash,
+params hash, row count, columns, how many batches it took, how many portfolios a failed batch cost,
+how long it took, and a **content hash** that ignores row order, column order, and index, so which
+batch returned first never reaches the manifest.
 
 Every input — the portfolio list and each dataset — may carry a `rate_limit`, inline or as the name of
 a pool shared with other inputs on the same backend; the loader receives it as `request.rate_limiter`
@@ -250,16 +265,20 @@ your own participation"). That is the only kind of coupling the engine has: **a 
 one side** — buys under `both` and `buy`, sells under `sell`. What a two-sided run's portfolio *sold*
 never changes what a later one may do — a product decision, and everything in this section leans on it.
 
-The mechanism is small. After every build, the main process knows each portfolio's solve-order key and
-its **tradable set** — the securities the side profile lets it trade on that side: buyable (`ub > w0`;
-a name frozen or capped at its current weight is outside it) or sellable (held and `lb < w0`). It sorts
-the portfolios by `(key, portfolio_id)` and derives a graph (`engine/schedule.py`): portfolio *j*
-depends on every earlier *i* whose tradable set intersects its own, and on nothing else. If no term or
-constraint declares `chain`, there are no edges at all. Under `execution.dependencies: "all"` every
-earlier portfolio is a predecessor — one line, the same answer, for diagnosis. A build that failed has
-an unknown tradable set and is treated as overlapping everything after it. The graph is never
-transitively reduced: a solve folds its *direct* predecessors' own trades, so every overlapping earlier
-portfolio stays a direct dependency.
+The mechanism is small. A build reports its portfolio's solve-order key and its **tradable set** — the
+securities the side profile lets it trade on that side: buyable (`ub > w0`; a name frozen or capped at
+its current weight is outside it) or sellable (held and `lb < w0`). Portfolios sort by
+`(key, portfolio_id)`, and that order is the graph (`engine/schedule.py`): portfolio *j* depends on
+every earlier *i* whose tradable set intersects its own, and on nothing else. If no term or constraint
+declares `chain`, there are no edges at all. Under `execution.dependencies: "all"` every earlier
+portfolio is a predecessor — one line, the same answer, for diagnosis. A build that failed has an
+unknown tradable set and is treated as overlapping everything after it. The graph is never transitively
+reduced: a solve folds its *direct* predecessors' own trades, so every overlapping earlier portfolio
+stays a direct dependency.
+
+Because every predecessor is *earlier*, the graph is grown a portfolio at a time rather than derived
+all at once: the runner walks the order and places each portfolio as its build reports, so the head of
+the book is solving while the tail is still building. Nothing waits for the build wave to finish.
 
 Each solve folds its predecessors' orders on that side into a `ChainState`: `traded_shares`, whole
 shares per security, projected onto this spec's securities and **zeroed wherever this portfolio cannot
@@ -275,14 +294,21 @@ hash — the ids and the shares, never who traded them — is recorded per portf
 - **build** every portfolio at once — slice, rules, the solve-order key, the spec — chain-free and in
   parallel. Each build stays on the worker that made it; a `summarize` task sends back only the key, the
   tradable ids, the spec hash, and the rule audit, stamped with the worker's environment.
-- **derive** the order and the graph in the main process, and log its shape: portfolios, edges,
-  components, the longest chain of solves.
-- **solve** each portfolio where its build lives, submitted with its predecessors' *contributions* —
-  their order rows on the coupled side, a few kilobytes each — as Dask dependencies, so the scheduler enforces the order and
-  starts a solve the moment its last predecessor finishes. Solves outrank builds, and the head of the
-  longest chain outranks the rest.
+- **place** each portfolio in the graph as its build reports, walking the solve order, and log the
+  shape it ends up with: portfolios, edges, components, the longest chain of solves.
+- **solve** each portfolio where its build lives, submitted as it is placed with its predecessors'
+  *contributions* — their order rows on the coupled side, a few kilobytes each — as Dask dependencies,
+  so the scheduler enforces the order and starts a solve the moment its last predecessor finishes. A
+  portfolio nothing waits for is never asked to contribute. Solves run in solve order and every solve
+  outranks every build.
 - **classify** outcomes in solve order as they complete, persisting each result as it arrives, so the
   worker count and completion order never change a record.
+
+Only two things make a solve wait for a build it does not depend on. A configured `solve_order` step
+computes the key from the *ruled* bundle, so the order is itself a build output and the walk cannot
+start until every build has reported — the reason to put the priority in the portfolios frame's column
+when it can go there. And under `fail_fast`, a failure stops submission, after which the builds behind
+it are read only to finish the graph the manifest records.
 
 ![Where each stage runs](images/execution-stages.svg)
 

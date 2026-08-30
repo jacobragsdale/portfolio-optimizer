@@ -180,9 +180,11 @@ the portfolios frame's column, ties broken on `portfolio_id`. From those the eng
 dependency graph (`engine/schedule.py`): portfolio *j* depends on every higher-priority *i* whose
 tradable set intersects its own, and on nothing else; with no chain-aware step there are no edges. The
 graph is never transitively reduced — a solve folds its *direct* predecessors' own trades, so every
-overlapping earlier portfolio stays a direct dependency. There is no execution mode to choose: the graph
-replaces one, and the manifest records its shape — edges, components, the longest chain of solves — so a
-slow batch explains itself.
+overlapping earlier portfolio stays a direct dependency. Every predecessor is earlier in the order, so
+the graph is grown a portfolio at a time as builds report rather than derived once they all have: a
+solve goes in while the rest of the book is still building. There is no execution mode to choose: the
+graph replaces one, and the manifest records its shape — edges, components, the longest chain of
+solves — so a slow batch explains itself.
 
 Each solve folds its predecessors' orders on that side into a `ChainState` — `traded_shares`, aligned
 to its own securities and **masked to its own tradable set**. The mask is load-bearing: a predecessor's

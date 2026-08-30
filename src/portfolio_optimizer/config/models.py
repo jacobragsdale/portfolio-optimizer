@@ -15,7 +15,7 @@ from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from portfolio_optimizer.domain.schemas import REQUIRED_DATASETS
 from portfolio_optimizer.domain.sides import Sides
-from portfolio_optimizer.domain.types import StrictModel
+from portfolio_optimizer.domain.types import PortfolioId, StrictModel
 from portfolio_optimizer.ratelimit import RateLimit
 
 STEP_NAME_PATTERN = r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$"
@@ -23,6 +23,7 @@ _STEP_NAME = re.compile(STEP_NAME_PATTERN)
 
 type OnError = Literal["fail_fast", "continue"]
 type Dependencies = Literal["overlap", "all"]
+type DatasetScope = Literal["global", "per_portfolio"]
 
 STEP_NAME_DESCRIPTION = (
     "A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process."
@@ -124,13 +125,36 @@ class RateLimitConfig(StrictModel):
 
 
 class DatasetConfig(StrictModel):
-    """How one input is loaded, and how hard its source may be pushed."""
+    """How one input is loaded, how its portfolios are partitioned across calls, and how hard its source may be pushed."""
 
     loader: StepSpec = Field(description="The loader step. For frame datasets it returns a DataFrame; for `constraints` it returns a mapping of portfolio id to style-constraint object.")
+    scope: DatasetScope = Field(
+        default="global",
+        description="`global` (default): one call for the whole book, and the dataset is visible to every assembly step. `per_portfolio`: the engine partitions the portfolio ids into batches and calls the loader once per batch, so a source that answers per account is driven by the engine rather than by the loader; a batch that fails, or that comes back without a portfolio's rows, fails those portfolios alone at stage `load` and the run carries on. A per-portfolio dataset is not passed to assembly — attach its columns in a rule instead.",
+    )
+    batch_size: int | None = Field(
+        default=None,
+        ge=1,
+        description="How many portfolios one call of a `per_portfolio` loader is given, as `request.portfolio_ids`. `1` is a call per portfolio; a larger number batches a source that takes an id list; omitted, every portfolio goes in one call. Ignored for a `global` dataset, which never receives ids.",
+    )
     rate_limit: str | RateLimitConfig | None = Field(
         default=None,
         description="How hard this input's source may be pushed: the name of a shared pool in the top-level `rate_limits`, or an inline bound private to this input. The loader receives it as `request.rate_limiter`. Omit for no limit.",
     )
+
+    @model_validator(mode="after")
+    def _batch_size_needs_a_partitioned_dataset(self) -> Self:
+        if self.batch_size is not None and self.scope != "per_portfolio":
+            msg = "batch_size applies only to a per_portfolio dataset; a global dataset is loaded by one call"
+            raise ValueError(msg)
+        return self
+
+    def batches(self, portfolio_ids: tuple[PortfolioId, ...]) -> tuple[tuple[PortfolioId, ...], ...]:
+        """How this dataset's calls are partitioned: one batch of every id when global, otherwise `batch_size` at a time."""
+        if self.scope == "global":
+            return (portfolio_ids,)
+        size = self.batch_size or max(len(portfolio_ids), 1)
+        return tuple(portfolio_ids[start : start + size] for start in range(0, len(portfolio_ids), size)) or ((),)
 
 
 class ObjectiveConfig(StrictModel):
@@ -250,6 +274,9 @@ class RunConfig(StrictModel):
             if isinstance(dataset.rate_limit, str) and dataset.rate_limit not in self.rate_limits:
                 msg = f"{where}: rate_limit {dataset.rate_limit!r} is not declared in rate_limits {sorted(self.rate_limits)}"
                 raise ValueError(msg)
+        if self.portfolios.scope != "global":
+            msg = "portfolios must be a global dataset: it is the loader that produces the ids every other loader is partitioned by"
+            raise ValueError(msg)
         return self
 
 

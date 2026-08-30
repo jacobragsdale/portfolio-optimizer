@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.engine.schedule import Schedule, dependency_graph, order_portfolios
+from portfolio_optimizer.engine.schedule import OverlapIndex, Schedule, dependency_graph, order_portfolios
 
 
 def ids(*names: str) -> tuple[PortfolioId, ...]:
@@ -26,7 +26,6 @@ def test_overlap_edges_only_where_buyable_sets_intersect() -> None:
     assert dict(schedule.predecessors) == {"P1": (), "P2": (), "P3": ("P1",), "P4": ("P3",)}
     summary = schedule.summary()
     assert (summary.coupling, summary.portfolios, summary.edges, summary.components, summary.largest_component, summary.critical_path) == ("overlap", 4, 2, 2, 3, 3)
-    assert schedule.heights() == {"P1": 3, "P2": 1, "P3": 2, "P4": 1}
 
 
 def test_all_is_a_line_and_none_is_nothing() -> None:
@@ -55,3 +54,26 @@ def test_a_schedule_rejects_a_dependency_on_a_later_portfolio() -> None:
         Schedule(ids("P1", "P2"), {PortfolioId("P1"): ids("P2"), PortfolioId("P2"): ()}, "overlap")
     with pytest.raises(ValueError, match="exactly the portfolios"):
         Schedule(ids("P1", "P2"), {PortfolioId("P1"): ()}, "overlap")
+
+
+def test_the_overlap_index_answers_a_row_without_the_rows_behind_it() -> None:
+    index = OverlapIndex(4, ("A", "B", "C", "D"))
+    assert index.add(("A", "B")) == ()
+    assert index.add(("C",)) == ()
+    assert index.add(("B", "D")) == (0,)
+    assert index.add(("D",)) == (2,)
+
+
+def test_the_overlap_index_codes_a_security_its_seed_never_named() -> None:
+    seeded = OverlapIndex(3, ("A",))
+    assert seeded.add(("A", *(f"S{index}" for index in range(20)))) == ()
+    assert seeded.add(("S19",)) == (0,), "a security past the seeded width is coded on arrival"
+    assert seeded.add(("A",)) == (0,)
+
+
+def test_the_overlap_index_matches_the_graph_it_backs() -> None:
+    index = OverlapIndex(len(ORDER), (security for members in BUYABLE.values() for security in members))
+    unknown = frozenset({PortfolioId("P2")})
+    rows = [index.add(BUYABLE[portfolio_id], unknown=portfolio_id in unknown) for portfolio_id in ORDER]
+    schedule = dependency_graph(ORDER, BUYABLE, unknown, "overlap")
+    assert [tuple(ORDER[position] for position in row) for row in rows] == [schedule.predecessors[portfolio_id] for portfolio_id in ORDER]

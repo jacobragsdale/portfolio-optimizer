@@ -1,17 +1,26 @@
 """Schedule portfolios through build and solve on the run's cluster, then publish and record.
 
-Every portfolio builds at once, chain-free. The builds' summaries give the main process each
-portfolio's solve-order key and tradable securities; from those it derives the schedule
-(``engine/schedule.py``) — who solves after whom — and submits every solve with its predecessors'
-contributions as dependencies, so the cluster enforces the order and each solve folds only the trades —
-on the side the run couples through — that could affect it. Outcomes are classified in solve order
-whatever finished first, so the worker count and completion order never change a record, and the
-manifest is written whatever happens. The backend (``engine/backends.py``) is started right after config resolution so a cluster warms up under
-the load stage, scaled and waited on only after assembly, and closed in a ``finally``.
+Every portfolio builds at once, chain-free. A build's summary tells the main process that portfolio's
+solve-order key and tradable securities; from those it derives the schedule (``engine/schedule.py``) —
+who solves after whom — and submits every solve with its predecessors' contributions as dependencies,
+so the cluster enforces the order and each solve folds only the trades — on the side the run couples
+through — that could affect it.
+
+Submission does not wait for the build wave to finish. A portfolio only ever waits for portfolios
+earlier in the solve order, so the runner walks that order and submits each solve as the build it has
+reached reports (:func:`_stream_solves`): the head of the book is solving while the tail is still
+building. When nothing reads the chain there is no order to respect at all, and every solve goes in
+behind its own build (:func:`_plan_uncoupled`). The one case that still needs every build first is a
+configured solve-order step, because then the order is itself a build output (:func:`_solve_order`).
+
+Outcomes are classified in solve order whatever finished first, so the worker count and completion
+order never change a record, and the manifest is written whatever happens. The backend
+(``engine/backends.py``) is started right after config resolution so a cluster warms up under the load
+stage, scaled and waited on only after assembly, and closed in a ``finally``.
 """
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -30,7 +39,7 @@ from portfolio_optimizer.engine.environment import GitInfo, WorkerEnvironment, e
 from portfolio_optimizer.engine.hashing import file_sha256
 from portfolio_optimizer.engine.load import DatasetAudit, assemble, load_datasets
 from portfolio_optimizer.engine.manifest import ClusterRecord, ConfigInfo, RunManifest, WorkerRecord, created_at, failed_record, finalize, solved_record, versions, write_manifest
-from portfolio_optimizer.engine.schedule import Coupling, Schedule, dependency_graph, order_portfolios
+from portfolio_optimizer.engine.schedule import Coupling, OverlapIndex, Schedule, dependency_graph, order_portfolios
 from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, constraint_refs, contribution, probe_task, skipped, solve_task, step_refs, summarize
 from portfolio_optimizer.settings import ExecutionSettings
 
@@ -213,20 +222,84 @@ class _Dispatch:
     def key(self, portfolio_id: PortfolioId, name: str) -> str:
         return f"{self.run_id}/{portfolio_id}/{name}"
 
+    def solve_priority(self, position: int) -> int:
+        """Solves are ordered by their place in the solve order, and every solve outranks every build.
+
+        A predecessor always precedes its dependents, so this never puts a blocked solve in front of what
+        blocks it, which is what the priority is for. It is a weaker hint than the longest chain starting
+        at each portfolio: when a solve is submitted, who will depend on it has not been read yet.
+        """
+        return 2 * self.total + 1 - position
+
+
+@dataclass(frozen=True, slots=True)
+class _Planned:
+    """What submission produced: the schedule it followed, every portfolio's key, the solves in flight, and the portfolios it settled itself."""
+
+    schedule: Schedule
+    keys: Mapping[PortfolioId, Decimal]
+    solves: Mapping[PortfolioId, Pending[TaskOutput[PortfolioResult]]]
+    outcomes: dict[PortfolioId, Outcome]
+
+
+@dataclass(slots=True)
+class _Builds:
+    """Every portfolio's build and the summary that describes it; a summary is read once and remembered.
+
+    A build's result never leaves the worker that produced it: :meth:`report` blocks on one portfolio's
+    build and returns only what the main process needs to place it in the schedule. A portfolio the
+    load stage rejected has no build at all: its failure is already in ``reports``, so it places in the
+    schedule like any other portfolio whose tradable set is unknown, and no solve is submitted for it.
+    """
+
+    dispatch: _Dispatch
+    fallback: Mapping[PortfolioId, Decimal]
+    pending: dict[PortfolioId, Pending[TaskOutput[BuildResult]]]
+    summaries: dict[PortfolioId, Pending[TaskOutput[BuildSummary]]]
+    reports: dict[PortfolioId, BuildSummary | PortfolioFailure] = field(default_factory=dict)
+    """Seeded with the load stage's rejections, which have no build to report and are never submitted."""
+
+    def submitted(self, portfolio_id: PortfolioId) -> bool:
+        """Whether this portfolio was built at all; one the load stage rejected was not."""
+        return portfolio_id in self.summaries
+
+    def report(self, portfolio_id: PortfolioId) -> BuildSummary | PortfolioFailure:
+        """What this portfolio's build reported, blocking on that build alone; a portfolio the load stage rejected reports that instead."""
+        if portfolio_id not in self.reports:
+            read: BuildSummary | PortfolioFailure = _accept(_result_or_error(self.summaries[portfolio_id]), portfolio_id, self.dispatch.session, self.dispatch.expected, solved=False)
+            self.reports[portfolio_id] = read
+        return self.reports[portfolio_id]
+
+    def key(self, portfolio_id: PortfolioId) -> Decimal:
+        """The portfolio's solve-order key: the one its build computed, or the portfolios frame's when no build reported."""
+        report = self.reports.get(portfolio_id)
+        return report.solve_order if isinstance(report, BuildSummary) else self.fallback[portfolio_id]
+
+    def take(self, portfolio_id: PortfolioId) -> Pending[TaskOutput[BuildResult]]:
+        """Hand the build over to the solve that consumes it."""
+        return self.pending.pop(portfolio_id)
+
+    def release(self) -> None:
+        """Let go of every build nothing waits for; the scheduler frees it before it runs."""
+        self.pending.clear()
+
 
 def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session, *, run_dir: Path) -> Executed:
-    """Build everything, derive the schedule, solve along it, and classify every outcome in solve order."""
+    """Build everything, submit each solve as soon as the schedule allows it, and classify every outcome in solve order."""
     config = resolved.config
     fail_fast = config.execution.on_error == "fail_fast"
     backend = session.wait()
     expected = environment_for(config, cwd=Path.cwd(), image_digest=session.context.execution.image_digest)
     _check_workers(backend, shared, session, expected)
     dispatch = _Dispatch(backend, backend.share(shared), shared.run_id, len(shared.assembled.portfolio_ids), session, expected)
-    builds, failed, keys, tradable = _build_all(dispatch, shared)
-    order = order_portfolios(keys)
     coupling: Coupling = "none" if not resolved.chain_aware_steps else config.execution.dependencies
-    schedule = dependency_graph(order, tradable, frozenset(failed), coupling)
-    shape = schedule.summary()
+    builds = _submit_builds(dispatch, shared)
+    if coupling == "none":
+        planned = _plan_uncoupled(dispatch, shared, builds)
+    else:
+        planned = _stream_solves(dispatch, builds, _solve_order(shared, resolved, builds), coupling, fail_fast=fail_fast, securities=_universe_securities(shared))
+    builds.release()
+    shape = planned.schedule.summary()
     log.info(
         "schedule derived: %d portfolio(s), %d edge(s), %d component(s), critical path %d",
         shape.portfolios,
@@ -235,16 +308,8 @@ def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session,
         shape.critical_path,
         extra={"run_id": shared.run_id, "stage": "schedule", "coupling": coupling, "largest_component": shape.largest_component},
     )
-    outcomes: dict[PortfolioId, Outcome] = dict(failed)
-    to_solve = list(order)
-    if fail_fast and failed:
-        first = min(order.index(portfolio_id) for portfolio_id in failed)
-        to_solve = list(order[: first + 1])
-        for portfolio_id in order[first + 1 :]:
-            outcomes[portfolio_id] = skipped(portfolio_id, SKIPPED_BY_POSITION)
-    solves = _submit_solves(dispatch, schedule, to_solve, builds, outcomes)
-    artifacts = _gather_solves(dispatch, schedule, solves, outcomes, fail_fast=fail_fast, run_dir=run_dir)
-    return Executed(outcomes=outcomes, schedule=schedule, keys=keys, artifacts=artifacts)
+    artifacts = _gather_solves(dispatch, planned.schedule, planned.solves, planned.outcomes, fail_fast=fail_fast, run_dir=run_dir)
+    return Executed(outcomes=planned.outcomes, schedule=planned.schedule, keys=planned.keys, artifacts=artifacts)
 
 
 def _check_workers(backend: Backend, shared: SharedRunData, session: _Session, expected: WorkerEnvironment) -> None:
@@ -269,81 +334,164 @@ def _check_workers(backend: Backend, shared: SharedRunData, session: _Session, e
     log.info("%d worker(s) checked: config resolves and fingerprints match", len(probes), extra={"run_id": shared.run_id, "stage": "cluster"})
 
 
-def _build_all(
-    dispatch: _Dispatch, shared: SharedRunData
-) -> tuple[dict[PortfolioId, Pending[TaskOutput[BuildResult]]], dict[PortfolioId, PortfolioFailure], dict[PortfolioId, Decimal], dict[PortfolioId, tuple[str, ...]]]:
-    """Submit every build at once and gather the summaries: each portfolio's key and tradable securities, or its failure."""
-    ids = shared.assembled.portfolio_ids
-    builds: dict[PortfolioId, Pending[TaskOutput[BuildResult]]] = {}
+def _submit_builds(dispatch: _Dispatch, shared: SharedRunData) -> _Builds:
+    """Submit every portfolio's build and its summary at once; a build reads no other portfolio, so none of them waits.
+
+    A portfolio the load stage rejected has no inputs to build from and is not submitted; its failure
+    is what it reports instead.
+    """
+    rejected = shared.assembled.rejected
+    pending: dict[PortfolioId, Pending[TaskOutput[BuildResult]]] = {}
     summaries: dict[PortfolioId, Pending[TaskOutput[BuildSummary]]] = {}
-    for rank, portfolio_id in enumerate(ids):
-        builds[portfolio_id] = dispatch.backend.submit(build_task, dispatch.handle, portfolio_id, key=dispatch.key(portfolio_id, "build"), priority=dispatch.total - rank)
-        summaries[portfolio_id] = dispatch.backend.submit(summarize, builds[portfolio_id], key=dispatch.key(portfolio_id, "summary"), priority=dispatch.total - rank + 1)
-    failed: dict[PortfolioId, PortfolioFailure] = {}
-    keys: dict[PortfolioId, Decimal] = {}
-    tradable: dict[PortfolioId, tuple[str, ...]] = {}
+    for rank, portfolio_id in enumerate(shared.assembled.portfolio_ids):
+        if portfolio_id in rejected:
+            continue
+        pending[portfolio_id] = dispatch.backend.submit(build_task, dispatch.handle, portfolio_id, key=dispatch.key(portfolio_id, "build"), priority=dispatch.total - rank)
+        summaries[portfolio_id] = dispatch.backend.submit(summarize, pending[portfolio_id], key=dispatch.key(portfolio_id, "summary"), priority=dispatch.total - rank + 1)
+    fallback = {portfolio_id: Decimal(value) for portfolio_id, value in shared.assembled.solve_orders.items()}
+    return _Builds(dispatch, fallback, pending, summaries, dict(rejected))
+
+
+def _universe_securities(shared: SharedRunData) -> Iterable[str]:
+    """Every security the assembled universe names, to seed the overlap index.
+
+    A tradable set is drawn from the portfolio's universe, so this covers it unless a rule added a
+    security the loaders never returned; one that did costs the index a repack, nothing more.
+    """
+    return (str(value) for value in shared.assembled.universe["security_id"])
+
+
+def _solve_order(shared: SharedRunData, resolved: ResolvedConfig, builds: _Builds) -> tuple[PortfolioId, ...]:
+    """The order a coupled run solves in.
+
+    Without a solve-order step the key is the portfolios frame's column, which every portfolio carries
+    before it is built: ``assembled.portfolio_ids`` is already that order. A configured step computes
+    the key from the post-rules bundle instead, so the order is itself a build output and a coupled run
+    has to wait for every build to learn who precedes whom — the one place the schedule cannot be
+    streamed, and the reason to prefer the column when the priority can be expressed there.
+    """
+    ids = shared.assembled.portfolio_ids
+    if resolved.solve_order is None:
+        return ids
     for portfolio_id in ids:
-        keys[portfolio_id] = Decimal(shared.assembled.solve_orders[portfolio_id])
-        summary = _accept(_result_or_error(summaries[portfolio_id]), portfolio_id, dispatch.session, dispatch.expected, solved=False)
-        if isinstance(summary, PortfolioFailure):
-            failed[portfolio_id] = summary
-        else:
-            keys[portfolio_id] = summary.solve_order
-            tradable[portfolio_id] = summary.tradable
-    return builds, failed, keys, tradable
+        builds.report(portfolio_id)
+    return order_portfolios({portfolio_id: builds.key(portfolio_id) for portfolio_id in ids})
 
 
-def _submit_solves(
-    dispatch: _Dispatch, schedule: Schedule, to_solve: Sequence[PortfolioId], builds: dict[PortfolioId, Pending[TaskOutput[BuildResult]]], outcomes: dict[PortfolioId, Outcome]
-) -> dict[PortfolioId, Pending[TaskOutput[PortfolioResult]]]:
-    """Submit each solve with its predecessors' contributions as dependencies; a portfolio behind a failed build is skipped here, never submitted."""
-    heights = schedule.heights()
+def _plan_uncoupled(dispatch: _Dispatch, shared: SharedRunData, builds: _Builds) -> _Planned:
+    """Nothing reads the chain, so no solve waits for another: each is submitted behind its own build.
+
+    The order still decides how outcomes are classified and what the manifest records, but it is read
+    back only once the solves are in flight — the summaries resolve while the cluster is already
+    solving rather than in front of it, and no portfolio's build holds up another's solve. A portfolio
+    whose build failed has its solve cancelled as soon as that is known.
+    """
+    ids = shared.assembled.portfolio_ids
+    solves = {
+        portfolio_id: dispatch.backend.submit(solve_task, dispatch.handle, builds.take(portfolio_id), key=dispatch.key(portfolio_id, "solve"), priority=dispatch.solve_priority(position))
+        for position, portfolio_id in enumerate(ids)
+        if builds.submitted(portfolio_id)
+    }
+    outcomes: dict[PortfolioId, Outcome] = {portfolio_id: report for portfolio_id in ids if isinstance(report := builds.report(portfolio_id), PortfolioFailure)}
+    dispatch.backend.cancel([solves.pop(portfolio_id) for portfolio_id in outcomes if portfolio_id in solves])
+    keys = {portfolio_id: builds.key(portfolio_id) for portfolio_id in ids}
+    order = order_portfolios(keys)
+    return _Planned(dependency_graph(order, {}, frozenset(), "none"), keys, solves, outcomes)
+
+
+def _stream_solves(dispatch: _Dispatch, builds: _Builds, order: tuple[PortfolioId, ...], coupling: Coupling, *, fail_fast: bool, securities: Iterable[str]) -> _Planned:
+    """One pass down the solve order: read a portfolio's build, place it in the graph, submit its solve.
+
+    Every predecessor is earlier in the order, so the pass never waits on a build it has not reached —
+    the head of the order is solving while the tail of the book is still building. A portfolio whose
+    build failed, or that waits on one that did, is settled here and never submitted; under
+    ``fail_fast`` the first such failure stops submission, and the builds behind it are read only to
+    finish the graph the manifest records.
+
+    A *failed build* is treated as overlapping everything: it got far enough to have a tradable set and
+    the run could not read it, so no later portfolio can be shown to be independent of it. A portfolio
+    the *load stage* rejected is a different thing — it never entered the run, so it traded nothing,
+    and it couples to nobody. It is recorded as failed and blocks no one, which is what lets a book
+    with one uncovered account still solve the rest.
+    """
+    overlaps = OverlapIndex(len(order), securities)
+    positions = {portfolio_id: position for position, portfolio_id in enumerate(order)}
+    predecessors: dict[PortfolioId, tuple[PortfolioId, ...]] = {}
+    outcomes: dict[PortfolioId, Outcome] = {}
     solves: dict[PortfolioId, Pending[TaskOutput[PortfolioResult]]] = {}
     contributions: dict[PortfolioId, Pending[Contribution | PortfolioFailure]] = {}
-    for portfolio_id in to_solve:
-        if portfolio_id in outcomes:
+
+    def contribution_of(portfolio_id: PortfolioId) -> Pending[Contribution | PortfolioFailure]:
+        """The predecessor's trades on the coupled side, reduced on its worker; submitted the first time a dependent asks, so a portfolio nothing waits for never pays for one."""
+        pending = contributions.get(portfolio_id)
+        if pending is None:
+            priority = dispatch.solve_priority(positions[portfolio_id]) + 1
+            pending = contributions[portfolio_id] = dispatch.backend.submit(contribution, solves[portfolio_id], key=dispatch.key(portfolio_id, "contribution"), priority=priority)
+        return pending
+
+    stopped = False
+    for position, portfolio_id in enumerate(order):
+        report = builds.report(portfolio_id)
+        failed = isinstance(report, PortfolioFailure)
+        earlier = overlaps.add((), unknown=builds.submitted(portfolio_id)) if failed else overlaps.add(report.tradable)
+        predecessors[portfolio_id] = order[:position] if coupling == "all" else tuple(order[index] for index in earlier)
+        if stopped:
+            outcomes[portfolio_id] = skipped(portfolio_id, SKIPPED_BY_POSITION)
             continue
-        blocked = next((earlier for earlier in schedule.predecessors[portfolio_id] if earlier in outcomes), None)
-        if blocked is not None:
+        blocked = next((other for other in predecessors[portfolio_id] if other in outcomes), None)
+        if failed:
+            outcomes[portfolio_id] = report
+        elif blocked is not None:
             outcomes[portfolio_id] = _skipped_after(portfolio_id, blocked, outcomes[blocked])
-            continue
-        priority = dispatch.total + heights[portfolio_id]
-        dependencies = [contributions[earlier] for earlier in schedule.predecessors[portfolio_id]]
-        solves[portfolio_id] = dispatch.backend.submit(solve_task, dispatch.handle, builds.pop(portfolio_id), *dependencies, key=dispatch.key(portfolio_id, "solve"), priority=priority)
-        contributions[portfolio_id] = dispatch.backend.submit(contribution, solves[portfolio_id], key=dispatch.key(portfolio_id, "contribution"), priority=priority + 1)
-    builds.clear()  # a build nothing waits for is released by the scheduler before it runs
-    return solves
+        else:
+            dependencies = [contribution_of(other) for other in predecessors[portfolio_id]]
+            solves[portfolio_id] = dispatch.backend.submit(
+                solve_task, dispatch.handle, builds.take(portfolio_id), *dependencies, key=dispatch.key(portfolio_id, "solve"), priority=dispatch.solve_priority(position)
+            )
+        stopped = fail_fast and portfolio_id in outcomes
+    keys = {portfolio_id: builds.key(portfolio_id) for portfolio_id in order}
+    return _Planned(Schedule(order, predecessors, coupling), keys, solves, outcomes)
 
 
 def _gather_solves(
     dispatch: _Dispatch, schedule: Schedule, solves: Mapping[PortfolioId, Pending[TaskOutput[PortfolioResult]]], outcomes: dict[PortfolioId, Outcome], *, fail_fast: bool, run_dir: Path
 ) -> tuple[Artifact, ...]:
-    """Collect solves as they complete, classify them in solve order, and persist each result as it is classified.
+    """Collect solves as they complete, classify every portfolio in solve order, and persist each result as it is classified.
 
-    Under ``fail_fast`` the first failure *in solve order* cancels every solve behind it; those are
-    recorded as skipped by position, whatever they had finished, so the manifest never depends on timing.
+    Submission settles some portfolios itself — a failed build, a portfolio behind one — and the walk
+    steps over those in place, so the first failure *in solve order* is found whether a build or a solve
+    produced it. Under ``fail_fast`` it cancels every solve behind it; those are recorded as skipped by
+    position, whatever they had finished, so the manifest never depends on timing.
     """
     artifacts: list[Artifact] = []
     raw: dict[PortfolioId, TaskOutput[PortfolioResult] | Exception] = {}
-    waiting = [portfolio_id for portfolio_id in schedule.order if portfolio_id in solves]
+    settled = dict(outcomes)
+    order = schedule.order
     cursor = 0
     stopped = False
-    for portfolio_id in dispatch.backend.as_completed(solves):
-        raw[portfolio_id] = _result_or_error(solves[portfolio_id])
-        while not stopped and cursor < len(waiting) and waiting[cursor] in raw:
-            current = waiting[cursor]
-            outcome = _classify(current, raw[current], schedule, outcomes, dispatch.session, dispatch.expected)
+
+    def advance() -> None:
+        """Classify every portfolio the walk can now reach, in solve order, stopping at a failure under ``fail_fast``."""
+        nonlocal cursor, stopped
+        while not stopped and cursor < len(order) and (order[cursor] in settled or order[cursor] in raw):
+            current = order[cursor]
+            outcome = settled[current] if current in settled else _classify(current, raw[current], schedule, outcomes, dispatch.session, dispatch.expected)
             outcomes[current] = outcome
             cursor += 1
             if isinstance(outcome, PortfolioResult):
                 artifacts.extend(_persist_result(outcome, run_dir))
             elif fail_fast:
                 stopped = True
+
+    advance()
+    for portfolio_id in dispatch.backend.as_completed(solves):
+        raw[portfolio_id] = _result_or_error(solves[portfolio_id])
+        advance()
         if stopped:
             break
     if stopped:
-        rest = waiting[cursor:]
-        dispatch.backend.cancel([solves[portfolio_id] for portfolio_id in rest])
+        rest = [portfolio_id for portfolio_id in order[cursor:] if portfolio_id not in settled]
+        dispatch.backend.cancel([solves[portfolio_id] for portfolio_id in rest if portfolio_id in solves])
         for portfolio_id in rest:
             outcomes[portfolio_id] = skipped(portfolio_id, SKIPPED_BY_POSITION)
     return tuple(artifacts)

@@ -1,5 +1,6 @@
 """Tier 1/2: the backend seam — workers probed before data is shared, builds first, solves along the schedule with dependencies, fail-fast cancellation, dead and stale workers, and a cluster that never comes up."""
 
+import json
 from pathlib import Path
 
 from pandas.testing import assert_frame_equal
@@ -10,29 +11,20 @@ from portfolio_optimizer.engine.environment import environment_for
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, RunReport
 from tests.conftest import BUY_ONLY_OBJECTIVE, NO_CHAIN_CONSTRAINTS, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
-from tests.engine.support import HALF_CASH_ORDERS_P1, HALF_CASH_ORDERS_P2, SELL_BOOK_ORDERS_P1, SELL_BOOK_ORDERS_P2, execute, half_cash_book, sell_book
+from tests.engine.support import HALF_CASH_ORDERS_P1, HALF_CASH_ORDERS_P2, SELL_BOOK_ORDERS_P1, SELL_BOOK_ORDERS_P2, constraints_json, example_book, execute, half_cash_book, sell_book
 
 
-def test_the_runner_builds_everything_first_then_solves_along_the_schedule(tmp_path: Path) -> None:
+def test_the_runner_submits_every_build_first_then_solves_along_the_schedule(tmp_path: Path) -> None:
     backend = LazyBackend()
     report = execute(tmp_path, backend_factory=factory_for(backend), max_workers=1)
     assert report.exit_code == EXIT_OK
     assert backend.started and backend.closed
     assert backend.scaled_to == 1
     assert backend.shared_count == 1, "shared data is delivered once per run, not once per task"
-    assert backend.submitted == [
-        "run-test/P1/build",
-        "run-test/P1/summary",
-        "run-test/P2/build",
-        "run-test/P2/summary",
-        "run-test/P1/solve",
-        "run-test/P1/contribution",
-        "run-test/P2/solve",
-        "run-test/P2/contribution",
-    ]
-    assert backend.priorities["run-test/P1/solve"] > backend.priorities["run-test/P2/solve"] > backend.priorities["run-test/P1/build"], (
-        "the head of the longest chain solves first, and any solve beats any build"
+    assert backend.submitted == ["run-test/P1/build", "run-test/P1/summary", "run-test/P2/build", "run-test/P2/summary", "run-test/P1/solve", "run-test/P1/contribution", "run-test/P2/solve"], (
+        "P2 is the tail of the chain, so nothing ever asks it to contribute"
     )
+    assert backend.priorities["run-test/P1/solve"] > backend.priorities["run-test/P2/solve"] > backend.priorities["run-test/P1/build"], "solves run in solve order, and any solve beats any build"
     assert backend.cancelled == []
     schedule = report.manifest.schedule
     assert schedule is not None
@@ -45,6 +37,51 @@ def test_the_runner_builds_everything_first_then_solves_along_the_schedule(tmp_p
     (worker,) = report.manifest.versions.workers
     same_config = resolved_example_real(execution={"on_error": "fail_fast"}, sink="orders_to_parquet").config
     assert worker.portfolios == 2 and worker.environment == environment_for(same_config, cwd=Path.cwd(), image_digest=None)
+
+
+def test_a_solve_is_submitted_before_the_builds_behind_it_are_read(tmp_path: Path) -> None:
+    backend = LazyBackend()
+    assert execute(tmp_path, backend_factory=factory_for(backend)).exit_code == EXIT_OK
+    assert backend.trace.index("submit:run-test/P1/solve") < backend.trace.index("run:run-test/P2/build"), (
+        "P1 has no predecessor, so its solve goes in as soon as its own build reports; waiting for P2 would idle the cluster for a build wave"
+    )
+
+
+def test_a_portfolio_the_load_stage_rejected_is_never_built_and_does_not_hold_up_the_others(tmp_path: Path) -> None:
+    backend = LazyBackend()
+    data_root = example_book(tmp_path, **{"constraints.json": json.dumps({"P2": json.loads(constraints_json())["P2"]})})
+    report = execute(tmp_path, backend_factory=factory_for(backend), data_root=data_root, on_error="continue")
+    assert report.exit_code == EXIT_PORTFOLIO_FAILED
+    assert not any(key.startswith("run-test/P1/") for key in backend.submitted), "P1 has no inputs, so nothing is submitted for it at all"
+    assert "run-test/P2/solve" in backend.submitted, "P2 has everything it needs and is solved"
+    first, second = report.outcomes
+    assert isinstance(first, PortfolioFailure) and (first.stage, first.error_type) == ("load", "MissingInput")
+    assert isinstance(second, PortfolioResult) and second.portfolio_id == "P2"
+    schedule = report.manifest.schedule
+    assert schedule is not None and (schedule.edges, schedule.components) == (0, 2), "a portfolio that never entered the run traded nothing, so it couples to nobody and P2 waits for no one"
+
+
+def test_a_configured_solve_order_step_reorders_the_run_and_is_read_before_any_solve(tmp_path: Path) -> None:
+    backend = LazyBackend()
+    report = execute(tmp_path, backend_factory=factory_for(backend), solve_order="tests.steps:last_portfolio_id_first")
+    assert report.exit_code == EXIT_OK
+    assert [outcome.portfolio_id for outcome in report.outcomes] == ["P2", "P1"], "the step replaces the portfolios frame's column, and P2 now has first pick"
+    assert [record.solve_order for record in report.manifest.portfolios] == ["-2", "-1"]
+    assert backend.trace.index("run:run-test/P1/build") < backend.trace.index("submit:run-test/P2/solve"), (
+        "the step reads the ruled bundle, so the order is itself a build output and no solve can be placed until every build has reported"
+    )
+
+
+def test_an_uncoupled_run_submits_every_solve_behind_its_own_build_and_reads_no_summary_first(tmp_path: Path) -> None:
+    backend = LazyBackend()
+    report = execute(tmp_path, backend_factory=factory_for(backend), constraints=NO_CHAIN_CONSTRAINTS)
+    assert report.exit_code == EXIT_OK
+    assert backend.submitted == ["run-test/P1/build", "run-test/P1/summary", "run-test/P2/build", "run-test/P2/summary", "run-test/P1/solve", "run-test/P2/solve"], (
+        "nothing reads the chain, so no solve waits and no portfolio is asked to contribute"
+    )
+    assert backend.trace.index("submit:run-test/P2/solve") < backend.trace.index("run:run-test/P1/build"), "no build is read before every solve is in flight"
+    assert report.manifest.schedule is not None and (report.manifest.schedule.coupling, report.manifest.schedule.edges) == ("none", 0)
+    assert [record.solve_order for record in report.manifest.portfolios] == ["0", "1"], "the order is still read back, for the manifest and the order outcomes are classified in"
 
 
 def test_a_pure_function_solve_step_runs_the_whole_pipeline_and_is_verified(tmp_path: Path) -> None:
@@ -169,6 +206,7 @@ def test_a_dead_worker_under_a_build_stops_a_fail_fast_run_before_any_solve(tmp_
     assert isinstance(first, PortfolioFailure) and (first.stage, first.error_type) == ("worker", "BrokenExecutor")
     assert isinstance(second, PortfolioFailure) and second.stage == "skipped"
     assert not any(key.endswith("/solve") for key in backend.submitted)
+    assert report.manifest.schedule is not None and report.manifest.schedule.edges == 1, "the builds behind the failure are still read, so the manifest records the whole graph"
 
 
 def test_a_cluster_that_never_comes_up_is_infrastructure_and_still_leaves_a_manifest(tmp_path: Path) -> None:

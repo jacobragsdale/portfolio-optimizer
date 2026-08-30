@@ -515,6 +515,20 @@
       "additionalProperties": false,
       "description": "How the `constraints` dataset (style constraints per portfolio) is loaded.",
       "properties": {
+        "batch_size": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How many portfolios one call of a `per_portfolio` loader is given, as `request.portfolio_ids`. `1` is a call per portfolio; a larger number batches a source that takes an id list; omitted, every portfolio goes in one call. Ignored for a `global` dataset, which never receives ids.",
+          "title": "Batch Size"
+        },
         "loader": {
           "$ref": "#/$defs/ConstraintsLoaderStep",
           "description": "A loader returning a mapping of portfolio id to style-constraint object."
@@ -534,6 +548,11 @@
           "default": null,
           "description": "How hard this input's source may be pushed: the name of a shared pool in the top-level `rate_limits`, or an inline bound private to this input. The loader receives it as `request.rate_limiter`. Omit for no limit.",
           "title": "Rate Limit"
+        },
+        "scope": {
+          "$ref": "#/$defs/DatasetScope",
+          "default": "global",
+          "description": "`global` (default): one call for the whole book, and the dataset is visible to every assembly step. `per_portfolio`: the engine partitions the portfolio ids into batches and calls the loader once per batch, so a source that answers per account is driven by the engine rather than by the loader; a batch that fails, or that comes back without a portfolio's rows, fails those portfolios alone at stage `load` and the run carries on. A per-portfolio dataset is not passed to assembly — attach its columns in a rule instead."
         }
       },
       "required": [
@@ -617,8 +636,22 @@
     },
     "DatasetConfig": {
       "additionalProperties": false,
-      "description": "How one input is loaded, and how hard its source may be pushed.",
+      "description": "How one input is loaded, how its portfolios are partitioned across calls, and how hard its source may be pushed.",
       "properties": {
+        "batch_size": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How many portfolios one call of a `per_portfolio` loader is given, as `request.portfolio_ids`. `1` is a call per portfolio; a larger number batches a source that takes an id list; omitted, every portfolio goes in one call. Ignored for a `global` dataset, which never receives ids.",
+          "title": "Batch Size"
+        },
         "loader": {
           "$ref": "#/$defs/LoaderStep",
           "description": "The loader step. For frame datasets it returns a DataFrame; for `constraints` it returns a mapping of portfolio id to style-constraint object."
@@ -638,6 +671,11 @@
           "default": null,
           "description": "How hard this input's source may be pushed: the name of a shared pool in the top-level `rate_limits`, or an inline bound private to this input. The loader receives it as `request.rate_limiter`. Omit for no limit.",
           "title": "Rate Limit"
+        },
+        "scope": {
+          "$ref": "#/$defs/DatasetScope",
+          "default": "global",
+          "description": "`global` (default): one call for the whole book, and the dataset is visible to every assembly step. `per_portfolio`: the engine partitions the portfolio ids into batches and calls the loader once per batch, so a source that answers per account is driven by the engine rather than by the loader; a batch that fails, or that comes back without a portfolio's rows, fails those portfolios alone at stage `load` and the run carries on. A per-portfolio dataset is not passed to assembly — attach its columns in a rule instead."
         }
       },
       "required": [
@@ -645,6 +683,14 @@
       ],
       "title": "DatasetConfig",
       "type": "object"
+    },
+    "DatasetScope": {
+      "description": "How a dataset is partitioned across loader calls; see `datasets.<name>.scope`.",
+      "enum": [
+        "global",
+        "per_portfolio"
+      ],
+      "type": "string"
     },
     "Dependencies": {
       "description": "Which higher-priority portfolios a portfolio waits for; see `execution.dependencies`.",

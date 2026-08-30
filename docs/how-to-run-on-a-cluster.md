@@ -44,7 +44,7 @@ PORTFOLIO_OPTIMIZER_WORKER_IMAGE=registry/optimizer@sha256:...   # kubernetes on
   `MAX_WORKERS` is requested right after assembly. If node warm-up is what takes long, set the floor
   high and accept the idle pod-minutes; if pods start fast on warm nodes, keep it at one and scale late.
 - `MAX_WORKERS` is a ceiling on concurrency, not a promise of it: every build is submitted at once and
-  every solve as soon as the schedule is known, and the scheduler runs whatever is ready. A book whose
+  each solve as soon as its own predecessors are known, and the scheduler runs whatever is ready. A book whose
   portfolios all compete for the same buys is one chain of solves however many workers it has; the
   manifest's `schedule` record says how long that chain was.
 - `CLUSTER_TIMEOUT_S` bounds how long the run waits, after assembly, for the first worker. A cluster

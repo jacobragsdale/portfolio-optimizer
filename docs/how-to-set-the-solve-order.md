@@ -43,6 +43,13 @@ the portfolio's bundle *after* the rules, in the worker that built it, and never
 portfolio. Keep it pure and exact — `Decimal`, not `float` — because the key is sorted and recorded in
 the manifest.
 
+There is a cost to configuring a step at all. The key then comes out of the build, so on a coupled run
+the engine cannot tell who precedes whom until *every* portfolio has built, and no solve starts before
+the last build finishes. The portfolios frame's `solve_order` column is known before anything is built,
+so a run that keys off it starts solving the head of the book while the tail is still building. Prefer
+the column when the priority can be expressed there, and reach for a step when it genuinely needs the
+ruled bundle.
+
 ## 3. Name it in the run config
 
 ```json

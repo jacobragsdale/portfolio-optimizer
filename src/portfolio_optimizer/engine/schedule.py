@@ -5,6 +5,12 @@ across a run through one side only — the side profile's tradable set — so po
 every higher-priority *i* that can trade a security *j* can trade too, and on nothing else. The graph is never transitively reduced: a solve
 folds its *direct* predecessors' own contributions, so every overlapping earlier portfolio must stay a direct
 dependency.
+
+Every predecessor is earlier in the order, so the graph can be grown a portfolio at a time:
+:class:`OverlapIndex` takes one portfolio's tradable set and answers which earlier ones it overlaps,
+without knowing the portfolios still to come. That is what lets the runner submit a solve while the
+tail of the book is still building; :func:`dependency_graph` is the same index driven over a book
+whose builds have all reported.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -59,22 +65,6 @@ class Schedule:
                 msg = f"portfolio {portfolio_id!r} depends on a portfolio that does not precede it"
                 raise ValueError(msg)
 
-    def successors(self) -> dict[PortfolioId, tuple[PortfolioId, ...]]:
-        """The inverse of ``predecessors``, in solve order."""
-        following: dict[PortfolioId, list[PortfolioId]] = {portfolio_id: [] for portfolio_id in self.order}
-        for portfolio_id in self.order:
-            for earlier in self.predecessors[portfolio_id]:
-                following[earlier].append(portfolio_id)
-        return {portfolio_id: tuple(later) for portfolio_id, later in following.items()}
-
-    def heights(self) -> dict[PortfolioId, int]:
-        """Longest chain of solves that starts at each portfolio, itself included; what to solve first."""
-        following = self.successors()
-        height: dict[PortfolioId, int] = {}
-        for portfolio_id in reversed(self.order):
-            height[portfolio_id] = 1 + max((height[later] for later in following[portfolio_id]), default=0)
-        return height
-
     def summary(self) -> ScheduleSummary:
         """Edge count, connected components, and the critical path in solves."""
         parent = {portfolio_id: portfolio_id for portfolio_id in self.order}
@@ -118,19 +108,67 @@ def dependency_graph(order: Sequence[PortfolioId], tradable: Mapping[PortfolioId
 
 
 def _overlap_predecessors(order: tuple[PortfolioId, ...], tradable: Mapping[PortfolioId, Iterable[str]], unknown: frozenset[PortfolioId]) -> dict[PortfolioId, tuple[PortfolioId, ...]]:
-    """Packed-bit incidence over a sorted security index; one AND per portfolio against every earlier row."""
-    code = {security: index for index, security in enumerate(sorted({security for portfolio_id in order for security in tradable.get(portfolio_id, ())}))}
-    incidence = np.zeros((len(order), max(len(code), 1)), dtype=np.bool_)
-    for row, portfolio_id in enumerate(order):
-        for security in tradable.get(portfolio_id, ()):
-            incidence[row, code[security]] = True
-    packed = np.packbits(incidence, axis=1)
-    is_unknown = np.array([portfolio_id in unknown for portfolio_id in order], dtype=np.bool_)
+    """One :class:`OverlapIndex` driven over the whole order, seeded with every security it will see."""
+    index = OverlapIndex(len(order), (security for portfolio_id in order for security in tradable.get(portfolio_id, ())))
     predecessors: dict[PortfolioId, tuple[PortfolioId, ...]] = {}
-    for position, portfolio_id in enumerate(order):
-        if is_unknown[position]:
-            predecessors[portfolio_id] = order[:position]
-            continue
-        overlaps = np.bitwise_and(packed[:position], packed[position]).any(axis=1) | is_unknown[:position]
-        predecessors[portfolio_id] = tuple(order[earlier] for earlier in np.flatnonzero(overlaps))
+    for portfolio_id in order:
+        earlier = index.add(tradable.get(portfolio_id, ()), unknown=portfolio_id in unknown)
+        predecessors[portfolio_id] = tuple(order[position] for position in earlier)
     return predecessors
+
+
+class OverlapIndex:
+    """Packed-bit incidence over a security index, one row per portfolio in solve order.
+
+    Rows are added as their builds report and each returns the earlier rows it shares a tradable
+    security with, so a caller can place a portfolio in the graph without waiting for the portfolios
+    behind it. ``securities`` seeds the index — the assembled universe covers every tradable set a rule
+    has not added to — and a security outside it is coded on arrival, which costs a repack only when it
+    widens the row.
+    """
+
+    def __init__(self, portfolios: int, securities: Iterable[str] = ()) -> None:
+        self._code = {security: position for position, security in enumerate(sorted(set(securities)))}
+        self._rows: list[tuple[str, ...]] = []
+        self._unknown = np.zeros(portfolios, dtype=np.bool_)
+        self._packed = np.zeros((portfolios, self._width()), dtype=np.uint8)
+
+    def add(self, tradable: Iterable[str], *, unknown: bool = False) -> tuple[int, ...]:
+        """Append a portfolio's row and return the positions of the earlier rows it overlaps.
+
+        ``unknown`` is a portfolio whose build failed or was never read: its tradable set is unknown, so
+        it overlaps every row on both sides.
+        """
+        members = tuple(tradable)
+        position = len(self._rows)
+        self._rows.append(members)
+        self._unknown[position] = unknown
+        width = self._width()
+        for security in members:
+            if security not in self._code:
+                self._code[security] = len(self._code)
+        if self._width() != width:
+            self._repack()
+        else:
+            self._packed[position] = self._pack(members)
+        if unknown:
+            return tuple(range(position))
+        overlaps = np.bitwise_and(self._packed[:position], self._packed[position]).any(axis=1) | self._unknown[:position]
+        return tuple(int(earlier) for earlier in np.flatnonzero(overlaps))
+
+    def _width(self) -> int:
+        """Bytes a packed row occupies; at least one, so an index over no securities is still a matrix."""
+        return max(-(-len(self._code) // 8), 1)
+
+    def _pack(self, members: tuple[str, ...]) -> np.ndarray:
+        bits = np.zeros(max(len(self._code), 1), dtype=np.bool_)
+        if members:
+            bits[[self._code[security] for security in members]] = True
+        return np.packbits(bits)
+
+    def _repack(self) -> None:
+        """Re-pack every row at the current width; only a security the seed did not name gets here."""
+        packed = np.zeros((len(self._unknown), self._width()), dtype=np.uint8)
+        for position, members in enumerate(self._rows):
+            packed[position] = self._pack(members)
+        self._packed = packed

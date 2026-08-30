@@ -82,7 +82,34 @@ in portfolio order, and one failure cancels the rest and surfaces as an `Excepti
 loader, wrap each call in `with request.rate_limiter.sync:` instead — it draws from the same pool. The
 shipped `csv_per_portfolio` is this pattern with files in place of a client; copy its shape.
 
-The manifest records how long each dataset took (`load_time_s`), and the run log reports each pool's
+### Let the engine do the fan-out instead
+
+The loader above owns its partition: the engine calls it once with every id and gets one frame back
+when the last call returns. Hand the partition to the engine instead and it gains three things the
+loader cannot give it — a failed account fails alone, the batches are visible in the manifest, and the
+whole stage overlaps the global loaders:
+
+```json
+"holdings": {"loader": "holdings_from_api", "scope": "per_portfolio", "batch_size": 1, "rate_limit": "vendor_api"}
+```
+
+`scope: "per_portfolio"` says the ids are the engine's to cut up; `batch_size` says how finely. `1` is
+a call per portfolio, a larger number suits a source that takes an id list, and omitting it puts the
+whole book in one call. The loader signature does not change — it still reads `request.portfolio_ids`
+and returns a frame, just for the batch it was given — so the same function works under either
+arrangement, and one written with `fan_out` keeps working with a fan-out of one.
+
+Two things follow from a per-portfolio dataset being loaded in pieces:
+
+- **Assembly never sees it.** Assembly steps run over whole datasets, before the batches are back.
+  Attach its columns in a [rule](how-to-add-a-rule.md) instead, which already runs per portfolio.
+- **A batch that fails fails only its own portfolios.** They are recorded as failures at stage `load`
+  and the rest of the book runs; `on_error` decides whether the run stops there. If *no* batch comes
+  back the source is down rather than an account being bad, and the run is rejected like any other
+  dataset failure.
+
+The manifest records how long each dataset took (`load_time_s`), how many calls it was cut into
+(`batches`), how many portfolios a failed batch cost (`rejected`), and the run log reports each pool's
 request count and total time spent waiting, so a slow run can be traced to the dataset and the limit
 that paced it.
 

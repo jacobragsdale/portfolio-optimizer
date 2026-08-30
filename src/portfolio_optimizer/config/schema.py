@@ -27,6 +27,7 @@ SCHEMA_ID = "https://raw.githubusercontent.com/jacobragsdale/portfolio-optimizer
 type JsonObject = dict[str, object]
 
 _ENUM_DESCRIPTIONS: Mapping[str, str] = {
+    "DatasetScope": "How a dataset is partitioned across loader calls; see `datasets.<name>.scope`.",
     "Dependencies": "Which higher-priority portfolios a portfolio waits for; see `execution.dependencies`.",
     "JoinCardinality": "Expected key cardinality of a join, enforced by pandas.",
     "JoinHow": "Join type: keep every left row, or only matched rows.",

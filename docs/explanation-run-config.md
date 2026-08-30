@@ -17,7 +17,7 @@ version. Read it when you have a config in front of you and want it to make sens
 | [`$schema`](#schema) | Nothing — it points your editor at the generated schema | Never; excluded from the config hash |
 | [`run`](#run) | The run's name and tags, and the instant it is *as of* | `as_of` at load and at build (tax-lot terms) |
 | [`portfolios`](#portfolios) | How to load the list of portfolio ids and their priorities | First, alone, before any other loader |
-| [`datasets`](#datasets) | How to load every other input, engine-known or extra | All at once, after the portfolio list |
+| [`datasets`](#datasets) | How to load every other input, engine-known or extra, and how its calls are partitioned | All at once, after the portfolio list |
 | [`rate_limits`](#rate_limit-on-a-dataset-and-rate_limits) | Named request budgets that inputs on one backend share | During loading |
 | [`assembly`](#assembly) | Steps that turn loaded datasets into the tables the build expects | Once, after all loaders return, before schema validation |
 | [`rules`](#rules) | Business logic applied to each portfolio's bundle, in order | Per portfolio, on a worker, before the build |
@@ -162,18 +162,36 @@ not carried further. Because the engine cannot type an extra frame from a schema
 told: `dtypes` makes `security_id` a `string` key and `decimal_columns` makes `price` an exact
 `Decimal` rather than a float.
 
-Once the portfolio list is known, **every dataset loader starts at once**. Each is called exactly once
-with a `LoadRequest` carrying the dataset name, the ordered portfolio ids, `as_of`, the data root, the
-run id, and a rate limiter. An `async def` loader runs on the event loop; a plain `def` loader runs in
-a worker thread so a blocking driver cannot stall the others. One failing dataset does not cancel the
-rest; all failures are reported together. Each loaded frame is recorded in the manifest with its
-loader, params hash, row count, and an order-insensitive content hash, which is what lets
-`diff-manifests` say "the data changed" rather than "something changed".
+Once the portfolio list is known, **every dataset loader starts at once**, called with a `LoadRequest`
+carrying the dataset name, portfolio ids, `as_of`, the data root, the run id, and a rate limiter. An
+`async def` loader runs on the event loop; a plain `def` loader runs in a worker thread so a blocking
+driver cannot stall the others. Each loaded frame is recorded in the manifest with its loader, params
+hash, row count, and an order-insensitive content hash, which is what lets `diff-manifests` say "the
+data changed" rather than "something changed".
+
+**How many times each loader is called is `scope`.** A `global` dataset — the default, and every
+dataset above — is one call for the whole book, and is what the assembly steps see. A `per_portfolio`
+dataset is the engine's fan-out: the ids are cut into batches of `batch_size` and the loader is called
+once per batch, sharing the dataset's one rate limiter. That is the arrangement for a source that
+answers one account at a time, and it buys three things a loader that fans out privately cannot give
+you — the batches are visible in the manifest, they overlap the global loaders, and a failure is
+isolated. The cost is that assembly, which runs over whole datasets, never sees such a dataset; attach
+its columns in a rule instead.
+
+**A structural problem rejects the run; a coverage problem fails a portfolio.** A required dataset
+missing, a schema violated, a global loader that raised, or a per-portfolio dataset no batch of which
+came back — the run stops, because nothing can be built. One batch that raised, or a portfolio with no
+`details` row or no `constraints` entry — that portfolio alone is recorded as failed at stage `load`
+and the rest of the book runs. A portfolio rejected here never entered the run, so it traded nothing
+and couples to nobody in the schedule. Loading failures are otherwise collected rather than raced: one
+failing dataset does not cancel the others, and all of them are reported together.
 
 The shipped loaders show the two shapes a source can take. `csv` and `parquet` read one file for the
 whole dataset. `csv_per_portfolio` reads `<directory>/<portfolio_id>.csv` for every id in the request,
 concurrently, under the dataset's rate limiter — the shape of a loader for an API that answers one
-portfolio per call, with a file read standing in for the HTTP request.
+portfolio per call, with a file read standing in for the HTTP request. It works under either scope: as
+a `global` dataset it owns its fan-out, and with `"scope": "per_portfolio", "batch_size": 1` the engine
+owns it and each call reads one file.
 
 ### `rate_limit` on a dataset, and `rate_limits`
 

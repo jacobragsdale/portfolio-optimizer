@@ -126,9 +126,20 @@ def test_sink_failure_is_infrastructure_and_the_manifest_still_records_it(tmp_pa
     assert (run_dir / "manifest.json").exists()
 
 
-def test_inputs_that_cannot_be_assembled_reject_the_run_before_solving(tmp_path: Path, scheduler_address: str) -> None:
+def test_a_portfolio_the_inputs_do_not_cover_fails_alone_and_the_rest_of_the_book_solves(tmp_path: Path, scheduler_address: str) -> None:
     data_root = example_book(tmp_path, **{"constraints.json": json.dumps({"P1": json.loads(constraints_json())["P1"]})})
-    with pytest.raises(InputRejectedError, match="constraints missing for portfolios \\['P2'\\]"):
+    report = execute(tmp_path, scheduler_address=scheduler_address, data_root=data_root, on_error="continue")
+    assert report.exit_code == EXIT_PORTFOLIO_FAILED
+    solved, failed = report.solved, report.failed
+    assert [outcome.portfolio_id for outcome in solved] == ["P1"], "P1 has everything it needs and is not held back by P2"
+    assert [(o.portfolio_id, o.stage, o.error_type) for o in failed] == [("P2", "load", "MissingInput")]
+    record = {r.portfolio_id: r for r in report.manifest.portfolios}["P2"]
+    assert record.error is not None and "no constraints for this portfolio" in record.error
+
+
+def test_a_required_dataset_that_does_not_load_at_all_still_rejects_the_run(tmp_path: Path, scheduler_address: str) -> None:
+    data_root = example_book(tmp_path, **{"holdings.csv": "portfolio_id,security_id,quantity\n"})
+    with pytest.raises(InputRejectedError, match="holdings"):
         execute(tmp_path, scheduler_address=scheduler_address, data_root=data_root)
 
 

@@ -66,7 +66,7 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `config` | `path`, `sha256` of the canonical resolved config, and `resolved` (the full config). |
 | `settings` | Every setting the run used, including the worker counts, with `cluster` resolved. |
 | `terms`, `constraints` | Per configured step, in order: `qualname`, `params` (JSON-safe), and `label` — a term's bare name, a constraint's configured `label` (default its bare name). `verify` uses these, and every check in `check` is reported under its step's label. |
-| `datasets[]` | `name`, `loader_qualname`, `loader_source_sha256`, `params_sha256`, `rows`, `columns`, `content_sha256`, `load_time_s` (wall-clock seconds the loader took). |
+| `datasets[]` | `name`, `loader_qualname`, `loader_source_sha256`, `params_sha256`, `rows`, `columns`, `content_sha256`, `load_time_s` (wall-clock seconds the loader took), `batches` (calls the engine made: 1 for a global dataset, one per batch for a per-portfolio one), `rejected` (portfolios whose batch failed, and which are failed at stage `load`). |
 | `assembly[]` | Per assembly step, in order: `qualname`, `source_sha256`, `params_sha256`, `rows_in` and `rows_out` (rows per dataset before and after), `columns_added` (per dataset, the columns the step introduced). |
 | `portfolios[]` | See below. A `sink` failure appears as an extra record with `portfolio_id: "*"`. |
 | `artifacts[]` | `path`, `sha256`, `size_bytes` of every file written. |

@@ -5,12 +5,25 @@ asynchronous: the portfolio list loads first (its ids are part of every other re
 every dataset loader starts at once. ``async def`` loaders run as tasks on the event loop; plain
 ``def`` loaders run in worker threads so a blocking driver never stalls the loop. Each dataset's
 rate-limit pool is created here and shared by every dataset that names it.
+
+A dataset's ``scope`` says how it is partitioned. A ``global`` dataset is one call for the whole book
+and is what the assembly steps see. A ``per_portfolio`` dataset is the engine's own fan-out: the ids
+are cut into batches of ``batch_size`` and the loader is called once per batch, so a source that
+answers one account at a time is driven by the engine — schedulable, throttled by one limiter, and
+overlapping the global loaders — rather than by a loader that fans out privately. Its batches run
+alongside the global loaders, so on a book whose global stage is the long pole they cost nothing.
+
+Failure is split along the same line. A **structural** problem rejects the run: a required dataset
+missing, a schema violated, a global loader that raised, or a per-portfolio dataset no batch of which
+came back. A **coverage** problem fails only the portfolios it touches — one batch that raised, a
+portfolio with no ``details`` row or no ``constraints`` entry — which are recorded as failures at
+stage ``load`` and carried into the run so every other portfolio still solves.
 """
 
 import asyncio
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,13 +35,17 @@ from portfolio_optimizer.config.resolve import ResolvedConfig
 from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.data import PREVALIDATED_FRAMES, Frames, LoadRequest, PortfolioData, details_from_frame, style_constraints_from_mapping
 from portfolio_optimizer.domain.frames import FrameSchemaError, validate_frame
-from portfolio_optimizer.domain.results import AssemblyAuditRecord
+from portfolio_optimizer.domain.results import AssemblyAuditRecord, PortfolioFailure
 from portfolio_optimizer.domain.schemas import DATASET_SCHEMAS, PORTFOLIOS, REQUIRED_FRAMES
 from portfolio_optimizer.domain.types import PortfolioId, StrictModel
 from portfolio_optimizer.engine.hashing import frame_sha256, json_sha256
 from portfolio_optimizer.ratelimit import RateLimiter
 
 log = logging.getLogger(__name__)
+
+
+type _BatchResult = pd.DataFrame | Mapping[str, Mapping[str, object]]
+"""What one call of a loader returns: a frame for every dataset but ``constraints``, which returns a mapping."""
 
 
 class LoadError(ValueError):
@@ -50,16 +67,28 @@ class DatasetAudit(StrictModel):
     columns: tuple[str, ...]
     content_sha256: str
     load_time_s: float
+    batches: int = 1
+    """Calls the engine made to this dataset's loader: one for a global dataset, one per batch for a per-portfolio one."""
+
+    rejected: int = 0
+    """Portfolios whose batch failed, and which are therefore failed at stage ``load``."""
 
 
 @dataclass(frozen=True, slots=True)
 class LoadedDatasets:
-    """Everything the loaders returned, before assembly."""
+    """Everything the loaders returned, before assembly.
+
+    ``frames`` are the global datasets, the only ones assembly sees; ``per_portfolio`` are the batched
+    ones, concatenated back into a frame each and merged in after assembly has run. ``rejected`` names
+    the portfolios a batch failed to load, which never reach a build.
+    """
 
     portfolio_ids: tuple[PortfolioId, ...]
     solve_orders: Mapping[PortfolioId, int]
     frames: Mapping[str, pd.DataFrame]
+    per_portfolio: Mapping[str, pd.DataFrame]
     constraints: Mapping[str, Mapping[str, object]]
+    rejected: Mapping[PortfolioId, PortfolioFailure]
     audits: tuple[DatasetAudit, ...]
 
 
@@ -81,6 +110,9 @@ class AssembledDatasets:
     targets: pd.DataFrame
     extras: Mapping[str, pd.DataFrame]
     constraints: Mapping[str, Mapping[str, object]]
+    rejected: Mapping[PortfolioId, PortfolioFailure]
+    """Portfolios that could not be loaded — a failed batch, a missing ``details`` row, no ``constraints`` entry — failed at stage ``load`` so the rest of the book still runs."""
+
     as_of: datetime
     audits: tuple[AssemblyAuditRecord, ...]
 
@@ -90,7 +122,9 @@ class _Loaded:
     name: str
     frame: pd.DataFrame | None
     constraints: Mapping[str, Mapping[str, object]] | None
+    rejected: Mapping[PortfolioId, PortfolioFailure]
     audit: DatasetAudit
+    per_portfolio: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,11 +184,11 @@ async def load_datasets_async(resolved: ResolvedConfig, *, data_root: Path, run_
     audits = [_audit("portfolios", resolved.portfolios, portfolios, PORTFOLIOS.key, time.perf_counter() - started)]
     log.info("portfolio list loaded: %d portfolio(s); loading %d dataset(s) concurrently", len(portfolio_ids), len(resolved.loaders), extra={"run_id": run_id, "stage": "load"})
 
-    def request(name: str) -> LoadRequest:
-        return LoadRequest(dataset=name, portfolio_ids=portfolio_ids, as_of=as_of, data_root=data_root, run_id=run_id, rate_limiter=limiter_for(name, config.datasets[name]))
+    def request(name: str, ids: tuple[PortfolioId, ...]) -> LoadRequest:
+        return LoadRequest(dataset=name, portfolio_ids=ids, as_of=as_of, data_root=data_root, run_id=run_id, rate_limiter=limiter_for(name, config.datasets[name]))
 
     async with asyncio.TaskGroup() as group:
-        tasks = {name: group.create_task(_load_dataset(name, step, request(name))) for name, step in resolved.loaders.items()}
+        tasks = {name: group.create_task(_load_dataset(name, step, config.datasets[name], portfolio_ids, request, run_id=run_id)) for name, step in resolved.loaders.items()}
     outcomes = [tasks[name].result() for name in resolved.loaders]
     for limiter in (*pools.values(), *private):
         log.info("rate limit %r: %d request(s), %.2fs spent waiting", limiter.name, limiter.acquired, limiter.waited_s, extra={"run_id": run_id, "stage": "load"})
@@ -162,38 +196,95 @@ async def load_datasets_async(resolved: ResolvedConfig, *, data_root: Path, run_
     if failures:
         _raise_load_failures(failures)
     loaded = [outcome for outcome in outcomes if isinstance(outcome, _Loaded)]
-    frames = {outcome.name: outcome.frame for outcome in loaded if outcome.frame is not None}
+    frames = {outcome.name: outcome.frame for outcome in loaded if outcome.frame is not None and not outcome.per_portfolio}
+    per_portfolio = {outcome.name: outcome.frame for outcome in loaded if outcome.frame is not None and outcome.per_portfolio}
     constraints: Mapping[str, Mapping[str, object]] = next((outcome.constraints for outcome in loaded if outcome.constraints is not None), {})
+    rejected = {portfolio_id: failure for outcome in loaded for portfolio_id, failure in outcome.rejected.items()}
     audits.extend(outcome.audit for outcome in loaded)
-    return LoadedDatasets(portfolio_ids=portfolio_ids, solve_orders=solve_orders, frames=frames, constraints=constraints, audits=tuple(audits))
+    if rejected:
+        log.warning("%d portfolio(s) could not be loaded and will not be solved", len(rejected), extra={"run_id": run_id, "stage": "load"})
+    return LoadedDatasets(portfolio_ids=portfolio_ids, solve_orders=solve_orders, frames=frames, per_portfolio=per_portfolio, constraints=constraints, rejected=rejected, audits=tuple(audits))
 
 
-async def _load_dataset(name: str, step: ResolvedStep, request: LoadRequest) -> _Loaded | _Failed:
+async def _load_dataset(
+    name: str, step: ResolvedStep, dataset: DatasetConfig, portfolio_ids: tuple[PortfolioId, ...], request: Callable[[str, tuple[PortfolioId, ...]], LoadRequest], *, run_id: str
+) -> _Loaded | _Failed:
+    """Call the loader once per batch, concurrently, and combine what came back.
+
+    A global dataset has one batch and any failure is the dataset's. A per-portfolio dataset fails only
+    the portfolios of the batches that raised — unless no batch survived, which is the source being
+    down rather than a portfolio being bad, and rejects the run like any other dataset failure.
+    """
     started = time.perf_counter()
-    try:
-        if name == "constraints":
-            constraints = await _load_constraints(step, request)
-            elapsed = time.perf_counter() - started
-            audit = DatasetAudit(
-                name=name,
-                loader_qualname=step.qualname,
-                loader_source_sha256=step.source_sha256,
-                params_sha256=step.params_sha256,
-                rows=len(constraints),
-                columns=(),
-                content_sha256=json_sha256(constraints),
-                load_time_s=elapsed,
-            )
-            log.info("dataset %r loaded: %d portfolio(s) in %.2fs", name, len(constraints), elapsed, extra={"run_id": request.run_id, "stage": "load"})
-            return _Loaded(name, None, constraints, audit)
-        frame = await _load_frame(step, request)
-        elapsed = time.perf_counter() - started
-        schema = DATASET_SCHEMAS.get(name)
-        log.info("dataset %r loaded: %d row(s) in %.2fs", name, len(frame), elapsed, extra={"run_id": request.run_id, "stage": "load"})
-        return _Loaded(name, frame, None, _audit(name, step, frame, schema.key if schema is not None else (), elapsed))
-    except Exception as error:  # noqa: BLE001  # every dataset's outcome is collected so all failures are reported together
-        log.error("dataset %r failed after %.2fs: %s: %s", name, time.perf_counter() - started, type(error).__name__, error, extra={"run_id": request.run_id, "stage": "load"})
-        return _Failed(name, error)
+    batches = dataset.batches(portfolio_ids)
+    results: list[_BatchResult | BaseException] = list(await asyncio.gather(*(_load_batch(name, step, request(name, ids)) for ids in batches), return_exceptions=True))
+    for result in results:
+        if isinstance(result, BaseException) and not isinstance(result, Exception):
+            raise result  # cancellation and the like are the caller's, not a dataset's failure to report
+    errors = [(ids, result) for ids, result in zip(batches, results, strict=True) if isinstance(result, Exception)]
+    good = [result for result in results if not isinstance(result, BaseException)]
+    if errors and (dataset.scope == "global" or not good):
+        first = errors[0][1]
+        log.error("dataset %r failed after %.2fs: %s: %s", name, time.perf_counter() - started, type(first).__name__, first, extra={"run_id": run_id, "stage": "load"})
+        return _Failed(name, first)
+    rejected = {portfolio_id: _load_failure(portfolio_id, name, error) for ids, error in errors for portfolio_id in ids}
+    for ids, error in errors:
+        log.error("dataset %r: batch of %d portfolio(s) failed: %s: %s", name, len(ids), type(error).__name__, error, extra={"run_id": run_id, "stage": "load"})
+    elapsed = time.perf_counter() - started
+    per_portfolio = dataset.scope == "per_portfolio"
+    if name == "constraints":
+        constraints = {portfolio_id: style for batch in good for portfolio_id, style in _as_constraints(batch).items()}
+        audit = DatasetAudit(
+            name=name,
+            loader_qualname=step.qualname,
+            loader_source_sha256=step.source_sha256,
+            params_sha256=step.params_sha256,
+            rows=len(constraints),
+            columns=(),
+            content_sha256=json_sha256(constraints),
+            load_time_s=elapsed,
+            batches=len(batches),
+            rejected=len(rejected),
+        )
+        log.info("dataset %r loaded: %d portfolio(s) in %d batch(es), %.2fs", name, len(constraints), len(batches), elapsed, extra={"run_id": run_id, "stage": "load"})
+        return _Loaded(name, None, constraints, rejected, audit, per_portfolio)
+    frame = _combine([_as_frame(batch) for batch in good])
+    schema = DATASET_SCHEMAS.get(name)
+    log.info("dataset %r loaded: %d row(s) in %d batch(es), %.2fs", name, len(frame), len(batches), elapsed, extra={"run_id": run_id, "stage": "load"})
+    return _Loaded(name, frame, None, rejected, _audit(name, step, frame, schema.key if schema is not None else (), elapsed, len(batches), len(rejected)), per_portfolio)
+
+
+async def _load_batch(name: str, step: ResolvedStep, request: LoadRequest) -> _BatchResult:
+    """One call of one loader; the batch's portfolios are ``request.portfolio_ids``."""
+    if name == "constraints":
+        return await _load_constraints(step, request)
+    return await _load_frame(step, request)
+
+
+def _combine(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """One batch's frame as is, several concatenated; the content hash sorts by key, so batch order never reaches the manifest."""
+    if len(frames) == 1:
+        return frames[0]
+    return pd.concat(frames, ignore_index=True)
+
+
+def _as_frame(batch: _BatchResult) -> pd.DataFrame:
+    if not isinstance(batch, pd.DataFrame):  # pragma: no cover - _load_frame already refuses anything else
+        msg = f"expected a DataFrame, got {type(batch).__name__}"
+        raise LoadError(msg)
+    return batch
+
+
+def _as_constraints(batch: _BatchResult) -> Mapping[str, Mapping[str, object]]:
+    if isinstance(batch, pd.DataFrame):  # pragma: no cover - the constraints loader is asked for a mapping and refuses anything else
+        msg = "expected a mapping, got a DataFrame"
+        raise LoadError(msg)
+    return batch
+
+
+def _load_failure(portfolio_id: PortfolioId, dataset: str, error: Exception) -> PortfolioFailure:
+    """A portfolio whose batch of ``dataset`` did not come back; it never reaches a build."""
+    return PortfolioFailure(portfolio_id=portfolio_id, stage="load", error_type=type(error).__name__, message=f"dataset {dataset!r} did not load for this portfolio: {error}")
 
 
 def _raise_load_failures(failures: list[_Failed]) -> None:
@@ -225,7 +316,7 @@ async def _load_constraints(step: ResolvedStep, request: LoadRequest) -> Mapping
     return constraints
 
 
-def _audit(name: str, step: ResolvedStep, frame: pd.DataFrame, key: tuple[str, ...], load_time_s: float) -> DatasetAudit:
+def _audit(name: str, step: ResolvedStep, frame: pd.DataFrame, key: tuple[str, ...], load_time_s: float, batches: int = 1, rejected: int = 0) -> DatasetAudit:
     return DatasetAudit(
         name=name,
         loader_qualname=step.qualname,
@@ -235,16 +326,23 @@ def _audit(name: str, step: ResolvedStep, frame: pd.DataFrame, key: tuple[str, .
         columns=tuple(str(column) for column in frame.columns),
         content_sha256=frame_sha256(frame, key),
         load_time_s=load_time_s,
+        batches=batches,
+        rejected=rejected,
     )
 
 
 def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -> AssembledDatasets:
-    """Run the assembly steps in order, then validate every engine-known frame against its schema.
+    """Run the assembly steps in order over the global datasets, then validate every engine-known frame against its schema.
 
     A step that raises ``ValueError`` or ``KeyError`` (a missing dataset, a violated cardinality, a
     column conflict) becomes an :class:`AssemblyError` naming the step; any other exception keeps its
-    type. After the last step the four required frames must exist, each engine-known frame must
-    satisfy its schema, and ``details`` and ``constraints`` must cover every portfolio.
+    type. Per-portfolio datasets are not in ``frames`` at all — a step that names one is told so —
+    and are merged back in once the steps have run, because a step sees whole datasets and those
+    arrive a batch at a time; attach their columns in a rule instead.
+
+    After the last step the four required frames must exist and each engine-known frame must satisfy
+    its schema — structural problems, which reject the run. A portfolio with no ``details`` row or no
+    ``constraints`` entry is a coverage problem: it joins ``rejected`` and the rest of the book runs.
     """
     frames = Frames(loaded.frames)
     audits: list[AssemblyAuditRecord] = []
@@ -254,7 +352,7 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -
         try:
             result = step.invoke(frames=before)
         except (ValueError, KeyError) as error:
-            msg = f"{where}: {_message(error)}"
+            msg = f"{where}: {_message(error)}{_sharded_hint(error, loaded.per_portfolio)}"
             raise AssemblyError(msg) from error
         if not isinstance(result, Frames):
             msg = f"{where}: returned {type(result).__name__}, expected Frames"
@@ -271,6 +369,7 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -
             )
         )
         log.info("assembly step %r applied: %s", step.qualname, ", ".join(f"{name}={rows}" for name, rows in frames.row_counts().items()), extra={"run_id": run_id, "stage": "assembly"})
+    frames = Frames({**frames, **loaded.per_portfolio})
     missing_frames = [name for name in REQUIRED_FRAMES if name not in frames]
     if missing_frames:
         msg = f"after assembly, required datasets are missing {missing_frames}; declare a loader for each or produce it in an assembly step"
@@ -284,14 +383,7 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -
     if failures:
         raise LoadError("; ".join(failures))
     details = frames["details"]
-    missing_details = sorted(set(loaded.portfolio_ids) - {str(value) for value in details["portfolio_id"]})
-    if missing_details:
-        msg = f"details missing for portfolios {missing_details}"
-        raise LoadError(msg)
-    missing_constraints = sorted(set(loaded.portfolio_ids) - set(loaded.constraints))
-    if missing_constraints:
-        msg = f"constraints missing for portfolios {missing_constraints}"
-        raise LoadError(msg)
+    rejected = _rejections(loaded, details, run_id=run_id)
     return AssembledDatasets(
         portfolio_ids=loaded.portfolio_ids,
         solve_orders=loaded.solve_orders,
@@ -301,9 +393,34 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -
         targets=frames["targets"],
         extras={name: frame for name, frame in frames.items() if name not in DATASET_SCHEMAS},
         constraints=loaded.constraints,
+        rejected=rejected,
         as_of=resolved.config.run.as_of,
         audits=tuple(audits),
     )
+
+
+def _rejections(loaded: LoadedDatasets, details: pd.DataFrame, *, run_id: str) -> dict[PortfolioId, PortfolioFailure]:
+    """Portfolios that cannot be built: a batch that failed, or no ``details`` row or ``constraints`` entry to build from."""
+    rejected = dict(loaded.rejected)
+    covered = {str(value) for value in details["portfolio_id"]}
+    for portfolio_id in loaded.portfolio_ids:
+        if portfolio_id in rejected:
+            continue
+        missing = [name for name, present in (("details", portfolio_id in covered), ("constraints", portfolio_id in loaded.constraints)) if not present]
+        if missing:
+            rejected[portfolio_id] = PortfolioFailure(portfolio_id=portfolio_id, stage="load", error_type="MissingInput", message=f"no {' or '.join(missing)} for this portfolio")
+    if len(rejected) == len(loaded.portfolio_ids) and rejected:
+        log.error("no portfolio has the inputs to be built", extra={"run_id": run_id, "stage": "assembly"})
+    return rejected
+
+
+def _sharded_hint(error: Exception, per_portfolio: Mapping[str, pd.DataFrame]) -> str:
+    """Say why a per-portfolio dataset the step asked for is not among the frames, which is otherwise a bare missing name."""
+    named = sorted(name for name in per_portfolio if name in _message(error))
+    if not named:
+        return ""
+    plural = "are per_portfolio datasets" if len(named) > 1 else "is a per_portfolio dataset"
+    return f" ({', '.join(repr(name) for name in named)} {plural}, which assembly never sees; attach their columns in a rule instead)"
 
 
 def _message(error: Exception) -> str:

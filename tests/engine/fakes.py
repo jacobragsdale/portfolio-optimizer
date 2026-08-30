@@ -1,4 +1,9 @@
-"""An in-process backend that behaves like Dask's seam — lazy futures, dependencies resolved first, dead and tampered workers — and records what the runner did to it."""
+"""An in-process backend that behaves like Dask's seam — lazy futures, dependencies resolved first, dead and tampered workers — and records what the runner did to it.
+
+``LazyBackend.trace`` interleaves ``submit:<key>`` with the ``run:<key>`` of the first time a task's
+output was asked for, which is what shows whether the runner waited on a build before submitting the
+solves that do not depend on it.
+"""
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import BrokenExecutor
@@ -37,6 +42,7 @@ class LazyPending:
 
     def _run(self) -> object:
         resolved = [argument.result() if isinstance(argument, LazyPending) else argument for argument in self.args]  # a dead dependency raises here, before fn runs
+        self.backend.trace.append(f"run:{self.key}")
         if self.key in self.backend.dead_keys:
             msg = "worker died"
             raise BrokenExecutor(msg)
@@ -62,6 +68,7 @@ class LazyBackend:
     scaled_to: int | None = None
     shared_count: int = 0
     submitted: list[str] = field(default_factory=list)
+    trace: list[str] = field(default_factory=list)
     priorities: dict[str, int] = field(default_factory=dict)
     cancelled: list[str] = field(default_factory=list)
 
@@ -92,6 +99,7 @@ class LazyBackend:
 
     def submit[T](self, fn: Callable[..., T], /, *args: object, key: str, priority: int) -> Pending[T]:
         self.submitted.append(key)
+        self.trace.append(f"submit:{key}")
         self.priorities[key] = priority
         pending = LazyPending(fn, args, key, self)
         return pending  # ty: ignore[invalid-return-type]  # the fake erases T

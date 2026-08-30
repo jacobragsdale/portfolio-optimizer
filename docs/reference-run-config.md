@@ -31,7 +31,7 @@ The schema cannot express one rule the models enforce: `as_of` must carry a time
 |---|---|---|---|
 | `run` | object | yes | Run identity: `name` (non-empty), `as_of` (timezone-aware ISO-8601 timestamp), `tags` (string map, default `{}`). |
 | `portfolios` | step or input | yes | Loader returning the `portfolios` frame (`portfolio_id`, optional `solve_order`); a bare step, or `{"loader": step[, "rate_limit": ...]}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, values may repeat. |
-| `datasets` | object | yes | Named inputs, each `{"loader": step[, "rate_limit": name or bound]}`. `constraints` is always required; `holdings`, `universe`, `details`, and `targets` are required unless `assembly` is non-empty, in which case they may be produced by a step and are checked after assembly. Any other name is an extra dataset: visible to every assembly step, and carried into each portfolio's bundle as `data.extras` unless dropped. All dataset loaders run concurrently. |
+| `datasets` | object | yes | Named inputs, each `{"loader": step[, "scope": ..., "batch_size": n, "rate_limit": name or bound]}`. `constraints` is always required; `holdings`, `universe`, `details`, and `targets` are required unless `assembly` is non-empty, in which case they may be produced by a step and are checked after assembly. Any other name is an extra dataset: visible to every assembly step, and carried into each portfolio's bundle as `data.extras` unless dropped. All dataset loaders run concurrently. |
 | `rate_limits` | object | no | Named pools that inputs on the same backend share; see below. Default `{}`. |
 | `assembly` | step list | no | Assembly steps, run in order over every loaded dataset before schema validation. Default `[]`. See below. |
 | `rules` | step list | no | Business-logic rules, run in order on each portfolio's bundle; they never see other portfolios. Default `[]`. |
@@ -76,6 +76,22 @@ makes a portfolio wait for higher-priority portfolios that can trade a security 
 side the run couples through (buys under `both` and `buy`, sells under `sell`).
 
 ## Rate limits
+
+### `scope` and `batch_size`
+
+| key | type | default | meaning |
+| --- | --- | --- | --- |
+| `scope` | `"global"` \| `"per_portfolio"` | `"global"` | `global`: one call for the whole book, and the dataset is what the assembly steps see. `per_portfolio`: the engine cuts the ids into batches and calls the loader once per batch. A per-portfolio dataset is not passed to assembly — attach its columns in a rule. |
+| `batch_size` | integer ≥ 1 | every id in one call | How many portfolios one call of a `per_portfolio` loader receives as `request.portfolio_ids`. `1` is a call per portfolio. Rejected on a `global` dataset, which never receives ids. |
+
+`portfolios` is always global: it is the loader that produces the ids everything else is partitioned by.
+
+A `per_portfolio` batch that fails fails only its own portfolios, which are recorded at stage `load`
+and skipped; the rest of the book runs. A dataset *no* batch of which came back is the source being
+down, and rejects the run. So does a required dataset that is missing, or one that violates its schema
+— structural problems reject, coverage problems fail a portfolio.
+
+### `rate_limit` and `rate_limits`
 
 Every input — `portfolios` and each entry of `datasets` — may carry a `rate_limit`, which the loader
 receives as `request.rate_limiter`. It is written one of two ways:
