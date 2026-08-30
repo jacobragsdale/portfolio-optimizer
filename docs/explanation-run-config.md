@@ -265,14 +265,24 @@ config hash, so two runs with different priorities are visibly different runs.
 "sides": "both"
 ```
 
-Which side the run trades. `both` — the default and, today, the only value — is the two-sided problem:
-one solve decides buys and sells together, and portfolios couple through buys only. The value selects a
-*side profile*, the one object in the engine that knows what a side means: how the solver's weights
-become a trade, the trade identity (for `both`, `w = w0 + buy − sell` with both non-negative and
-`sell ≤ w0`), the tradable set the dependency graph and the chain are built from, what a dependent
-portfolio receives, and the invariants the verifier adds. Nothing else in the engine asks. One-sided
-runs — `buy`, `sell` — are decided and next; a buy-only run is a third of the problem and cannot
-contain a wash trade, which is why the side is a config value rather than a pair of bounds.
+Which side the run trades. `both`, the default, is the two-sided problem: one solve decides buys and
+sells together, and portfolios couple through buys only. `buy` and `sell` are one-sided: the solve has
+one variable per name, `w`, held above (`buy`) or below (`sell`) the starting weight, the trade is
+`w − w0` or `w0 − w`, and the other side does not exist. The value selects a *side profile*, the one
+object in the engine that knows what a side means: which decision variables a solve has and the trade
+identity over them (for `both`, `w = w0 + buy − sell` with both non-negative and `sell ≤ w0`), how the
+solver's weights become the reported trade, the tradable set the dependency graph and the chain are
+built from, what a dependent portfolio receives, the starting books the side cannot trade out of, and
+the invariants the verifier adds. Nothing else in the engine asks.
+
+A one-sided run is a third of the problem and cannot contain a wash trade, which is why the side is a
+config value rather than a pair of bounds. Two consequences follow for the config. A term that reads a
+side the run lacks — the shipped `tax_cost` reads `sell` — is refused at `validate-config` with a message
+naming the side, so a buy-only run drops it from `objective.terms`. And `cash_bounds` keeps its
+meaning as the cash *after* the run while the side fixes the direction: a buy-only run can only lower
+cash, a sell-only run can only raise it, and a book that starts on the wrong side of its bound is
+reported as the infeasibility it is. The [architecture explanation](explanation-architecture.md#the-side-a-run-trades-is-one-object)
+covers what the profile owns and what the one-sided problem costs the solver.
 
 ## `objective`
 
@@ -293,8 +303,9 @@ negative term (the shipped `alpha` term is `−weight · alphaᵀw`) and everyth
 shipped term takes a `weight`, written as a string so it is an exact `Decimal` in the manifest even
 though the solver ultimately sees a float.
 
-Each term is called once per solve with the decision variables (`w`, `buy`, `sell`, all fractions of
-NAV) and the numeric `ProblemSpec` the build produced, and returns a convex expression. The verifier
+Each term is called once per solve with the decision variables (`w`, and `buy` and `sell` on the sides
+the run has, all fractions of NAV; `trade` is the amount traded on the sides it has) and the numeric
+`ProblemSpec` the build produced, and returns a convex expression. The verifier
 later recomputes every shipped term in numpy and compares the sum with what the solver reported, which
 is why the weights here are the only tuning knobs on the objective: the shape of each term is fixed in
 code so that its numpy twin stays in step with it.
@@ -321,10 +332,10 @@ config almost never changes between daily runs while the numbers inside the data
 wiring, the data is policy.
 
 The trade identity is not on this list, and cannot be. What `buy` and `sell` *mean* — for a two-sided
-run, `w − w0 = buy − sell`, both non-negative, `sell ≤ w0` — is what every cost term, the turnover cap,
-the ADV constraint, and the verifier's complementarity check rely on, so it comes from `sides` and is
-added to every solve; a config that still names `trade_balance` is refused at resolve with a message
-saying so.
+run, `w − w0 = buy − sell`, both non-negative, `sell ≤ w0`; for a one-sided run, `w ≥ w0` or `w ≤ w0`
+with the trade an expression of `w` — is what every cost term, the turnover cap, the ADV constraint,
+and the verifier's identity checks rely on, so it comes from `sides` and is added to every solve; a
+config that still names `trade_balance` is refused at resolve with a message saying so.
 
 Each constraint may carry a `label`, unique among the run's constraints and defaulting to the bare
 name; the verifier's report and the manifest key on it, which is what tells two instances of one
@@ -435,10 +446,11 @@ only in the manifest's `settings` block, where `diff-manifests` can name the dif
 be omitted entirely; both keys have defaults.
 
 There is no schedule to choose. Every portfolio builds at once, in a worker, and the engine derives who
-waits for whom from two facts it then knows: each portfolio's solve-order key, and its **buyable set** —
-the securities its built problem allows a positive buy in. Portfolios couple across a run through buys
-only, so portfolio *j* waits for every higher-priority *i* that can buy a security *j* can buy too, and
-for nothing else; if no term or constraint declares `chain`, nothing waits for anything. The manifest
+waits for whom from two facts it then knows: each portfolio's solve-order key, and its **tradable set** —
+the securities its built problem allows a trade in on the side the run couples through (buyable under
+`both` and `buy`, sellable under `sell`). A run couples through that one side only, so portfolio *j*
+waits for every higher-priority *i* whose tradable set overlaps its own, and for nothing else; if no
+term or constraint declares `chain`, nothing waits for anything. The manifest
 records the graph it derived — how many edges, how many independent components, how long the longest
 chain of solves was — and the answer is the same whatever the graph: each solve sees only what its
 overlapping predecessors bought, and that is a function of the data, not of the schedule.
@@ -458,7 +470,7 @@ never pickled, only names). [How to run on a cluster](how-to-run-on-a-cluster.md
 portfolio as `skipped` — whatever it had finished, so the manifest never depends on timing. `continue`
 isolates the failure: only the portfolios that depended on it are skipped, each naming the predecessor
 that failed, and a portfolio that shared no buyable security with it is unaffected. A build that fails
-has an unknown buyable set and is treated as overlapping every lower-priority portfolio.
+has an unknown tradable set and is treated as overlapping every lower-priority portfolio.
 
 ## What the config does not decide
 

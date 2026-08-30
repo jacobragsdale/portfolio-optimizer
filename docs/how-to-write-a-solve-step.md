@@ -17,8 +17,9 @@ rounding, the manifest — is unchanged, and the verifier is what makes the step
 
 A solve step takes a `SolveRequest` and returns a `SolveResult`. Everything it may use is on the
 request: the `ProblemSpec` (every input the solver would see, as numpy arrays aligned to
-`spec.security_ids`), the `ChainState` (what higher-priority portfolios bought, masked to what this
-one can buy), the side profile, the resolved terms and constraints, and the `solver` block.
+`spec.security_ids`), the `ChainState` (what higher-priority portfolios traded on the side the run
+couples through, masked to what this one can trade there), the side profile, the resolved terms and
+constraints, and the `solver` block.
 
 ```python
 import numpy as np

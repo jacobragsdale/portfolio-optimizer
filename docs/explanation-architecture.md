@@ -77,13 +77,30 @@ exactly what was optimized, so a change in any input changes the hash and shows 
 ## The side a run trades is one object
 
 A run's `sides` selects a *side profile* (`domain/sides.py`, with its cvxpy half in `cvx/sides.py`):
-the one place in the engine that knows what the side means. The profile supplies the trade identity
-to every solve, turns the solver's weights into the reported buy/sell split, names the tradable set
-the dependency graph and the chain state are built from, reduces a solved portfolio to what a
-dependent receives, and hands the verifier the identity's numpy twin. Nothing else branches on the
-side. Today there is one profile, `both` — buys and sells in one problem, coupling through buys only;
-the one-sided profiles are what make a buy-only or sell-only run a third of the problem with no wash
-trade possible, and they slot in without touching the rest of the engine.
+the one place in the engine that knows what the side means. The profile makes the decision variables
+and supplies the trade identity to every solve, turns the solver's weights into the reported buy/sell
+split, names the tradable set the dependency graph and the chain state are built from, reduces a
+solved portfolio to what a dependent receives, says which starting books the side cannot trade out of,
+and hands the verifier the identity's numpy twin. Nothing else branches on the side.
+
+There are three profiles. `both` is the two-sided problem: `w`, `buy`, and `sell` are all variables,
+bound by `w = w0 + buy − sell`, and portfolios couple through buys. `buy` and `sell` are one-sided:
+`w` is the only variable, the trade is an affine expression of it (`buy = w − w0` under `w ≥ w0`, or
+`sell = w0 − w` under `w ≤ w0`), and the other side does not exist — a term that reads it fails at
+`validate-config`, not on a worker. That is why the side is a config value rather than a pair of
+bounds: bounding `sell` to zero would keep three vectors and the identity in the KKT system, while
+removing it makes the problem a third the size and leaves no way to express a wash trade. Measured at
+100,000 names, Clarabel takes 2.1 s under `buy` and 3.6 s under `sell` against 7.5 s under `both`
+(`IDEAS.md`). The shipped terms that mean "the amount traded" read `x.trade` — `buy + sell`, `buy`, or
+`sell` — and the ADV constraint's chain half reads `x.coupled`, the amount traded on the side the run
+couples through; both exist under every profile, so a term written against them runs anywhere.
+
+A one-sided run can move cash one way only — a buy-only run lowers it, a sell-only run raises it — and
+`cash_bounds` keeps its meaning as the cash after the run, so a book that starts on the wrong side of
+its bound is infeasible, and the infeasibility diagnosis says so in words. The same holds for a name
+held past a bound the side cannot move it back inside (over its cap in a buy-only run, under its floor
+in a sell-only one): the profile lists the names, and a per-constraint policy for accepting such a
+start is the recorded next step.
 
 ## The solve step is the interpreter
 
@@ -125,38 +142,40 @@ exact 1,250-share answer into 1,249, which is worse in practice. Instead the rou
 against the solved weights and bounded by what one lot and one dust-filtered trade can cost; exceeding the
 bound fails the portfolio.
 
-## Portfolios couple through buys only, so the schedule is a graph
+## A run couples through its one side, so the schedule is a graph
 
-Portfolios in one run often depend on each other: the second portfolio to buy a thinly traded name
+Portfolios in one run often depend on each other: the second portfolio to trade a thinly traded name
 should see how much of its daily volume the first already used. The engine allows exactly this kind of
-dependency and no other — **what a higher-priority portfolio bought may limit what a later one buys;
-what anyone sold never reaches anyone.** That is a product decision (2026-08-29), and it is what makes
-the schedule derivable instead of configured.
+dependency and no other — **what a higher-priority portfolio traded on the side the run couples
+through may limit what a later one trades there; nothing else reaches anyone.** Under `both` and `buy`
+that side is buys, under `sell` it is sells; a two-sided run's sells reach no one. That is a product
+decision (2026-08-29), and it is what makes the schedule derivable instead of configured.
 
 Every portfolio builds at once, chain-free: rules never see other portfolios. A build reports its
-**buyable set** — the securities its problem allows a positive buy in (`ub > w0`) — and its solve-order
-key, a priority from an optional `solve_order` step or the portfolios frame's column, ties broken on
-`portfolio_id`. From those the engine derives the dependency graph (`engine/schedule.py`): portfolio *j*
-depends on every higher-priority *i* whose buyable set intersects its own, and on nothing else; with no
-chain-aware step there are no edges. The graph is what `execution.mode` used to approximate by hand,
-and the manifest records its shape — edges, components, the longest chain of solves — so a slow batch
-explains itself.
+**tradable set** — the securities the profile lets it trade on that side: buyable (`ub > w0`) or
+sellable (held, `lb < w0`) — and its solve-order key, a priority from an optional `solve_order` step or
+the portfolios frame's column, ties broken on `portfolio_id`. From those the engine derives the
+dependency graph (`engine/schedule.py`): portfolio *j* depends on every higher-priority *i* whose
+tradable set intersects its own, and on nothing else; with no chain-aware step there are no edges. The
+graph is what `execution.mode` used to approximate by hand, and the manifest records its shape — edges,
+components, the longest chain of solves — so a slow batch explains itself.
 
-Each solve folds its predecessors' BUY orders into a `ChainState` aligned to its own securities and
-**masked to its own buyable set**. The mask is load-bearing: a predecessor's buys lie inside *its*
-buyable set, the mask keeps only *this* portfolio's, so what a solve sees is a function of the
-overlapping predecessors alone — the same array whether every higher-priority portfolio was folded or
-only those sharing a buyable name. That is the exactness argument, and a property test asserts it: the
-graph schedule and the total order produce identical orders and identical chain hashes. Order rounding
-clamps a buy to the room under its upper bound so solver noise can never produce a buy the graph could
-not have seen, and the pipeline asserts every BUY is buyable. `execution.dependencies: "all"` keeps the
-total order available for diagnosis.
+Each solve folds its predecessors' orders on that side into a `ChainState` — `traded_shares`, aligned
+to its own securities and **masked to its own tradable set**. The mask is load-bearing: a predecessor's
+trades lie inside *its* tradable set, the mask keeps only *this* portfolio's, so what a solve sees is a
+function of the overlapping predecessors alone — the same array whether every higher-priority
+portfolio was folded or only those sharing a tradable name. That is the exactness argument, and it
+carries over from buys to sells verbatim; a property test asserts it: the graph schedule and the total
+order produce identical orders and identical chain hashes. Order rounding clamps a buy to the room
+under its upper bound and a sell to the shares held, so solver noise can never produce a trade the
+graph could not have seen, and the pipeline asserts every order is on a side the run trades and inside
+the tradable set. `execution.dependencies: "all"` keeps the total order available for diagnosis.
 
-Dask enforces the graph: a solve is submitted with its predecessors' contributions — their BUY rows —
-as dependencies and runs where its build lives. Outcomes are classified in solve order whatever
-finished first, so the number of workers and the order in which they finish never affect the output.
-Selling-side coupling — ADV spent by sells, wash sales, internal crossing — is a recorded non-goal;
-`IDEAS.md` says what it would cost.
+Dask enforces the graph: a solve is submitted with its predecessors' contributions — their order rows
+on the coupled side — as dependencies and runs where its build lives. Outcomes are classified in solve
+order whatever finished first, so the number of workers and the order in which they finish never affect
+the output. Coupling across sides in one run — a two-sided run's sells limiting someone's buys, wash
+sales, internal crossing — is a recorded non-goal; `IDEAS.md` says what it would cost.
 
 ## Where the work runs is a setting, and the run owns its cluster
 
@@ -194,7 +213,7 @@ Every portfolio ends as a `PortfolioResult` or a `PortfolioFailure` naming the s
 failure follows the edges: the portfolios that depended on it are skipped, each naming the predecessor,
 and the rest are untouched under `continue`; under `fail_fast` every lower-priority portfolio is skipped
 by position, whatever it had finished, so the manifest never depends on timing. A failed build has an
-unknown buyable set and is treated as overlapping everything after it. The sink is called once, only when at least one portfolio
+unknown tradable set and is treated as overlapping everything after it. The sink is called once, only when at least one portfolio
 solved, and a sink failure is an infrastructure exit code with the manifest still written. There is no
 path on which the engine returns the current portfolio as a default answer: an infeasible problem raises,
 with an arithmetic diagnosis of why.

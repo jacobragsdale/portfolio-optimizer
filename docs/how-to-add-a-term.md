@@ -21,8 +21,11 @@ and is recorded like a shipped one, but has no numpy twin unless you add one her
 manifest lists it as `unverified`.
 
 An objective term returns `ObjectiveTerm`; a constraint returns `ConstraintSet`. Both take
-`x: DecisionVars` (`x.w`, `x.buy`, `x.sell` — weights and the non-negative trade split, as fractions of
-NAV) and `spec: ProblemSpec`.
+`x: DecisionVars` and `spec: ProblemSpec`. `x.w` is the target weight and `x.trade` the amount traded,
+as fractions of NAV; `x.buy` and `x.sell` are the non-negative split, and exist only on a side the run
+has — read `x.sell` in a buy-only run and `validate-config` refuses the config, naming the side. Write
+"the amount traded" as `x.trade` and the term runs under every `sides`; write `x.buy` or `x.sell` only
+when the term means that side specifically.
 
 ```python
 class SignalParams(WeightedParams):
@@ -35,27 +38,28 @@ def signal_tilt(x: DecisionVars, spec: ProblemSpec, params: SignalParams) -> Obj
 
 
 def max_names_traded(x: DecisionVars, spec: ProblemSpec, params: TurnoverParams) -> ConstraintSet:
-    """Two-way turnover per name capped at ``limit``."""
-    return ConstraintSet("max_names_traded", (at_most(plus(x.buy, x.sell), float(params.limit)),))
+    """Turnover per name capped at ``limit``; two-way where the run has two sides."""
+    return ConstraintSet("max_names_traded", (at_most(x.trade, float(params.limit)),))
 ```
 
 Write the math through the atoms in `portfolio_optimizer.cvx.adapter` (`sum_squares`, `norm1`, `total`,
-`dot`, `matvec`, `scale`, `plus`, `minus`, `shifted`, `equals`, `at_most`, `at_least`). They are the whole
+`dot`, `matvec`, `scale`, `plus`, `minus`, `shifted`, `shortfall`, `equals`, `at_most`, `at_least`). They are the whole
 cvxpy surface the template exposes, and every one preserves DCP convexity when the inputs do. A term that
 is not convex is rejected when the problem is built, before the solver runs.
 
 Read numbers from `spec` or from `params`; never from a file or a global. The spec is hashed into the
 manifest, so anything the term used is recorded.
 
-One modeling rule the engine relies on: **a term must never reward selling** — a negative cost per unit
-of `x.sell` that no other term outweighs. After a solve the engine replaces the solver's buy/sell split
+One modeling rule a two-sided run relies on: **a term must never reward selling** — a negative cost per
+unit of `x.sell` that no other term outweighs. After a solve the engine replaces the solver's buy/sell split
 with the canonical one (`buy = max(w − w0, 0)`, `sell = max(w0 − w, 0)`) and the verifier recomputes
 the objective on that split. With a term that pays for a round trip, the solver sells and rebuys the
 same name, the canonical split removes the round trip, and the recomputed objective no longer matches
 the solver's: the portfolio fails verification. The shipped `tax_cost` refuses to run with a loss-harvest
 incentive and no transaction cost for exactly this reason, and a realistic transaction cost is rarely
 enough. If the model needs a harvest reward, price the round trip explicitly with a constraint or a
-term the verifier can mirror.
+term the verifier can mirror. A one-sided run has no such rule to keep: with one vector there is no
+round trip to reward.
 
 ## 2. Name it in the config
 
@@ -89,13 +93,16 @@ test `test_every_shipped_term_and_constraint_has_a_twin` pins the shipped set; e
 
 ## 4. If the step needs earlier portfolios' results
 
-Add `chain: ChainState`. It carries `bought_shares` per security — what higher-priority portfolios
-*bought*, aligned to `spec.security_ids`, and zero wherever this portfolio cannot buy — plus the
-`predecessors` it was folded from; `cumulative_adv_participation` is the worked example. Sells never
-reach a later portfolio: portfolios couple through buys only. Declaring `chain` is what makes a
-portfolio wait for every higher-priority portfolio that can buy a security it can buy too; with no
-chain-aware step in the config, nothing waits. Use it to *limit* buys, and only buys — the engine's
-guarantee that the schedule never changes the answer rests on the chain reaching nothing else.
+Add `chain: ChainState`. It carries `traded_shares` per security — what higher-priority portfolios
+*traded on the side the run couples through* (bought under `both` and `buy`, sold under `sell`),
+aligned to `spec.security_ids`, and zero wherever this portfolio cannot trade the name on that side —
+plus the `predecessors` it was folded from; `cumulative_adv_participation` is the worked example, and
+`x.coupled` is the decision vector on that side, so a constraint written as `at_most(x.coupled, ...)`
+runs under every `sides`. Nothing else reaches a later portfolio: a two-sided run's sells reach no
+one. Declaring `chain` is what makes a portfolio wait for every higher-priority portfolio whose
+tradable set overlaps its own; with no chain-aware step in the config, nothing waits. Use it to *limit*
+the coupled side, and only that side — the engine's guarantee that the schedule never changes the
+answer rests on the chain reaching nothing else.
 
 ## 5. Test
 

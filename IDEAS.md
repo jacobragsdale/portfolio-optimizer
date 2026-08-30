@@ -30,6 +30,22 @@ The canonical form is *P* 400k × 400k with 100k nonzeros and *A* 900k × 400k w
 process peaks at 1.4–1.8 GB, canonicalization and the solve each adding about half a gigabyte, which
 is what a worker needs per concurrent solve at this size.
 
+The same book under each side profile (`--sides`, measured 2026-08-29 after the one-sided profiles
+landed; `both` re-measured the same day, bitwise the same orders as before them):
+
+| `sides` | Variables (*P*) | Clarabel | Iterations | Solve task end to end | Peak RSS | Note |
+|---|---|---:|---:|---:|---:|---|
+| `both` | 400k | 7.5 s | 29 | 8.0 s | 2.1 GB | tracking, tax, tcost |
+| `buy` | 200k | 2.1 s | 12 | 2.8 s | 1.5 GB | `tax_cost` dropped: it reads `sell` |
+| `sell` | 200k | 3.6 s | 20 | 5.7 s | 1.3 GB | `cash_bounds` `[0, 1]`; the gains-only book sells nothing |
+
+One variable per name instead of three and no trade identity: Clarabel 3.5× faster under `buy`, 2×
+under `sell`, in the 2–4× band the design predicted, with a third less memory. (The benchmark's own
+`get_problem_data` + `solve_via_data` stage reports `unbounded` after 9 iterations under `both` while
+`problem.solve` on the identical problem is optimal in 29; that was so before the profiles too, so it
+is a quirk of driving cvxpy by hand in the harness, not of the engine's solve — the end-to-end row is
+the one to read.)
+
 So the premise this section used to open with — that building the cvxpy problem is the expensive
 half — is wrong by an order of magnitude. Canonicalization is 7% of the solve task; Clarabel is 85%.
 The build side is two and a half seconds and runs for every portfolio at once, most of it bundle
@@ -67,10 +83,10 @@ objective. Things to measure, in the order they are cheap:
    even be compared on time. Clarabel stays the default; the thread is making *it* faster.
 3. **Warm starts** move from "pointless" to worth trying, but only for the solvers that use them
    (OSQP, SCS); Clarabel does not. See the thread under *Other threads*.
-4. **The formulation.** Three variables per name (`w`, `buy`, `sell`) plus the slack every inequality
-   adds is what makes *A* 900k rows. The single-sided runs decided below (*Sides*) have one variable
-   per name and no trade identity — a third of the KKT system — which is the largest solve-time win
-   on this list and comes with the design rather than from solver tuning.
+4. ~~**The formulation.**~~ Measured 2026-08-29 (table above): the one-sided profiles have one
+   variable per name and no trade identity, and Clarabel is 3.5× faster under `buy` and 2× under
+   `sell`. The largest solve-time win on this list, and it came with the design rather than from
+   solver tuning. What remains here is `both`, which is deferred.
 
 ### The result carries the spec back
 
@@ -128,7 +144,8 @@ would add couples across the sides, per security:
 
 Each simplification the one-side guarantee buys (see the architecture explanation) would need to un-simplify, in this order:
 
-1. `ChainState` gains `cumulative_sold`; the fold reads both sides.
+1. `ChainState` carries one side today (`traded_shares`, the side the run couples through); it would
+   need both, and the fold would read both.
 2. A chain-aware step declares which sides it produces on and consumes on, defaulting to both
    (conservative, always sound). The resolver already inspects signatures; this is one more attribute.
 3. The edge test becomes side-aware: *j* depends on *i* iff, for some configured step, *i*'s set on the
@@ -155,84 +172,44 @@ grow to match. The manifest's derived-graph record is how to watch that happen.
   prints the table above for the shipped config; the split between canonicalization and solve is
   solver- and structure-dependent, and a factor term will not look like the diagonal *P* measured here.
 
-## Sides: a run is buy-only or sell-only, and the engine knows which — decided
+## Sides: a run is buy-only or sell-only, and the engine knows which — done
 
-Decided 2026-08-29, not yet built. The desk decides sells in a separate process for most portfolios,
-so the optimizer's production job is one side at a time, and a run that is one-sided should get the
-full benefit of it: a third of the problem, no wash trades, a chain that is exact by construction. The
-run config gains `sides: "buy" | "sell"`; the two-sided problem the engine solves today becomes a third
-profile, `both`, kept as the extraction of what exists and not extended — revisited only if a joint
-rebalance is ever needed.
+Decided and built 2026-08-29. The desk decides sells in a separate process for most portfolios, so the
+optimizer's production job is one side at a time, and a run that is one-sided gets the full benefit of
+it: a third of the problem, no wash trades, a chain that is exact by construction. `sides: "buy" |
+"sell" | "both"` selects a *side profile* — `domain/sides.py` for the numpy half, `cvx/sides.py` for
+the cvxpy half — and nothing downstream asks which side it is. What the profile owns, why the side is a
+config value and not a pair of bounds, and what it costs the solver are in the
+[architecture explanation](docs/explanation-architecture.md#the-side-a-run-trades-is-one-object); the
+config surface is in [the run-config explanation](docs/explanation-run-config.md#sides); the numbers
+are in the table above.
 
-### One engine, one key, one place that branches
+Two things that came out of building it and are worth keeping:
 
-Three programs would copy the ninety percent that is side-agnostic — loading, assembly, rules, the
-schedule, dispatch, the fingerprint, verification, rounding, persistence, the manifest — and let it
-drift. A mode flag tested throughout the code is the execution-mode pattern this repo already removed:
-every step correct under every mode. The design is neither: `sides` selects a **side profile**, one of
-three small objects in one module, and nothing downstream asks which side it is — it consumes what
-the profile hands it. It is a *config* key, not a setting, because it changes what the problem is; it
-hashes into the config and appears in the manifest.
+- **Terms name what they mean, not which vectors exist.** `x.trade` is the amount traded on the sides
+  the run has and `x.coupled` the amount on the side it couples through; both exist under every
+  profile, so `transaction_cost`, `turnover_cap`, and `cumulative_adv_participation` are written once.
+  `x.buy` and `x.sell` exist only where the run has them, and reading an absent one is a
+  `SideUnavailableError` at `validate-config`. `coupled` is the one accessor that was not in the
+  design: without it the ADV chain constraint would have to say `buy ≤ remaining` under `both` and
+  `sell ≤ remaining` under `sell`, and the verifier's twin (`check.py`) needs the same quantity in
+  numpy, which is why the twins now receive the profile.
+- **The reflection is cheap.** `w' = 1 − w` maps a buy-only problem onto a sell-only one exactly —
+  bounds, cash, sector bounds, ADV, the chain, all of it — and `tests/engine/test_solve.py` uses it as
+  the symmetry test the design asked for.
 
-A profile owns exactly the side-dependent pieces:
+### Still open
 
-- `variables(n)` — what `x.w`, `x.buy`, and `x.sell` are: a variable, an affine expression of `w`, or
-  absent;
-- the trade identity — the constraints that define the trade, which leave the user-configurable
-  constraint list (`trade_balance` is "the constraint you should not remove", so it stops being
-  removable);
-- `tradable(spec)` — the per-security mask the dependency graph and the chain state are built from;
-- the chain fold — which side is produced and consumed;
-- the post-solve step — the canonical split and the round-trip check for `both`, nothing for the others;
-- the invariants the verifier adds, and the order sides that may appear.
-
-| | `buy` | `sell` | `both` (deferred) |
-|---|---|---|---|
-| Variables | `w ≥ w0`; `buy = w − w0` | `w ≤ w0`; `sell = w0 − w` | `w`, `buy`, `sell`; `w = w0 + buy − sell` |
-| Size at 100k | ~*N* vars, ~3*N* rows | same | ~3*N* vars, ~9*N* rows (measured above) |
-| Tradable set | buyable: `ub > w0` | sellable: held and `lb < w0` | buyable; sells reach no one |
-| Chain state | cumulative bought | cumulative sold | cumulative bought |
-| Post-solve | — | — | canonical split, complementarity, the wash-trade problem |
-| Verifier adds | `w ≥ w0`; every order a BUY | `w ≤ w0`; every order a SELL | complementarity |
-| Terms that apply | tcost, tracking, alpha | tcost, tax, tracking | all |
-
-Sell-only is buy-only with the signs flipped, and the exactness argument for the derived graph carries
-over verbatim: mask the chain to your own sellable set, fold predecessors' sells, and what a solve
-sees is a function of the overlapping predecessors alone. The "portfolios couple through buys only"
-decision generalizes to *a run couples through its one side*.
-
-### Decisions taken
-
-1. **`buy` and `sell` now; `both` deferred.** `both` is what exists today and is extracted, not
-   designed; the wash-trade defect under *Bugs and cleanup* belongs to it alone.
 2. **A constraint the starting point already violates** — a name over `max_weight` in a buy-only run,
    a holding under a floor in a sell-only run — is each constraint's own call: it declares `accept`
    (hold the name where it is and do not worsen it; the `ub = max(w0, cap)` shape) or `infeasible`
-   (fail the portfolio). The declaration is per constraint, never per run. The constraint logic for
-   this exists and lands with the profiles.
-3. **`cash_bounds` keeps its meaning** — target cash after the run — and the direction is what the side
-   permits: a buy-only run can only lower cash, a sell-only run can only raise it, and the build
-   reports the case where the bounds ask for the other direction as the infeasibility it is.
-4. ~~**A term that touches a side the run does not have fails at resolve.**~~ Done 2026-08-29:
-   `validate-config` and the start of `run` construct each term and constraint once against a
-   one-security dummy spec under the run's profile (`construction_failures`); a step that raises or
-   returns the wrong type is refused in the collected-failures shape, never on a worker. A step asking
-   for a spec column the dummy lacks is skipped — that is the data's question.
-5. **Sells do not feed buys today**, so nothing crosses between a sell run and a buy run; see the
-   enhancement below for when they do.
+   (fail the portfolio). The declaration is per constraint, never per run. Today every such start is
+   infeasible, and `diagnose_infeasibility` lists the names (`SideProfile.infeasible_starts`), which is
+   where the accept policy lands.
+5. **Sells do not feed buys today**, so nothing crosses between a sell run and a buy run; see below.
 
-### Order of work
-
-1. ~~Extract today's engine into the `both` profile with zero behaviour change.~~ Done 2026-08-29:
-   `domain/sides.py` (the numpy half: tradable set, split, identity residuals, contribution, chain
-   fold) and `cvx/sides.py` (the identity as atoms); `sides: "both"` in the config; `trade_balance`
-   refused by name; the hand-checked orders and the schedule-equivalence tests unchanged.
-2. Add `buy`. Re-run `benchmarks/profile_portfolio.py`; the KKT system is a third the size, so a
-   2–4× faster Clarabel solve is the expectation to check against.
-3. Add `sell` as the mirror, with a symmetry test: a sell-only run over a book equals a buy-only run
-   over the reflected book.
-4. Move the decision into the architecture explanation; the buy-only-coupling passage becomes
-   side-generic.
+`both` is what existed before the profiles, extracted and not extended; the wash-trade defect under
+*Bugs and cleanup* belongs to it alone.
 
 ### Future enhancement: the sell run feeds the buy run
 

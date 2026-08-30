@@ -29,7 +29,7 @@
 | `orders/orders.parquet` | Written by the `orders_to_parquet` sink: every solved portfolio's orders, sorted by `(portfolio_id, security_id)`. Absent when no portfolio solved. |
 | `problem_specs/<portfolio_id>.npz` | The `ProblemSpec` as arrays plus JSON metadata; no pickle. |
 | `solutions/<portfolio_id>.npz` | The solver's `w`, `buy`, `sell`, objective, status, and versions. |
-| `chain/<portfolio_id>.npz` | The chain state the solve depended on: shares its predecessors bought, per security, zero where the portfolio could not buy; the metadata names the predecessors. |
+| `chain/<portfolio_id>.npz` | The chain state the solve depended on: `traded_shares`, the shares its predecessors traded on the side the run couples through (bought under `both` and `buy`, sold under `sell`), per security, zero where the portfolio cannot trade the name on that side; the metadata names the predecessors. Chain files written before 2026-08-29 carry the key `bought_shares` and no longer load; their hash is unchanged. |
 
 Files are written to a sibling temp file and renamed, so a crash leaves no partial output.
 
@@ -81,7 +81,7 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `predecessors` | How many higher-priority portfolios this one waited for and folded into its chain. |
 | `rules[]` | `qualname`, `source_sha256`, `params_sha256`, `rows_in`, `rows_out` per rule; the row counts cover `holdings`, `universe`, `targets`, and every extra dataset in the bundle by name. |
 | `problem_spec_sha256` | Hash of every array and scalar the solver saw. |
-| `chain_inputs_sha256` | Hash of the chain state — the security ids and the shares predecessors bought, never which predecessors — so `overlap` and `all` runs hash alike. |
+| `chain_inputs_sha256` | Hash of the chain state — the security ids and the shares predecessors traded on the coupled side, never which predecessors — so `overlap` and `all` runs hash alike. |
 | `solve` | `solver`, `solver_version`, `cvxpy_version`, `status`, `iterations`, `objective_value`, `solve_time_s`. |
 | `check` | Tolerances, `max_violation`, `violated`, `objective_gap`, `objective_passed`, `unverified`, `passed`. |
 | `drift` | `max_weight_error`, `tolerance`, `dropped_orders`, `passed` — the effect of rounding to shares. |

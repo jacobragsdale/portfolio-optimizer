@@ -229,41 +229,44 @@ dust-filtered trade, both as fractions of NAV. Exceeding it raises `DriftError`.
 
 ## 9. The dependency graph, and where the work runs
 
-Portfolios in one run can compete for the same buys. The example's `cumulative_adv_participation`
-constraint says "buy in each name no more than the ADV budget that higher-priority portfolios' buys
-have not already consumed" (and, chain-free, "buy plus sell no more than your own participation"). That
-is the only kind of coupling the engine has: **portfolios couple through buys only.** What an earlier
-portfolio *sold* never changes what a later one may do — a product decision, and everything in this
-section leans on it.
+Portfolios in one run can compete for the same trades. The example's `cumulative_adv_participation`
+constraint says "trade in each name no more than the ADV budget that higher-priority portfolios' trades
+on the side the run couples through have not already consumed" (and, chain-free, "trade no more than
+your own participation"). That is the only kind of coupling the engine has: **a run couples through its
+one side** — buys under `both` and `buy`, sells under `sell`. What a two-sided run's portfolio *sold*
+never changes what a later one may do — a product decision, and everything in this section leans on it.
 
 The mechanism is small. After every build, the main process knows each portfolio's solve-order key and
-its **buyable set** — the securities its spec allows a positive buy in (`ub > w0`; a name frozen or
-capped at its current weight is outside it). It sorts the portfolios by `(key, portfolio_id)` and
-derives a graph (`engine/schedule.py`): portfolio *j* depends on every earlier *i* whose buyable set
-intersects its own, and on nothing else. If no term or constraint declares `chain`, there are no edges
-at all. Under `execution.dependencies: "all"` every earlier portfolio is a predecessor — one line, the
-same answer, for diagnosis. A build that failed has an unknown buyable set and is treated as overlapping
-everything after it. The graph is never transitively reduced: a solve folds its *direct* predecessors'
-own buys, so every overlapping earlier portfolio stays a direct dependency.
+its **tradable set** — the securities the side profile lets it trade on that side: buyable (`ub > w0`;
+a name frozen or capped at its current weight is outside it) or sellable (held and `lb < w0`). It sorts
+the portfolios by `(key, portfolio_id)` and derives a graph (`engine/schedule.py`): portfolio *j*
+depends on every earlier *i* whose tradable set intersects its own, and on nothing else. If no term or
+constraint declares `chain`, there are no edges at all. Under `execution.dependencies: "all"` every
+earlier portfolio is a predecessor — one line, the same answer, for diagnosis. A build that failed has
+an unknown tradable set and is treated as overlapping everything after it. The graph is never
+transitively reduced: a solve folds its *direct* predecessors' own trades, so every overlapping earlier
+portfolio stays a direct dependency.
 
-Each solve folds its predecessors' BUY orders into a `ChainState`: whole shares bought per security,
-projected onto this spec's securities and **zeroed wherever this portfolio cannot buy**. That mask is
-what makes the answer canonical: a predecessor's buys lie inside its own buyable set and the mask keeps
-only this portfolio's, so the array a solve sees is a function of the *overlapping* predecessors alone —
-identical whether the run folded every earlier portfolio or only those sharing a buyable name. Order
-rounding makes the buyable set structural (a BUY is clamped to the room under `ub`, so solver noise at a
-cap never produces a buy the graph could not have seen), and `finish_portfolio` asserts it. The chain
-state's hash — the ids and the shares, never who bought them — is recorded per portfolio.
+Each solve folds its predecessors' orders on that side into a `ChainState`: `traded_shares`, whole
+shares per security, projected onto this spec's securities and **zeroed wherever this portfolio cannot
+trade the name on that side**. That mask is what makes the answer canonical: a predecessor's trades lie
+inside its own tradable set and the mask keeps only this portfolio's, so the array a solve sees is a
+function of the *overlapping* predecessors alone — identical whether the run folded every earlier
+portfolio or only those sharing a tradable name. Order rounding makes the tradable set structural (a
+BUY is clamped to the room under `ub` and a SELL to the shares held, so solver noise at a bound never
+produces a trade the graph could not have seen), and `finish_portfolio` asserts it, along with every
+order being on a side the run trades. The chain state's hash — the ids and the shares, never who traded
+them — is recorded per portfolio.
 
 `engine/runner.py` drives one schedule, on the cluster:
 
 - **build** every portfolio at once — slice, rules, the solve-order key, the spec — chain-free and in
   parallel. Each build stays on the worker that made it; a `summarize` task sends back only the key, the
-  buyable ids, the spec hash, and the rule audit, stamped with the worker's environment.
+  tradable ids, the spec hash, and the rule audit, stamped with the worker's environment.
 - **derive** the order and the graph in the main process, and log its shape: portfolios, edges,
   components, the longest chain of solves.
 - **solve** each portfolio where its build lives, submitted with its predecessors' *contributions* —
-  their BUY rows, a few kilobytes each — as Dask dependencies, so the scheduler enforces the order and
+  their order rows on the coupled side, a few kilobytes each — as Dask dependencies, so the scheduler enforces the order and
   starts a solve the moment its last predecessor finishes. Solves outrank builds, and the head of the
   longest chain outranks the rest.
 - **classify** outcomes in solve order as they complete, persisting each result as it arrives, so the
@@ -308,7 +311,7 @@ the settings.
 Every portfolio ends as a `PortfolioResult` or a `PortfolioFailure` naming its stage — `slice`, `build`,
 `solve`, `worker`, or `skipped` — with the exception type and message. A skipped portfolio's message
 names what it was waiting for: the predecessor that failed, or, under `fail_fast`, any higher-priority
-failure. A build that fails has an unknown buyable set and is treated as overlapping everything after
+failure. A build that fails has an unknown tradable set and is treated as overlapping everything after
 it, so under `continue` it skips every lower-priority portfolio whenever a step reads the chain. The
 process exit code is **0**
 when every portfolio solved, **1** when any failed, **2** when the inputs were rejected before anything
@@ -377,6 +380,6 @@ again (the diff names only the config). The [tutorial](tutorial-first-run.md) wa
 8. **Solve step** — weights of the right shape, status classified, infeasibility diagnosed; for the
    cvxpy step, DCP-compliant first.
 9. **Verifier** — every shipped constraint and the objective, independently of cvxpy.
-10. **Orders** — the `ORDERS` schema including `notional = quantity × price`, every BUY inside the
-    buyable set, then the drift bound.
+10. **Orders** — the `ORDERS` schema including `notional = quantity × price`, every order on a side the
+    run trades and inside the tradable set, then the drift bound.
 11. **Manifest** — self-hash checked on load.
