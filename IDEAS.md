@@ -600,6 +600,50 @@ post-processing step. Aggregation may report that the opportunity existed; it ma
 because it runs after every solve, on one process, over a small frame, it never touches the dependency
 graph — nothing an aggregator does can feed back into which portfolio waits for which.
 
+## Timing every stage, so a run can be drawn
+
+What a finished run says about its own time today: each dataset's `load_time_s` and `batches`, the
+cluster's `provision_started_at`, `first_worker_ready_at`, and `closed_at`, and per portfolio the
+`solve_time_s` the solver reports. Everything else has to be reconstructed from log lines, which carry
+a timestamp and a stage but no duration and no host. So the question a slow run actually raises — where
+did the wall clock go, and what was waiting on what — has no answer in the artifact: the sum of every
+`solve_time_s` is well under the run's elapsed time, and nothing accounts for the difference, which is
+some mix of queueing behind predecessors, builds, a worker that had not joined yet, and the sink.
+
+What it takes is small. A start and end instant on every task the engine already submits, the host it
+ran on, and the stage names the code already uses (`load`, `assembly`, `build`, `solve`, `verify`,
+`orders`, `sink`), recorded per portfolio the way `solve_time_s` is now. The build and solve tasks
+already measure their own phases when `benchmarks/profile_portfolio.py` drives them — validate, rules,
+spec build, content hash, canonicalization, solve, unpack, verify, orders — so recording the same
+breakdown from a real run would put the table at the top of this file within reach of any book, rather
+than of one synthetic one, and would say whether a per-portfolio dataset's batches really do overlap
+the global loaders on a book where it matters.
+
+Two constraints shape where it lands:
+
+1. **Timing must not touch identity.** Two runs of one config are byte-identical where it matters and
+   `diff-manifests` says so; a duration differs every run by definition. The manifest already carries
+   fields nobody diffs — the cluster's timestamps, the settings block — because `diff_manifests`
+   compares an explicit list of identity fields rather than the whole document. Timing joins them under
+   that rule: in the manifest, never in the config hash, never in the diff.
+2. **It is timing, not profiling.** Wall-clock spans around work the engine already delimits, a few
+   dozen per portfolio, a `perf_counter` call each. Not a sampling profiler, not per-function
+   attribution, nothing that changes how the work runs, nothing to switch on.
+
+The leaning on the visual: write the spans beside the manifest in the Chrome trace format
+(`{"name", "ph": "X", "ts", "dur", "pid", "tid"}`), because it is a list of flat objects to produce and
+it opens in `chrome://tracing` or Perfetto with a row per worker and every portfolio's build and solve
+where it happened — a picture of the run for the price of a JSON file, with no viewer to write. A
+`portfolio-optimizer timeline <manifest>` subcommand then prints the same spans as an ASCII waterfall
+with per-stage totals, which is what a terminal and a CI log can use. Both read the recorded spans;
+neither is a second source of truth.
+
+What it makes answerable, none of which the manifest can support today: whether the workers were busy
+or idle (so `PORTFOLIO_OPTIMIZER_MAX_WORKERS` can be set on evidence), whether the chain's critical
+path — which the `schedule` block already counts in edges and depth — is where the wall clock actually
+went, and which stage a regression landed in when a run that took nine minutes last week takes twenty
+today.
+
 ## Other threads
 
 - **Tax lots.** Holdings are security-level with an average cost. Lot-level tax needs one sell variable
