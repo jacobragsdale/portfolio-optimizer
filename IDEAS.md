@@ -644,6 +644,54 @@ path — which the `schedule` block already counts in edges and depth — is whe
 went, and which stage a regression landed in when a run that took nine minutes last week takes twenty
 today.
 
+## A live dashboard: watching a run rather than reading about it afterwards
+
+Everything a run says about itself today it says when it is over. The manifest is written in the last
+stage, `diff-manifests` compares two finished runs, and the timeline above would be read from a file
+that only exists once the run has ended. While a run is going, the only channel is the log: one line
+per stage transition, carrying a `run_id` and a `stage` but no notion of how much is left. On the
+example book that is fine. On a book of five hundred accounts where the chain's critical path is deep
+and one solve takes minutes, "is this progressing or is it wedged, and on what" is unanswerable
+without tailing a log and reconstructing the schedule in your head.
+
+What makes this tractable is that the engine already knows the shape of the answer before it starts.
+The config names every stage a portfolio will pass through; the portfolio list is known after the very
+first loader; and the dependency DAG — which portfolio waits on which, and the critical path through
+it — is derived at `schedule`, before any build runs. So the denominator exists early: *N* portfolios ×
+the stages this config declares, with the edges between them. A dashboard is not inferring progress, it
+is filling in a grid the run has already described.
+
+Three ways to serve it, in rising order of what they cost:
+
+1. **Lean on Dask.** The distributed scheduler already publishes a dashboard with task streams and
+   worker occupancy, and the run provisions its own cluster, so the URL is knowable. Nearly free, and
+   it answers "are the workers busy". It cannot answer anything in the engine's own vocabulary — its
+   tasks are `build`/`solve` futures, not portfolios and stages, and a run whose backend is not Dask
+   has nothing.
+2. **Structured events on a bus, rendered by a terminal UI.** The log already emits at exactly the
+   right moments with `run_id` and `stage`; making those emissions structured events (a portfolio id, a
+   stage, a transition, an instant) and giving the runner a pluggable sink is a small change to code
+   that exists. A `portfolio-optimizer watch <run_id>` then draws the grid live. The same event stream
+   is what the timeline section above wants to persist, so the two should be one mechanism with two
+   consumers — live and recorded — rather than two.
+3. **A served web page.** The grid, the DAG with the critical path highlighted, per-stage durations
+   filling in, failures in place. Genuinely the best artifact, and the one that needs a server, a
+   transport, and a front end to maintain — none of which the template has today.
+
+The leaning is (2) built on the same spans (1) already implies: define the event, give the runner a
+sink for it, and let the recorded stream feed the timeline while a live stream feeds a terminal grid.
+That keeps one source of truth, keeps the web page as a later consumer of an interface that already
+exists rather than a rewrite, and holds to the rule the timing thread sets — **observability is never
+identity**: no event, duration, or progress reading may reach the config hash or `diff-manifests`.
+
+Two things to settle before any of it. **What a stage means for a portfolio that is waiting.** A
+portfolio blocked on a predecessor is not the same as one being built, and a grid that shows both as
+"not done" hides the thing worth seeing; the schedule knows which, so the event vocabulary has to carry
+`blocked` as a state distinct from `pending`. And **what the live channel is when the run is on a
+cluster.** Events originate on workers, and the obvious answers — the scheduler as a relay, or workers
+writing to shared storage the watcher polls — differ in whether a dashboard can attach to a run already
+in flight, which is exactly the case that matters most.
+
 ## Other threads
 
 - **Tax lots.** Holdings are security-level with an average cost. Lot-level tax needs one sell variable
