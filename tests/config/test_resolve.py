@@ -195,7 +195,7 @@ VIOLATIONS: list[tuple[str, str, StepKind, Mapping[str, object], str]] = [
     ("params missing a required field", "fake_steps:rule_with_params", "rule", {}, "strength: Field required"),
     ("params with an unknown field", "fake_steps:rule_with_params", "rule", {"strength": "1", "tilt": "2"}, "tilt: Extra inputs are not permitted"),
     ("params with the wrong type", "fake_steps:rule_with_params", "rule", {"strength": "-1"}, "strength: Input should be greater than or equal to 0"),
-    ("a column kind the schemas do not have", "csv", "loader", {"path": "prices.csv", "dtypes": {"price": "money"}}, "dtypes.price: Input should be"),
+    ("a column kind the schemas do not have", "csv", "loader", {"path": "analytics.csv", "dtypes": {"score": "money"}}, "dtypes.score: Input should be"),
     ("term used as a constraint", "fake_steps:term", "constraint", {}, "return annotation must be ConstraintSet, got ObjectiveTerm"),
     ("rule used as a loader", "fake_steps:plain_rule", "loader", {}, "unexpected parameter 'data'"),
     ("async rule", "fake_steps:async_rule", "rule", {}, "`async def` is only allowed for loaders"),

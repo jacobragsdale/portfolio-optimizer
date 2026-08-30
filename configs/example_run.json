@@ -16,27 +16,8 @@
     },
     "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
     "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
-    "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
-    "prices": {
-      "loader": {
-        "name": "csv",
-        "params": {"path": "prices.csv", "dtypes": {"security_id": "string", "price": "decimal"}}
-      }
-    }
+    "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}}
   },
-  "assembly": [
-    {
-      "name": "join",
-      "params": {
-        "into": "universe",
-        "source": "prices",
-        "on": ["security_id"],
-        "cardinality": "one_to_one",
-        "require_all_matched": true
-      }
-    },
-    {"name": "drop", "params": {"datasets": ["prices"]}}
-  ],
   "rules": [
     {"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}},
     "add_zero_alpha",

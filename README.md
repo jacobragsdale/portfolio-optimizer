@@ -63,38 +63,8 @@ The quickest way to see what the engine does is to read the run it ships with,
     // beyond the trade identity.
     "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
 
-    "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
-
-    // Any name the engine does not know is an extra dataset. It cannot be typed from a schema, so
-    // `dtypes` declares each column's kind — `price` as `decimal` arrives as an exact `Decimal`.
-    "prices": {
-      "loader": {
-        "name": "csv",
-        "params": {"path": "prices.csv", "dtypes": {"security_id": "string", "price": "decimal"}}
-      }
-    }
+    "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}}
   },
-
-  // Steps run once over every loaded dataset, before the engine-known frames are validated — which is
-  // what lets a step supply a required column, as this join supplies the universe's `price`.
-  "assembly": [
-    {
-      "name": "join",
-      "params": {
-        "into": "universe",
-        "source": "prices",
-        "on": ["security_id"],
-        // Claims each security appears once on both sides; pandas enforces it, so a duplicated price
-        // row aborts the run instead of silently doubling a universe row.
-        "cardinality": "one_to_one",
-        // Claims every universe security has a price; an unmatched key is reported and the run refused.
-        "require_all_matched": true
-      }
-    },
-    // Any dataset still present after the last step is carried into every portfolio's bundle, which is
-    // wasteful for a price file that has done its job.
-    {"name": "drop", "params": {"datasets": ["prices"]}}
-  ],
 
   // Business logic, applied in order to each portfolio's bundle. A rule never sees another portfolio.
   "rules": [
@@ -148,18 +118,15 @@ that kind of step, or by `package.module:function`, with optional `params` (see
 - **`datasets`** — everything else to load, all at once, every one a frame. Four names are required and
   validated against fixed schemas: `holdings`, `universe`, `details` (the account's facts *and* its
   style limits), and `targets`; `sector_bounds` is engine-known but optional, since a per-sector limit
-  is the one style limit that does not fit in an account's row. Any other name — `prices` here — is an
-  extra dataset the engine does not interpret: assembly steps see it, and whatever survives assembly
-  reaches each portfolio's rules as `data.extras`. Each entry also says how its loader is called.
-  `universe`, `targets`, `prices`, and `sector_bounds` say nothing and are `global`: one call for the
+  is the one style limit that does not fit in an account's row. Any other name is an extra dataset the
+  engine does not interpret: assembly steps see it, and whatever survives assembly reaches each
+  portfolio's rules as `data.extras`. Each entry also says how its loader is called.
+  `universe`, `targets`, and `sector_bounds` say nothing and are `global`: one call for the
   whole book, and the only datasets assembly sees. `holdings` and `details` are `per_portfolio`, so the engine calls their loaders per
   account rather than once for the book, and `batch_size` says how finely: `1` is a call per account,
   the shape of a custodian that answers one at a time; `2` hands the loader two ids per call, the shape
   of an account master that takes a list. It is also why a portfolio whose own inputs are missing fails
   alone instead of stopping the run. An input from a throttled source adds a `rate_limit`.
-- **`assembly`** — steps that run once over all loaded datasets to make the tables the build expects.
-  Here: join prices into the universe, checking every security matched exactly once, then drop the price
-  file. This is where per-security analytics get attached to `holdings` and `universe`.
 - **`rules`** — business logic, run per portfolio in order: each takes one portfolio's validated bundle
   and returns a modified one, and never sees other portfolios. The example restricts illiquid names,
   adds a zero `alpha` column, and copies the universe's analytics columns onto holdings — the
@@ -181,8 +148,10 @@ that kind of step, or by `package.module:function`, with optional `params` (see
   work runs and how many workers there are is an environment setting, so a laptop run and a cluster run
   of one config hash identically.
 
-Four keys the example leaves at their defaults: `sides` (`both`; `buy` or `sell` runs a one-sided
-problem a third the size), `solve` (`cvxpy`; a heuristic or your own library can replace it),
+Five keys the example leaves at their defaults: `assembly` (steps that reshape the loaded datasets
+before the engine-known frames are validated — a `join` that attaches per-security analytics to
+`universe`, a `drop` for the dataset that supplied them), `sides` (`both`; `buy` or `sell` runs a
+one-sided problem a third the size), `solve` (`cvxpy`; a heuristic or your own library can replace it),
 `solve_order` (a step that computes each portfolio's priority from the data instead of the column), and
 `rate_limits` (named pools shared by inputs on one backend).
 

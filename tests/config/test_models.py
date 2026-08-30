@@ -73,7 +73,7 @@ def test_engine_frames_may_come_from_assembly_steps(example_dict: dict[str, obje
     del datasets["holdings"]
     with pytest.raises(ValidationError, match="missing \\['holdings'\\]; a run without assembly steps has nothing else to produce them"):
         load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": []}))
-    config = load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": [{"name": "union", "params": {"into": "holdings", "sources": ["prices"]}}]}))
+    config = load_run_config(json.dumps(example_dict | {"datasets": datasets, "assembly": [{"name": "union", "params": {"into": "holdings", "sources": ["custody"]}}]}))
     assert [step.name for step in config.assembly] == ["union"]
 
 

@@ -64,8 +64,9 @@ def lying_assembly_step(frames: Frames) -> Frames:
 
 
 def score_by_price(frames: Frames) -> Frames:
-    """A custom assembly step: attach a ``Float64`` analytics column to both holdings and universe from the prices dataset."""
-    scores = frames["prices"].assign(score=frames["prices"]["price"].map(float).astype("Float64")).drop(columns=["price"])
+    """A custom assembly step: attach a ``Float64`` analytics column to both holdings and universe, derived from the universe's price."""
+    universe_prices = frames["universe"][["security_id", "price"]]
+    scores = universe_prices.assign(score=universe_prices["price"].map(float).astype("Float64")).drop(columns=["price"])
     holdings = frames["holdings"].merge(scores, on="security_id", how="left", validate="many_to_one")
     universe = frames["universe"].merge(scores, on="security_id", how="left", validate="one_to_one")
     return frames.with_frame("holdings", holdings).with_frame("universe", universe)

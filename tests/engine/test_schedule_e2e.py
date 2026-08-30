@@ -23,7 +23,7 @@ PRICES = {"A": 100, "B": 50, "C": 10, "D": 20, "E": 40}
 
 
 def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
-    """Write a random book: per-account holdings and details, per-portfolio buy lists, tying priorities; universe, prices, and targets shared."""
+    """Write a random book: per-account holdings and details, per-portfolio buy lists, tying priorities; universe and targets shared."""
     root.mkdir()
     portfolio_ids = [f"P{index}" for index in range(1, portfolios + 1)]
     holdings_header = "portfolio_id,security_id,quantity,avg_cost,acquired_on"
@@ -44,8 +44,7 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
         buy_list.extend(f"{portfolio_id},{security}" for security in sorted(rng.sample(SECURITIES, k=rng.randint(1, 3))))
     (root / "portfolios.csv").write_text("\n".join(["portfolio_id,solve_order", *(f"{portfolio_id},{rng.randint(0, 1)}" for portfolio_id in portfolio_ids)]) + "\n")
     (root / "buy_list.csv").write_text("\n".join(buy_list) + "\n")
-    (root / "universe.csv").write_text("\n".join(["security_id,sector,adv_shares,lot_size,restricted", *(f"{security},TECH,20000,1,false" for security in SECURITIES)]) + "\n")
-    (root / "prices.csv").write_text("\n".join(["security_id,price", *(f"{security},{PRICES[security]}" for security in SECURITIES)]) + "\n")
+    (root / "universe.csv").write_text("\n".join(["security_id,price,sector,adv_shares,lot_size,restricted", *(f"{security},{PRICES[security]},TECH,20000,1,false" for security in SECURITIES)]) + "\n")
     (root / "targets.csv").write_text("\n".join(["benchmark_id,security_id,weight", *(f"B1,{security},0.2" for security in SECURITIES)]) + "\n")
     (root / "sector_bounds.csv").write_text("portfolio_id,sector,lower,upper\n")  # one sector and no rows: nothing is bounded
     constraints = ["portfolio_id,name,label,params"]

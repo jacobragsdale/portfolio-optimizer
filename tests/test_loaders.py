@@ -27,10 +27,11 @@ def test_csv_loads_an_engine_dataset_with_schema_dtypes() -> None:
     assert str(holdings["acquired_on"].dtype) == "datetime64[ns, UTC]"
 
 
-def test_csv_loads_an_extra_dataset_with_the_kinds_its_dtypes_declare() -> None:
-    prices = csv(request("prices"), CsvParams(path="prices.csv", dtypes={"security_id": "string", "price": "decimal"}))
-    assert prices["price"].tolist() == [Decimal(100), Decimal(50), Decimal(10)]
-    assert str(prices["security_id"].dtype) in ("str", "string", "object")
+def test_csv_loads_an_extra_dataset_with_the_kinds_its_dtypes_declare(tmp_path: Path) -> None:
+    (tmp_path / "analytics.csv").write_text("security_id,score\nA,100\nB,50\nC,10\n")
+    analytics = csv(request("analytics", tmp_path), CsvParams(path="analytics.csv", dtypes={"security_id": "string", "score": "decimal"}))
+    assert analytics["score"].tolist() == [Decimal(100), Decimal(50), Decimal(10)]
+    assert str(analytics["security_id"].dtype) in ("str", "string", "object")
 
 
 def test_csv_types_an_extra_dataset_timestamp_from_its_declared_kind(tmp_path: Path) -> None:

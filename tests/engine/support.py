@@ -112,7 +112,7 @@ def sell_book(tmp_path: Path) -> Path:
     by P1, sells 3,333 B alone: ``SELL_BOOK_ORDERS_P1`` and ``SELL_BOOK_ORDERS_P2``.
     """
     raise_cash = {f"details/{pid}.csv": details_csv(pid, cash_ub="1") for pid in ("P1", "P2")}
-    universe = "security_id,sector,adv_shares,lot_size,restricted\nA,TECH,4000,1,false\nB,TECH,1000000,1,false\nC,HEALTH,100000,1,false\n"
+    universe = "security_id,price,sector,adv_shares,lot_size,restricted\nA,100,TECH,4000,1,false\nB,50,TECH,1000000,1,false\nC,10,HEALTH,100000,1,false\n"
     return example_book(tmp_path, **raise_cash, **{"universe.csv": universe})
 
 

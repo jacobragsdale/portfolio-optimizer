@@ -133,9 +133,8 @@ of reading this column.
   "details":     {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
                   "scope": "per_portfolio", "batch_size": 1},
   "sector_bounds": {"loader": {"name": "csv", "params": {"path": "sector_bounds.csv"}}},
-  "targets":     {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
-  "prices":      {"loader": {"name": "csv", "params": {"path": "prices.csv",
-                                                      "dtypes": {"security_id": "string", "price": "decimal"}}}}
+  "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
+  "targets":     {"loader": {"name": "csv", "params": {"path": "targets.csv"}}}
 }
 ```
 
@@ -161,13 +160,12 @@ is the one style limit that does not fit in an account's row.
 **Any other name is an extra dataset.** The engine knows nothing about its columns. It is visible to
 every assembly step by name, and whatever is still present after the last step is carried into each
 portfolio's bundle as `data.extras` — reduced to that portfolio's rows when it has a `portfolio_id`
-column, passed whole otherwise — where a rule can use it. The example's `prices` is one: the universe
-schema requires a `price` column, but the example's universe file does not carry it, so prices arrive
-as a separate file, are joined in by the first assembly step, and are dropped by the second so they are
-not carried further. Because the engine cannot type an extra frame from a schema, the loader has to be
-told: `dtypes` names each column's kind — `security_id` a `string` key, `price` a `decimal`, so it
-arrives as an exact `Decimal` rather than a float — in the same vocabulary the engine's own schemas
-are written in.
+column, passed whole otherwise — where a rule can use it. A vendor's per-security analytics file is the
+usual shape: declared here, joined onto the universe by an assembly step, then dropped so it is not
+carried into every bundle for nothing. Because the engine cannot type an extra frame from a schema, the
+loader has to be told: `dtypes` names each column's kind — `security_id` a `string` key, a score a
+`decimal` so it arrives as an exact `Decimal` rather than a float — in the same vocabulary the engine's
+own schemas are written in.
 
 Once the portfolio list is known, **every dataset loader starts at once**, called with a `LoadRequest`
 carrying the dataset name, portfolio ids, `as_of_date`, the data root, the run id, and a rate limiter. An
@@ -192,7 +190,7 @@ between the two kinds of source. `holdings` asks for `1`: a call per account, fo
 answers one at a time. `details` asks for `2`: the engine hands its loader two ids per call, for a
 backend that takes a list — one call on this two-account book, two hundred and fifty on a book of five
 hundred, and the number to tune when a source has a maximum request size or charges per call.
-`universe`, `targets`, `prices`, and `sector_bounds` are book-wide by nature, so those four are
+`universe`, `targets`, `constraints`, and `sector_bounds` are book-wide by nature, so those four are
 global.
 
 Making `holdings` per-account has a consequence worth understanding before you copy it, because
@@ -251,9 +249,9 @@ The keys of a bound (`requests_per_second`, `burst`, `max_in_flight`) and their 
 
 ```json
 "assembly": [
-  {"name": "join", "params": {"into": "universe", "source": "prices", "on": ["security_id"],
+  {"name": "join", "params": {"into": "universe", "source": "analytics", "on": ["security_id"],
                               "cardinality": "one_to_one", "require_all_matched": true}},
-  {"name": "drop", "params": {"datasets": ["prices"]}}
+  {"name": "drop", "params": {"datasets": ["analytics"]}}
 ]
 ```
 
@@ -262,16 +260,18 @@ steps like `rules` — the same convention, applied once per run to all the data
 portfolio to one bundle. Each step is a function `(frames: Frames[, params]) -> Frames` that sees every
 loaded dataset by name and returns the new set; the shipped ones live in `assembly.py`, and a desk's
 own live in its package. The list runs after every loader has returned and before the engine-known
-frames are validated against their schemas, which is what lets a step *supply* a required column, as
-the example's join supplies `price`.
+frames are validated against their schemas, which is what lets a step *supply* a required column that
+no single loader produced.
 
-The four shipped steps are the shapes that recur: `join` brings columns from one dataset into another,
-`union` stacks datasets with the same meaning into one, `select` trims and renames, `drop` discards.
-Read the example's join as a set of claims about the data, each of which the engine checks:
+The example configures none: each of its datasets arrives in the shape the engine wants. The snippet
+above is the shape most real lists take, and the four shipped steps are the shapes that recur: `join`
+brings columns from one dataset into another, `union` stacks datasets with the same meaning into one,
+`select` trims and renames, `drop` discards. Read that join as a set of claims about the data, each of
+which the engine checks:
 
 - `cardinality: one_to_one` claims each security appears once on both sides; pandas enforces it, so a
-  duplicated price row aborts the run instead of silently doubling a universe row.
-- `require_all_matched: true` claims every universe security has a price; an unmatched key is reported
+  duplicated analytics row aborts the run instead of silently doubling a universe row.
+- `require_all_matched: true` claims every universe security has a row; an unmatched key is reported
   by example and the run is rejected.
 - A brought column that the target already has is refused unless `overwrite` is set, so a stale
   column is never silently replaced — or silently kept.
@@ -279,9 +279,9 @@ Read the example's join as a set of claims about the data, each of which the eng
 The key columns' dtypes are aligned to the target before merging so a `str` key never joins to a
 `string` key as `object` and matches nothing. The `drop` afterwards is a courtesy to memory: any dataset
 still present after the last step is carried into every portfolio's bundle, which is exactly right for
-a per-portfolio exclusion list a rule will read, and wasteful for a price file that has done its job.
+a per-portfolio exclusion list a rule will read, and wasteful for a vendor file that has done its job.
 
-Most real assembly lists are longer than the example's and mostly about one thing: attaching
+Most real assembly lists are mostly about one thing: attaching
 per-security analytics to `holdings` and `universe`. Both tables accept any columns beyond their
 schemas, and the two are later stacked into a single optimizer frame, so a column attached to both must
 have the same dtype on both — the bundle refuses otherwise, naming the column.

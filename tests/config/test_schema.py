@@ -77,7 +77,7 @@ REJECTED: list[tuple[str, dict[str, object], str]] = [
     ("shipped term with a negative weight", {"objective": {"terms": [{"name": "tracking_error", "params": {"weight": -1}}]}}, "objective/terms/0"),
     ("execution mechanics in the config", {"execution": {"on_error": "fail_fast", "max_workers": 2}}, "execution"),
     ("the removed execution mode", {"execution": {"mode": "sequential"}}, "execution"),
-    ("shipped assembly step missing a required param", {"assembly": [{"name": "join", "params": {"into": "universe", "source": "prices", "on": ["security_id"]}}]}, "assembly/0"),
+    ("shipped assembly step missing a required param", {"assembly": [{"name": "join", "params": {"into": "universe", "source": "analytics", "on": ["security_id"]}}]}, "assembly/0"),
     ("engine frame neither loaded nor assembled", {"datasets": {name: {"loader": "csv"} for name in ("holdings", "universe", "details", "constraints")}, "assembly": []}, "datasets"),
 ]
 

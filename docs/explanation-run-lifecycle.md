@@ -107,8 +107,8 @@ fan-out pattern with files in place of a client. Every dataset is a frame, so ev
 shape.
 
 `assemble` runs the config's **assembly steps** in order. Each is a function `Frames → Frames` over
-every loaded dataset by name; the example's first step joins the `prices` dataset into `universe` and
-its second drops `prices`. The shipped `join` is defensive: key dtypes are aligned so a `str` key never
+every loaded dataset by name — a vendor's analytics joined into `universe`, then dropped once it has
+done its job. The shipped `join` is defensive: key dtypes are aligned so a `str` key never
 silently joins to a `string` key as `object`; a brought column the target already has is refused unless
 `overwrite` is set; the declared cardinality is enforced by pandas' `merge(validate=...)`; and
 `require_all_matched` uses the merge indicator to report unmatched keys by example. A custom step gets
@@ -389,10 +389,9 @@ solve → orders. "Did the data change, or did the solver?" is a one-command que
 ## The example, stage by stage
 
 `configs/example_run.json` declares two portfolios over three securities, four global datasets and two
-loaded per account (`holdings` and `details`, one call and one file per portfolio), a `prices` dataset
-joined into the universe by an assembly step and dropped by the next, three rules, three terms
-(tracking error, tax cost, transaction cost), six constraints, the Clarabel solver, and `fail_fast`;
-how many workers the run has is the `PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting.
+loaded per account (`holdings` and `details`, one call and one file per portfolio), no assembly steps,
+three rules, three terms (tracking error, tax cost, transaction cost), six constraints, the Clarabel
+solver, and `fail_fast`; how many workers the run has is the `PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting.
 
 P1 and P2 each hold $500,000 of A and $500,000 of B (5,000 A at 100, 10,000 B at 50) against an
 equal-weight target. A and B are `TECH`, C is `HEALTH`, and the style's sector bands — `TECH` in
