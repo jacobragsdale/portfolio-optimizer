@@ -60,11 +60,8 @@ def _undocumented(node: object, path: str) -> Iterator[str]:
             yield from _undocumented(definition, f"{path}/$defs/{name}")
 
 
-def test_example_validates_against_the_schema_and_points_at_it(validator: Validator) -> None:
-    instance = example_body()
-    assert errors(validator, instance) == []
-    assert instance["$schema"] == "./run-config.schema.json"
-    assert load_run_config(json.dumps(instance)).schema_ref == "./run-config.schema.json"
+def test_the_example_validates_against_the_schema(validator: Validator) -> None:
+    assert errors(validator, example_body()) == []
 
 
 REJECTED: list[tuple[str, dict[str, object], str]] = [
@@ -119,10 +116,12 @@ def test_schema_file_is_valid_json_with_sorted_keys() -> None:
     assert json.dumps(json.loads(text), indent=2, sort_keys=True, ensure_ascii=False) + "\n" == text
 
 
-def test_schema_ref_does_not_change_the_config_hash() -> None:
-    with_pointer = load_run_config(json.dumps(example_body()))
-    without_pointer = load_run_config(json.dumps({key: value for key, value in example_body().items() if key != "$schema"}))
-    assert config_sha256(with_pointer) == config_sha256(without_pointer)
+def test_a_schema_pointer_is_accepted_and_does_not_change_the_config_hash(validator: Validator) -> None:
+    """The example does not carry one, but a config may: it is what gives an editor live validation."""
+    pointed = example_body() | {"$schema": "./run-config.schema.json"}
+    assert errors(validator, pointed) == []
+    assert load_run_config(json.dumps(pointed)).schema_ref == "./run-config.schema.json"
+    assert config_sha256(load_run_config(json.dumps(pointed))) == config_sha256(load_run_config(json.dumps(example_body())))
     assert Path(EXAMPLE_CONFIG).exists()
 
 

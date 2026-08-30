@@ -1,5 +1,4 @@
 {
-  "$schema": "./run-config.schema.json",
   "run": {"name": "example_rebalance", "as_of_date": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}},
   "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}},
   "datasets": {

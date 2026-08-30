@@ -14,7 +14,6 @@ version. Read it when you have a config in front of you and want it to make sens
 
 | Block | What it tells the engine | When the engine consumes it |
 |---|---|---|
-| [`$schema`](#schema) | Nothing — it points your editor at the generated schema | Never; excluded from the config hash |
 | [`run`](#run) | The run's name and tags, and the instant it is *as of* | `as_of_date` at load and at build (tax-lot terms) |
 | [`portfolios`](#portfolios) | How to load the list of portfolio ids and their priorities | First, alone, before any other loader |
 | [`datasets`](#datasets) | How to load every other input, engine-known or extra, and how its calls are partitioned | All at once, after the portfolio list |
@@ -70,17 +69,6 @@ A bare name is looked up in the template module for that kind of step — `loade
 such as `mypkg.rules:my_rule` is imported from anywhere the engine (and any worker process) can
 import. Because the resolver reads the function's `params` annotation, the JSON Schema knows the exact
 parameter shape of every shipped step and rejects a typo before the engine ever runs.
-
-## `$schema`
-
-```json
-"$schema": "./run-config.schema.json"
-```
-
-This is for your editor, not the engine. Editors that honor `$schema` validate the file as you type
-and complete key names and step names from the generated schema. The engine accepts the key and
-ignores it, and the config hash recorded in the manifest excludes it, so adding or removing the
-pointer never makes two runs look different.
 
 ## `run`
 

@@ -17,8 +17,6 @@ The quickest way to see what the engine does is to read the run it ships with,
 // The run that ships with the template, annotated. The real file is strict JSON with no comments —
 // these lines are stripped and the rest is compared against it by a test, so this copy cannot drift.
 {
-  "$schema": "./run-config.schema.json",
-
   // Identity. `name` and `tags` are recorded in the manifest and used for nothing else. `as_of_date`
   // is the one field here that changes results: every loader receives it, and it decides whether each
   // tax lot is long- or short-term. It must carry a zone.
@@ -113,8 +111,6 @@ Most values are *steps*: a function named either by a bare name, looked up in th
 that kind of step, or by `package.module:function`, with optional `params` (see
 [the one convention](#the-one-convention)). Top to bottom:
 
-- **`$schema`** — for your editor, not the engine: live validation and completion of key and step names
-  from the generated schema. The engine ignores it.
 - **`run`** — the run's identity. `name` and `tags` go into the manifest; `as_of_date` is the timezone-aware
   instant the run is *as of* — every loader receives it, and it decides whether each tax lot is long- or
   short-term.
@@ -203,9 +199,10 @@ signature, validates its `params` against the function's own model, and records 
 run manifest. Loaders, assembly steps, solve-order steps, objective terms, constraints, solve steps, and
 sinks follow the same rule.
 
-Run configs are validated three ways: live in your editor through `"$schema": "./run-config.schema.json"`,
-by `portfolio-optimizer validate-config` (which also imports and checks every step), and by any JSON Schema
-validator against [`configs/run-config.schema.json`](configs/run-config.schema.json).
+Run configs are validated by `portfolio-optimizer validate-config`, which imports and checks every step,
+and by any JSON Schema validator against [`configs/run-config.schema.json`](configs/run-config.schema.json).
+Adding `"$schema": "./run-config.schema.json"` to a config gets the same completion and validation live in
+an editor; the engine accepts the key and ignores it.
 
 ## Layout
 
