@@ -28,7 +28,8 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
     root.mkdir()
     portfolio_ids = [f"P{index}" for index in range(1, portfolios + 1)]
     holdings = ["portfolio_id,security_id,quantity,avg_cost,acquired_on"]
-    details = ["portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id"]
+    details_header = "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id"
+    (root / "details").mkdir()
     buy_list = ["portfolio_id,security_id"]
     for portfolio_id in portfolio_ids:
         nav = 0
@@ -36,12 +37,11 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
             quantity = rng.randint(1, 4) * 1000
             holdings.append(f"{portfolio_id},{security},{quantity},{PRICES[security]},2024-01-15T00:00:00Z")
             nav += quantity * PRICES[security]
-        details.append(f"{portfolio_id},{portfolio_id} book,NY,0.40,0.20,0,{nav},B1")
+        (root / "details" / f"{portfolio_id}.csv").write_text(f"{details_header}\n{portfolio_id},{portfolio_id} book,NY,0.40,0.20,0,{nav},B1\n")
         buy_list.extend(f"{portfolio_id},{security}" for security in sorted(rng.sample(SECURITIES, k=rng.randint(1, 3))))
     style = {**json.loads((EXAMPLE_DATA / "constraints.json").read_text())["P1"], "sector_bounds": {}}  # one sector, no bounds: the schedule is what this test is about
     (root / "portfolios.csv").write_text("\n".join(["portfolio_id,solve_order", *(f"{portfolio_id},{rng.randint(0, 1)}" for portfolio_id in portfolio_ids)]) + "\n")
     (root / "holdings.csv").write_text("\n".join(holdings) + "\n")
-    (root / "details.csv").write_text("\n".join(details) + "\n")
     (root / "buy_list.csv").write_text("\n".join(buy_list) + "\n")
     (root / "universe.csv").write_text("\n".join(["security_id,sector,adv_shares,lot_size,restricted", *(f"{security},TECH,20000,1,false" for security in SECURITIES)]) + "\n")
     (root / "prices.csv").write_text("\n".join(["security_id,price", *(f"{security},{PRICES[security]}" for security in SECURITIES)]) + "\n")

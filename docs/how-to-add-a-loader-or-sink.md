@@ -78,7 +78,9 @@ async def holdings_from_api(request: LoadRequest, params: ApiParams) -> pd.DataF
 ```
 
 `fan_out` starts every call at once and lets the limiter decide when each one runs; results come back
-in portfolio order, and one failure cancels the rest and surfaces as an `ExceptionGroup`. From a plain
+in portfolio order, and one failure cancels the rest and surfaces as an `ExceptionGroup` — which the
+engine unwraps when it holds a single failure, so the log and the manifest record that error's own
+type and message rather than the group's. From a plain
 loader, wrap each call in `with request.rate_limiter.sync:` instead — it draws from the same pool. The
 shipped `csv_per_portfolio` is this pattern with files in place of a client; copy its shape.
 
@@ -92,6 +94,10 @@ whole stage overlaps the global loaders:
 ```json
 "holdings": {"loader": "holdings_from_api", "scope": "per_portfolio", "batch_size": 1, "rate_limit": "vendor_api"}
 ```
+
+The shipped example is this arrangement in miniature: `examples/data/details/` holds one CSV per
+account and `configs/example_run.json` loads that dataset with `csv_per_portfolio`, `per_portfolio`,
+and `batch_size: 1`, while its five other datasets stay global.
 
 `scope: "per_portfolio"` says the ids are the engine's to cut up; `batch_size` says how finely. `1` is
 a call per portfolio, a larger number suits a source that takes an id list, and omitting it puts the

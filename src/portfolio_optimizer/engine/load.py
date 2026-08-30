@@ -221,15 +221,15 @@ async def _load_dataset(
     for result in results:
         if isinstance(result, BaseException) and not isinstance(result, Exception):
             raise result  # cancellation and the like are the caller's, not a dataset's failure to report
-    errors = [(ids, result) for ids, result in zip(batches, results, strict=True) if isinstance(result, Exception)]
+    errors = [(ids, _unwrap(result)) for ids, result in zip(batches, results, strict=True) if isinstance(result, Exception)]
     good = [result for result in results if not isinstance(result, BaseException)]
     if errors and (dataset.scope == "global" or not good):
         first = errors[0][1]
-        log.error("dataset %r failed after %.2fs: %s: %s", name, time.perf_counter() - started, type(first).__name__, first, extra={"run_id": run_id, "stage": "load"})
+        log.error("dataset %r failed after %.2fs: %s: %s", name, time.perf_counter() - started, type(first).__name__, _describe(first), extra={"run_id": run_id, "stage": "load"})
         return _Failed(name, first)
     rejected = {portfolio_id: _load_failure(portfolio_id, name, error) for ids, error in errors for portfolio_id in ids}
     for ids, error in errors:
-        log.error("dataset %r: batch of %d portfolio(s) failed: %s: %s", name, len(ids), type(error).__name__, error, extra={"run_id": run_id, "stage": "load"})
+        log.error("dataset %r: batch of %d portfolio(s) failed: %s: %s", name, len(ids), type(error).__name__, _describe(error), extra={"run_id": run_id, "stage": "load"})
     elapsed = time.perf_counter() - started
     per_portfolio = dataset.scope == "per_portfolio"
     if name == "constraints":
@@ -284,7 +284,36 @@ def _as_constraints(batch: _BatchResult) -> Mapping[str, Mapping[str, object]]:
 
 def _load_failure(portfolio_id: PortfolioId, dataset: str, error: Exception) -> PortfolioFailure:
     """A portfolio whose batch of ``dataset`` did not come back; it never reaches a build."""
-    return PortfolioFailure(portfolio_id=portfolio_id, stage="load", error_type=type(error).__name__, message=f"dataset {dataset!r} did not load for this portfolio: {error}")
+    return PortfolioFailure(portfolio_id=portfolio_id, stage="load", error_type=type(error).__name__, message=f"dataset {dataset!r} did not load for this portfolio: {_describe(error)}")
+
+
+def _leaves(error: BaseException) -> tuple[BaseException, ...]:
+    """Every real failure inside a possibly nested exception group; the error itself when it is not one."""
+    if isinstance(error, BaseExceptionGroup):
+        return tuple(leaf for inner in error.exceptions for leaf in _leaves(inner))
+    return (error,)
+
+
+def _unwrap(error: Exception) -> Exception:
+    """The one failure a loader's exception group wraps, or the group itself when it holds more than one.
+
+    A loader that fans out privately runs its calls in a ``TaskGroup`` — :func:`~portfolio_optimizer.ratelimit.fan_out`
+    does — and the first failure cancels the others, so what reaches the engine is almost always a single
+    real error inside a group. Unwrapping keeps the type the exit code is chosen from and the message that
+    names the missing file, instead of the group's ``unhandled errors in a TaskGroup``.
+    """
+    leaves = _leaves(error)
+    if len(leaves) == 1 and isinstance(leaves[0], Exception):
+        return leaves[0]
+    return error
+
+
+def _describe(error: Exception) -> str:
+    """How a failure reads in a message: a group with several failures spells them out, anything else prints itself."""
+    leaves = _leaves(error)
+    if len(leaves) == 1:
+        return str(error)
+    return "; ".join(f"{type(leaf).__name__}: {leaf}" for leaf in leaves)
 
 
 def _raise_load_failures(failures: list[_Failed]) -> None:
@@ -292,7 +321,7 @@ def _raise_load_failures(failures: list[_Failed]) -> None:
     hard = [failure for failure in failures if not isinstance(failure.error, ValueError | KeyError)]
     if hard:
         raise hard[0].error
-    raise LoadError("; ".join(f"{failure.name}: {failure.error}" for failure in failures))
+    raise LoadError("; ".join(f"{failure.name}: {_describe(failure.error)}" for failure in failures))
 
 
 async def _load_frame(step: ResolvedStep, request: LoadRequest) -> pd.DataFrame:

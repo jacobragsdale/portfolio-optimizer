@@ -128,7 +128,8 @@ of reading this column.
 "datasets": {
   "holdings":    {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}},
   "universe":    {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
-  "details":     {"loader": {"name": "csv", "params": {"path": "details.csv"}}},
+  "details":     {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
+                  "scope": "per_portfolio", "batch_size": 1},
   "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
   "targets":     {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
   "prices":      {"loader": {"name": "csv", "params": {"path": "prices.csv", "decimal_columns": ["price"]}}}
@@ -169,29 +170,48 @@ driver cannot stall the others. Each loaded frame is recorded in the manifest wi
 hash, row count, and an order-insensitive content hash, which is what lets `diff-manifests` say "the
 data changed" rather than "something changed".
 
-**How many times each loader is called is `scope`.** A `global` dataset — the default, and every
-dataset above — is one call for the whole book, and is what the assembly steps see. A `per_portfolio`
-dataset is the engine's fan-out: the ids are cut into batches of `batch_size` and the loader is called
-once per batch, sharing the dataset's one rate limiter. That is the arrangement for a source that
-answers one account at a time, and it buys three things a loader that fans out privately cannot give
-you — the batches are visible in the manifest, they overlap the global loaders, and a failure is
-isolated. The cost is that assembly, which runs over whole datasets, never sees such a dataset; attach
-its columns in a rule instead.
+**How many times each loader is called is `scope`.** A `global` dataset — the default, so every entry
+above that says nothing about scope — is one call for the whole book, and is what the assembly steps
+see. A `per_portfolio` dataset is the engine's fan-out: the ids are cut into batches of `batch_size`
+and the loader is called once per batch, sharing the dataset's one rate limiter. That is the
+arrangement for a source that answers one account at a time, and it buys three things a loader that
+fans out privately cannot give you — the batches are visible in the manifest, they overlap the global
+loaders, and a failure is isolated. The cost is that assembly, which runs over whole datasets, never
+sees such a dataset; attach its columns in a rule instead.
+
+The example is deliberately mixed, because a real book is. `details` — the account master: NAV, cash,
+tax rates, benchmark — is `per_portfolio` with `batch_size: 1`, which is one call per account, the
+shape an account master or a custodian actually has. The other five are global: `universe`, `targets`,
+and `prices` are book-wide by nature, `constraints` arrives as one document, and `holdings` stays
+global because it is one of the two tables assembly attaches security analytics to. Watch the split in
+the run's log —
+
+```text
+dataset 'universe' loaded: 3 row(s) in 1 batch(es), 0.01s
+dataset 'details' loaded: 2 row(s) in 2 batch(es), 0.02s
+```
+
+— and in the manifest, where each dataset's audit records its `batches` and how many portfolios it
+`rejected`.
 
 **A structural problem rejects the run; a coverage problem fails a portfolio.** A required dataset
 missing, a schema violated, a global loader that raised, or a per-portfolio dataset no batch of which
 came back — the run stops, because nothing can be built. One batch that raised, or a portfolio with no
 `details` row or no `constraints` entry — that portfolio alone is recorded as failed at stage `load`
-and the rest of the book runs. A portfolio rejected here never entered the run, so it traded nothing
-and couples to nobody in the schedule. Loading failures are otherwise collected rather than raced: one
-failing dataset does not cancel the others, and all of them are reported together.
+and the rest of the book runs. In the example that is the difference between deleting
+`examples/data/universe.csv`, which stops the run, and deleting `examples/data/details/P2.csv`, after
+which P1 still solves and P2 alone is reported as failed at `load`. A portfolio rejected here never
+entered the run, so it traded nothing and couples to nobody in the schedule. Loading failures are
+otherwise collected rather than raced: one failing dataset does not cancel the others, and all of them
+are reported together.
 
 The shipped loaders show the two shapes a source can take. `csv` and `parquet` read one file for the
-whole dataset. `csv_per_portfolio` reads `<directory>/<portfolio_id>.csv` for every id in the request,
-concurrently, under the dataset's rate limiter — the shape of a loader for an API that answers one
-portfolio per call, with a file read standing in for the HTTP request. It works under either scope: as
-a `global` dataset it owns its fan-out, and with `"scope": "per_portfolio", "batch_size": 1` the engine
-owns it and each call reads one file.
+whole dataset — `examples/data/universe.csv` and its neighbours. `csv_per_portfolio` reads
+`<directory>/<portfolio_id>.csv` for every id in the request, concurrently, under the dataset's rate
+limiter — the shape of a loader for an API that answers one portfolio per call, with a file read
+standing in for the HTTP request, and what `examples/data/details/P1.csv` and `P2.csv` are for. It
+works under either scope: as a `global` dataset it owns its fan-out, and — as the example configures
+it — with `"scope": "per_portfolio", "batch_size": 1` the engine owns it and each call reads one file.
 
 ### `rate_limit` on a dataset, and `rate_limits`
 

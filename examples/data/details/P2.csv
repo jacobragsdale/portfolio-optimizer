@@ -1,3 +1,2 @@
 portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id
-P1,Alpha Growth,NY,0.40,0.20,0,1000000,B1
 P2,Beta Income,CA,0.37,0.20,0,1000000,B1

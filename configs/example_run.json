@@ -5,7 +5,7 @@
   "datasets": {
     "holdings": {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}},
     "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
-    "details": {"loader": {"name": "csv", "params": {"path": "details.csv"}}},
+    "details": {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}}, "scope": "per_portfolio", "batch_size": 1},
     "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
     "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
     "prices": {"loader": {"name": "csv", "params": {"path": "prices.csv", "dtypes": {"security_id": "string"}, "decimal_columns": ["price"]}}}

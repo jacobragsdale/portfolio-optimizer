@@ -387,7 +387,8 @@ solve → orders. "Did the data change, or did the solver?" is a one-command que
 
 ## The example, stage by stage
 
-`configs/example_run.json` declares two portfolios over three securities, a `prices` dataset joined into
+`configs/example_run.json` declares two portfolios over three securities, five global datasets and one
+loaded per account (`details`, one call and one file per portfolio), a `prices` dataset joined into
 the universe by an assembly step and dropped by the next, two rules, three terms (tracking error, tax
 cost, transaction cost), six constraints, the Clarabel solver, and `fail_fast`; how many workers the
 run has is the `PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting.

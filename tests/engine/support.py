@@ -88,12 +88,13 @@ def half_cash_book(tmp_path: Path) -> Path:
     1,250 A, 2,500 B, and 25,000 C (C is capped at 0.25, the rest splits evenly), and P2 — C's budget
     spent by P1 — buys 2,500 A and 5,000 B: ``HALF_CASH_ORDERS_P1`` and ``HALF_CASH_ORDERS_P2``.
     """
-    details = "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id\nP1,Alpha Growth,NY,0.40,0.20,500000,1000000,B1\nP2,Beta Income,CA,0.37,0.20,500000,1000000,B1\n"
+    header = "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id\n"
+    details = {"details/P1.csv": header + "P1,Alpha Growth,NY,0.40,0.20,500000,1000000,B1\n", "details/P2.csv": header + "P2,Beta Income,CA,0.37,0.20,500000,1000000,B1\n"}
     holdings = (
         "portfolio_id,security_id,quantity,avg_cost,acquired_on\n"
         "P1,A,2500,100,2024-01-15T00:00:00Z\nP1,B,5000,50,2024-01-15T00:00:00Z\nP2,A,2500,100,2025-11-01T00:00:00Z\nP2,B,5000,50,2025-11-01T00:00:00Z\n"
     )
-    return example_book(tmp_path, **{"details.csv": details, "holdings.csv": holdings})
+    return example_book(tmp_path, **details, **{"holdings.csv": holdings})
 
 
 SELL_BOOK_ORDERS_P1: Orders = [{"security_id": "A", "side": "SELL", "quantity": 1000}, {"security_id": "B", "side": "SELL", "quantity": 3333}]

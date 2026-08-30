@@ -1,8 +1,10 @@
 """Tier 2: loading, assembly steps with declared cardinality, extras that flow into bundles, and per-portfolio isolation."""
 
 import asyncio
+import shutil
 from dataclasses import replace
 from decimal import Decimal
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -33,6 +35,17 @@ def _with_assembly(*steps: object) -> ResolvedConfig:
     return resolved_example(assembly=list(steps))
 
 
+def _datasets(**overrides: object) -> dict[str, object]:
+    """The example's datasets with entries replaced."""
+    datasets = example_body()["datasets"]
+    assert isinstance(datasets, dict)
+    return {str(name): spec for name, spec in datasets.items()} | overrides
+
+
+GLOBAL_DETAILS: dict[str, object] = {"loader": {"name": "csv", "params": {"path": "details/P1.csv"}}}
+"""The example's per-account details read as one global file: for a test whose fabricated portfolio ids have no file of their own."""
+
+
 def _loaded_with(example_loaded: LoadedDatasets, **frames: object) -> LoadedDatasets:
     return replace(example_loaded, frames={**example_loaded.frames, **frames})  # frames are DataFrames by construction in every caller
 
@@ -40,9 +53,11 @@ def _loaded_with(example_loaded: LoadedDatasets, **frames: object) -> LoadedData
 def test_example_data_loads_in_solve_order_with_audit_records(example_loaded: LoadedDatasets) -> None:
     assert example_loaded.portfolio_ids == ("P1", "P2")
     assert example_loaded.solve_orders == {"P1": 0, "P2": 1}
-    assert set(example_loaded.frames) == {"holdings", "universe", "details", "targets", "prices"}
+    assert set(example_loaded.frames) == {"holdings", "universe", "targets", "prices"}
+    assert set(example_loaded.per_portfolio) == {"details"}, "the example loads details per account, and assembly never sees it"
     audit = {record.name: record for record in example_loaded.audits}
     assert audit["holdings"].rows == 4
+    assert (audit["details"].rows, audit["details"].batches) == (2, 2), "batch_size 1 on a per-account dataset is one call per portfolio"
     assert audit["constraints"].rows == 2
     assert len(audit["prices"].content_sha256) == 64
     assert audit["universe"].loader_qualname == "portfolio_optimizer.loaders:csv"
@@ -55,7 +70,8 @@ def test_assembly_joins_prices_into_universe_drops_them_and_slices_each_portfoli
     assert [audit.qualname for audit in assembled.audits] == ["portfolio_optimizer.assembly:join", "portfolio_optimizer.assembly:drop"]
     assert assembled.audits[0].columns_added == {"universe": ("price",)}
     assert assembled.audits[1].rows_in["prices"] == 3
-    assert assembled.audits[1].rows_out == {"holdings": 4, "universe": 3, "details": 2, "targets": 3}
+    assert assembled.audits[1].rows_out == {"holdings": 4, "universe": 3, "targets": 3}, "the per-account details are merged back in after the steps have run"
+    assert len(assembled.details) == 2
     p1 = slice_portfolio(assembled, PortfolioId("P1"))
     p2 = slice_portfolio(assembled, PortfolioId("P2"))
     assert isinstance(p1, PortfolioData)
@@ -113,7 +129,7 @@ def test_join_refuses_to_overwrite_existing_columns_unless_told_to(example_loade
 
 def test_a_step_naming_an_unknown_dataset_is_told_what_exists(example_loaded: LoadedDatasets) -> None:
     resolved = _with_assembly({"name": "join", "params": {**JOIN_PRICES_PARAMS, "source": "sectors"}})
-    with pytest.raises(AssemblyError, match=r"assembly\[0\] portfolio_optimizer.assembly:join: no dataset 'sectors'; available: \['details', 'holdings', 'prices', 'targets', 'universe'\]"):
+    with pytest.raises(AssemblyError, match=r"assembly\[0\] portfolio_optimizer.assembly:join: no dataset 'sectors'; available: \['holdings', 'prices', 'targets', 'universe'\]"):
         assemble(example_loaded, resolved, run_id="test")
 
 
@@ -240,9 +256,11 @@ def test_an_inline_bound_is_private_to_its_input_while_a_named_pool_is_shared() 
 
 
 def test_the_portfolio_list_input_can_be_bounded_too() -> None:
-    resolved = resolved_example(portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": {"max_in_flight": 1}})
+    resolved = resolved_example(portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": {"max_in_flight": 1}}, datasets=_datasets(details=GLOBAL_DETAILS))
     assert load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test").portfolio_ids == ("portfolios",)
-    resolved = resolved_example(portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": "shared"}, rate_limits={"shared": {"max_in_flight": 1}})
+    resolved = resolved_example(
+        portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": "shared"}, datasets=_datasets(details=GLOBAL_DETAILS), rate_limits={"shared": {"max_in_flight": 1}}
+    )
     assert load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test").portfolio_ids == ("shared",)
 
 
@@ -251,16 +269,13 @@ def test_the_portfolio_list_input_can_be_bounded_too() -> None:
 
 def _sharded(batch_size: int | None, **overrides: object) -> dict[str, object]:
     """The example datasets with ``holdings`` loaded per portfolio by the recording loader."""
-    datasets = example_body()["datasets"]
-    assert isinstance(datasets, dict)
-    named = {str(name): spec for name, spec in datasets.items()}
     holdings: dict[str, object] = {
         "loader": {"name": "tests.steps:recording_csv", "params": {"path": "holdings.csv", "decimal_columns": ["avg_cost"], "utc_datetime_columns": ["acquired_on"], **overrides}},
         "scope": "per_portfolio",
     }
     if batch_size is not None:
         holdings["batch_size"] = batch_size
-    return {**named, "holdings": holdings}
+    return _datasets(holdings=holdings)
 
 
 def test_a_per_portfolio_dataset_is_called_once_per_batch() -> None:
@@ -271,7 +286,7 @@ def test_a_per_portfolio_dataset_is_called_once_per_batch() -> None:
     )
     audit = {record.name: record for record in loaded.audits}["holdings"]
     assert (audit.batches, audit.rejected, audit.rows) == (2, 0, 4), "the batches are concatenated back into one dataset, and the audit records the partition"
-    assert set(loaded.per_portfolio) == {"holdings"} and "holdings" not in loaded.frames, "assembly sees the global datasets only"
+    assert set(loaded.per_portfolio) == {"details", "holdings"} and "holdings" not in loaded.frames, "assembly sees the global datasets only"
 
 
 def test_the_whole_book_goes_in_one_call_when_no_batch_size_is_given() -> None:
@@ -296,6 +311,25 @@ def test_a_per_portfolio_dataset_no_batch_of_which_loads_rejects_the_run() -> No
     steps.BATCHES.clear()
     with pytest.raises(LoadError, match="no data for"):
         load_datasets(resolved_example(datasets=_sharded(1, fails_for=["P1", "P2"])), data_root=EXAMPLE_DATA, run_id="test")
+
+
+def test_a_missing_account_file_is_reported_as_the_error_the_loader_raised(tmp_path: Path) -> None:
+    root = tmp_path / "book"
+    shutil.copytree(EXAMPLE_DATA, root)
+    (root / "details" / "P2.csv").unlink()
+    loaded = load_datasets(resolved_example(), data_root=root, run_id="test")
+    failure = loaded.rejected[P2]
+    assert failure.error_type == "FileNotFoundError", "the group a fan-out loader raises is unwrapped to the one failure inside it"
+    assert "P2.csv" in failure.message and "TaskGroup" not in failure.message
+
+
+def test_a_per_portfolio_source_that_is_down_raises_the_failure_not_the_group(tmp_path: Path) -> None:
+    root = tmp_path / "book"
+    shutil.copytree(EXAMPLE_DATA, root)
+    for portfolio_id in ("P1", "P2"):
+        (root / "details" / f"{portfolio_id}.csv").unlink()
+    with pytest.raises(FileNotFoundError, match=r"\.csv"):
+        load_datasets(resolved_example(), data_root=root, run_id="test")
 
 
 def test_assembly_is_told_why_a_per_portfolio_dataset_is_not_there() -> None:

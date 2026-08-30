@@ -21,7 +21,7 @@ The quickest way to see what the engine does is to read the run it ships with,
   "datasets": {
     "holdings": {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}},
     "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
-    "details": {"loader": {"name": "csv", "params": {"path": "details.csv"}}},
+    "details": {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}}, "scope": "per_portfolio", "batch_size": 1},
     "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
     "targets": {"loader": {"name": "csv", "params": {"path": "targets.csv"}}},
     "prices": {"loader": {"name": "csv", "params": {"path": "prices.csv", "dtypes": {"security_id": "string"}, "decimal_columns": ["price"]}}}
@@ -62,7 +62,12 @@ that kind of step, or by `package.module:function`, with optional `params` (see
   validated against fixed schemas: `holdings`, `universe`, `details`, `targets`, and `constraints` (each
   portfolio's style limits). Any other name — `prices` here — is an extra dataset the engine does not
   interpret: assembly steps see it, and whatever survives assembly reaches each portfolio's rules as
-  `data.extras`. An input from a throttled source adds a `rate_limit`.
+  `data.extras`. Each entry also says how its loader is called. Five of them say nothing and are
+  `global`: one call for the whole book, and the only datasets assembly sees. `details` is
+  `per_portfolio` with `batch_size: 1`, so the engine calls its loader once per account — the shape of
+  an account master, a custodian, or any source that answers one portfolio at a time, and the reason a
+  portfolio whose own inputs are missing fails alone instead of stopping the run. An input from a
+  throttled source adds a `rate_limit`.
 - **`assembly`** — steps that run once over all loaded datasets to make the tables the build expects.
   Here: join prices into the universe, checking every security matched exactly once, then drop the price
   file. This is where per-security analytics get attached to `holdings` and `universe`.

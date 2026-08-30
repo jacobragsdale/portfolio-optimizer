@@ -11,6 +11,10 @@ into one optimizer frame cleanly.
 - The environment is installed (`uv sync --locked`) and the example runs.
 - You know the analytics source: its columns, which column identifies a security, and whether it has
   one row per security (global) or one row per portfolio and security (per-portfolio).
+- The analytics dataset is loaded at the default `"scope": "global"`. Assembly steps run over whole
+  datasets, so a dataset declared `"scope": "per_portfolio"` — like the example's `details` — is not
+  there to join; if yours has to be fetched one account at a time, attach its columns in a
+  [rule](how-to-add-a-rule.md) instead.
 - Two facts about the tables, from [the bundle reference](reference-portfolio-data.md): both `holdings`
   and `universe` accept any columns beyond their schemas, and a column present on both must have the
   same dtype on both, because `PortfolioData.optimizer_frame()` stacks the two tables and refuses a
