@@ -19,7 +19,7 @@ Ways to validate a config:
 | Method | What it checks |
 |---|---|
 | `"$schema": "./run-config.schema.json"` at the top of the file | Live validation and completion in editors that honor `$schema` (VS Code, JetBrains). The key is accepted and ignored by the engine. |
-| `uv run portfolio-optimizer validate-config CONFIG` | Everything: the models, plus importing every step, checking signatures, and validating params (including custom steps). Prints how dependencies between portfolios will be derived. |
+| `uv run portfolio-optimizer validate-config CONFIG` | Everything: the models, plus importing every step, checking signatures, validating params (including custom steps), checking the solver, and constructing every term and constraint once under the run's side profile. Prints how dependencies between portfolios will be derived, then one line per resolved step. The same resolution runs at the start of `run` and on every worker. |
 | Any draft 2020-12 validator (`check-jsonschema`, `jsonschema`, `ajv`) against the schema file | The schema alone — suitable for CI pipelines that do not install the engine. |
 
 The schema cannot express one rule the models enforce: `as_of` must carry a time zone.
@@ -36,12 +36,12 @@ The schema cannot express one rule the models enforce: `as_of` must carry a time
 | `assembly` | step list | no | Assembly steps, run in order over every loaded dataset before schema validation. Default `[]`. See below. |
 | `rules` | step list | no | Business-logic rules, run in order on each portfolio's bundle; they never see other portfolios. Default `[]`. |
 | `solve_order` | step | no | A solve-order step evaluated on each ruled bundle; its `Decimal` key replaces the `solve_order` column. Lower solves first. |
-| `sides` | string | no | Which side the run trades: `both` (default), `buy`, or `sell`. Selects the side profile that supplies the decision variables, the trade identity, the tradable set, and the chain. `both`: `w`, `buy`, `sell` all variables, coupling through buys. `buy`: `w` alone with `w ≥ w0`, `buy = w − w0`, no `sell`; coupling through buys. `sell`: `w` alone with `w ≤ w0`, `sell = w0 − w`, no `buy`; coupling through sells. A term or constraint reading a side the run lacks is refused at `validate-config`. |
+| `sides` | `both` \| `buy` \| `sell` | no | Which side the run trades; default `both`. `both`: `w`, `buy`, `sell` all variables, `w = w0 + buy − sell`, coupling through buys. `buy`: `w` alone with `w ≥ w0`, `buy = w − w0`, no `sell`; coupling through buys. `sell`: `w` alone with `w ≤ w0`, `sell = w0 − w`, no `buy`; coupling through sells. A term or constraint reading a side the run lacks is refused at `validate-config`. See [how to run one side](how-to-run-one-side.md). |
 | `objective` | object | yes | `sense` (only `minimize`), `terms` (step list, at least one). |
 | `constraints` | constraint list | no | Constraints. Default `[]`. Each is a step (bare name or `{"name", "params"}`) with two optional keys: `kind` (`function`, the only kind today) and `label` (unique among the run's constraints; defaults to the bare name; the verifier's report and the manifest key on it). The trade identity is not a constraint; `sides` supplies it, and `trade_balance` is refused by name. |
 | `solve` | step | no | The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`. Default `cvxpy`. A qualified name plugs in a firm's library or a pure function; see [how to replace the cvxpy solve](how-to-write-a-solve-step.md). |
 | `solver` | object | no | `name` (default `CLARABEL`; one of `CLARABEL`, `OSQP`, `SCS`, `HIGHS`, `PIQP`, and installed — checked when the config resolves, on the client and on every worker), `options` (map of solver options passed verbatim to `Problem.solve`, default `{}`), `time_limit_s` (number > 0 or absent; mapped to `time_limit` for `CLARABEL`, `OSQP`, and `HIGHS` and to `time_limit_secs` for `SCS`; `PIQP` rejects it at resolve), `verbose` (default `false`). |
-| `post_solve` | object | no | `violation_tol` (default `1e-6`), `objective_rel_tol` (`1e-5`), `objective_abs_tol` (`1e-9`); all > 0. |
+| `post_solve` | object | no | `violation_tol` (default `1e-6`; the one tolerance every residual is held to, identity checks and constraints alike), `objective_rel_tol` (`1e-5`), `objective_abs_tol` (`1e-9`); all > 0. |
 | `sink` | step | yes | Where orders go. |
 | `execution` | object | no | See below. Which cluster the run provisions and how many workers it has are settings, not config. |
 
@@ -55,7 +55,7 @@ A step is either a bare string or an object:
 ```
 
 `name` is a bare identifier resolved in the template module for its kind (`loaders.py`, `assembly.py`,
-`rules.py`, `solve_order.py`, `terms.py`, `sinks.py`), or a qualified `package.module:function`. `params` (default `{}`) is validated
+`rules.py`, `solve_order.py`, `terms.py`, `solvers.py`, `sinks.py`), or a qualified `package.module:function`. `params` (default `{}`) is validated
 against the function's `params` annotation; a function without a `params` argument rejects any params.
 
 | Kind | Signature |
@@ -67,11 +67,13 @@ against the function's `params` annotation; a function without a `params` argume
 | solve-order step | `(data: PortfolioData[, params]) -> Decimal` — finite; lower solves first |
 | objective term | `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ObjectiveTerm` |
 | constraint | `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ConstraintSet` |
+| solve step | `(request: SolveRequest[, params]) -> SolveResult` |
 | sink | `(orders: pd.DataFrame, io: IoContext[, params]) -> tuple[Artifact, ...]` |
 
 Optional arguments are recognized by name and must carry exactly the annotation shown. Only loaders may
 be `async def`; every other kind runs synchronously. Declaring `chain` on a term or constraint is what
-makes a portfolio wait for higher-priority portfolios that can buy a security it can buy too.
+makes a portfolio wait for higher-priority portfolios that can trade a security it can trade too, on the
+side the run couples through (buys under `both` and `buy`, sells under `sell`).
 
 ## Rate limits
 
@@ -151,7 +153,7 @@ Unmatched rows of a Decimal (`object`) column are `None`.
 | Key | Type | Required | Description |
 |---|---|---|---|
 | `on_error` | `fail_fast` \| `continue` | no | Default `fail_fast`: every lower-priority portfolio is recorded `skipped` after the first failure. `continue`: only the portfolios that depended on the failure are skipped, naming it. |
-| `dependencies` | `overlap` \| `all` | no | Default `overlap`: a portfolio waits for every higher-priority portfolio whose buyable securities overlap its own. `all`: every higher-priority portfolio is a predecessor — the same answer, one line, for diagnosis. |
+| `dependencies` | `overlap` \| `all` | no | Default `overlap`: a portfolio waits for every higher-priority portfolio whose tradable set — the securities it can trade on the side the run couples through: buyable (`ub > w0`) under `both` and `buy`, sellable (held, `lb < w0`) under `sell` — overlaps its own. `all`: every higher-priority portfolio is a predecessor — the same answer, one line, for diagnosis. |
 
 There is no execution mode. Every portfolio builds in a worker at once; solves are submitted with their
 predecessors' contributions as dependencies and run where the build lives; outcomes are classified in
@@ -171,7 +173,7 @@ their schema. Assembly steps: `join`, `union`, `select`, `drop` (parameters abov
 Solve-order steps: `furthest_from_target_first`. Terms: `tracking_error`, `alpha` (`column`), `tax_cost`,
 `transaction_cost` (`cost_bps`), each with `weight` (default `"1"`). Constraints:
 `long_only`, `max_weight`, `cash_bounds`, `sector_bounds` (`tolerance`), `turnover_cap`,
-`cumulative_adv_participation` (`chain`: `buy + sell ≤ adv_capacity` and `buy ≤ adv_capacity − predecessors' buys`).
+`cumulative_adv_participation` (`chain`: `trade ≤ adv_capacity` and `coupled ≤ adv_capacity − predecessors' trades on the side the run couples through`).
 Solve steps: `cvxpy` (default), `pro_rata_fill`. Sinks: `orders_to_parquet`, `orders_to_csv` (`subdir`, default `orders`).
 
 ## Style constraints (the `constraints` dataset)
@@ -186,7 +188,6 @@ Per portfolio id, an object validated into `StyleConstraints`:
 | `cash_bounds` | `[low, high]`, 0 ≤ low ≤ high ≤ 1 | Bounds on `1 − Σw`; `["0", "0"]` is full investment. |
 | `max_adv_participation` | decimal in [0, 1] | Fraction of each name's ADV the portfolio may trade. |
 | `sector_bounds` | map of sector → `[low, high]` | Default `{}`; every sector must exist in the universe. |
-| `long_only` | `true` | Shorting is a non-goal of the template. |
 
 ## Environment
 
@@ -198,7 +199,7 @@ All required unless stated; no defaults; an unknown `PORTFOLIO_OPTIMIZER_*` vari
 | `PORTFOLIO_OPTIMIZER_OUTPUT_DIR` | path | Where `<run_id>/` directories are written. |
 | `PORTFOLIO_OPTIMIZER_DATA_ROOT` | path | `request.data_root` for the shipped file loaders. |
 | `PORTFOLIO_OPTIMIZER_LOG_LEVEL` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` | |
-| `PORTFOLIO_OPTIMIZER_CLUSTER` | `local` \| `kubernetes` \| `auto` \| `tcp://host:port` | The Dask cluster the run provisions for itself (`local`: worker processes on this machine; `kubernetes`: pods through the Dask operator) or a scheduler to connect to. `auto` becomes `kubernetes` when `KUBERNETES_SERVICE_HOST` is set and `local` otherwise; the manifest records the resolved value. |
+| `PORTFOLIO_OPTIMIZER_CLUSTER` | `local` \| `kubernetes` \| `auto` \| `tcp://host:port` \| `tls://host:port` | The Dask cluster the run provisions for itself (`local`: worker processes on this machine; `kubernetes`: pods through the Dask operator) or a scheduler to connect to. `auto` becomes `kubernetes` when `KUBERNETES_SERVICE_HOST` is set and `local` otherwise; the manifest records the resolved value. |
 | `PORTFOLIO_OPTIMIZER_MIN_WORKERS` | integer ≥ 1, ≤ max | Workers provisioned before the load stage. |
 | `PORTFOLIO_OPTIMIZER_MAX_WORKERS` | integer ≥ 1 | Workers after assembly. Every build and every solve is submitted at once; the scheduler runs what is ready. |
 | `PORTFOLIO_OPTIMIZER_CLUSTER_TIMEOUT_S` | number > 0 | How long to wait, after assembly, for the first worker. |

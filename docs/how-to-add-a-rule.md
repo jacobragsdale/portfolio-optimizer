@@ -68,25 +68,28 @@ uv run --env-file .env portfolio-optimizer validate-config configs/my_run.json
 A typo in the name, a parameter the model does not declare, a wrong annotation, or an unexpected
 argument is reported here, with the function's qualified name and the reason.
 
-## 4. If you want portfolios to solve concurrently, shrink the buy universe
+## 4. If you want portfolios to solve concurrently, shrink the tradable set
 
-Portfolios wait on each other only when they can both *buy* the same security. A rule that takes a name
-out of the buy universe — marking it `restricted` (frozen at its current weight, as `restrict_low_liquidity`
-does) or setting `max_weight` to the current weight — removes every dependency that ran through that
-name, while the position stays sellable. A book where every account holds the same bonds but nobody
-buys them solves as many independent groups once a rule says so; the manifest's `schedule` record
-shows how many. A rule that needs what other portfolios did is not a rule: that dependency belongs in a
-constraint that declares `chain` — see [how to add a term or constraint](how-to-add-a-term.md).
+Portfolios wait on each other only when they can both *trade* the same security on the side the run
+couples through — buys under `sides: both` and `buy`, sells under `sell`. A rule that takes a name out
+of that set removes every dependency that ran through it: marking a name `restricted` freezes it at its
+current weight on both sides (as `restrict_low_liquidity` does); in a run that couples through buys,
+setting its `max_weight` to the current weight takes it out of the buyable set while the position stays
+sellable, and in a sell-only run a per-security `min_weight` at the current weight does the mirror. A
+book where every account holds the same bonds but nobody trades them solves as many independent groups
+once a rule says so; the manifest's `schedule` record shows how many. A rule that needs what other
+portfolios did is not a rule: that dependency belongs in a constraint that declares `chain` — see
+[how to add a term or constraint](how-to-add-a-term.md).
 
 ## 5. Test it
 
-Add a table-driven test to `tests/engine/test_pipeline.py` using the frame builders from
-`tests/conftest.py`: one case at the boundary of the rule, one just past it, the empty input, and one
-normal case. Assert on the returned bundle, not on how it was computed. If the rule is idempotent, say
-so with a Hypothesis property as `test_restrict_low_liquidity_is_idempotent` does.
+Add a table-driven test to `tests/test_rules.py` using the frame builders from `tests/conftest.py`:
+one case at the boundary of the rule, one just past it, the empty input, and one normal case. Assert
+on the returned bundle, not on how it was computed. If the rule is idempotent, say so with a Hypothesis
+property as `test_restrict_low_liquidity_is_idempotent` does.
 
 ```bash
-uv run pytest tests/engine/test_pipeline.py
+uv run pytest tests/test_rules.py
 ```
 
 ## 6. Verify the whole pipeline still passes
@@ -96,6 +99,6 @@ uv run pre-commit run --all-files
 uv run pytest
 ```
 
-The convention test in `tests/test_sinks_settings_extensions.py` resolves every public function in
-`rules.py`; a function that violates the contract fails there with the same message the resolver
-would give at runtime.
+The convention test in `tests/test_conventions.py` resolves every public function in `rules.py`; a
+function that violates the contract fails there with the same message the resolver would give at
+runtime.

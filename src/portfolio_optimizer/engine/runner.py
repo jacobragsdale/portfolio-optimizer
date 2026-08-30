@@ -3,10 +3,10 @@
 Every portfolio builds at once, chain-free. The builds' summaries give the main process each
 portfolio's solve-order key and tradable securities; from those it derives the schedule
 (``engine/schedule.py``) — who solves after whom — and submits every solve with its predecessors'
-contributions as dependencies, so the cluster enforces the order and each solve folds only the buys
-that could affect it. Outcomes are classified in solve order whatever finished first, so the worker
-count and completion order never change a record, and the manifest is written whatever happens. The
-backend (``engine/backends.py``) is started right after config resolution so a cluster warms up under
+contributions as dependencies, so the cluster enforces the order and each solve folds only the trades —
+on the side the run couples through — that could affect it. Outcomes are classified in solve order
+whatever finished first, so the worker count and completion order never change a record, and the
+manifest is written whatever happens. The backend (``engine/backends.py``) is started right after config resolution so a cluster warms up under
 the load stage, scaled and waited on only after assembly, and closed in a ``finally``.
 """
 

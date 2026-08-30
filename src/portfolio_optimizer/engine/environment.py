@@ -1,7 +1,7 @@
 """The environment a task ran in, as a fingerprint the run compares and the manifest records.
 
 Interpreter, numerical libraries, solver, the packages that supplied external steps, the code revision,
-and the container image: on a laptop pool the workers are spawned from the run's own interpreter and
+and the container image: on a local cluster the workers are spawned from the run's own interpreter and
 the fingerprints agree by construction. On a cluster the workers are pods, and a worker running a stale
 image or an older step package is exactly the case the comparison exists to catch — its portfolio fails
 at stage ``worker`` instead of producing an answer the manifest could not explain.

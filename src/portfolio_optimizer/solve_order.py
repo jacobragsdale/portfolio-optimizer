@@ -6,7 +6,8 @@ ruled bundle and returns its **solve-order key**. Lower keys solve first; equal 
 it replaces the portfolios frame's ``solve_order`` column.
 
 Solve order is a priority, not a sequence: a portfolio waits only for higher-priority portfolios
-that can buy a security it can buy too, so the key decides who gets first pick of a shared budget.
+that can trade a security it can trade too, on the side the run couples through, so the key decides
+who gets first pick of a shared budget.
 """
 
 from decimal import Decimal

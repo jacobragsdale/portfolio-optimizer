@@ -181,7 +181,7 @@ class ExecutionConfig(StrictModel):
     )
     dependencies: Dependencies = Field(
         default="overlap",
-        description="`overlap`: a portfolio waits only for higher-priority portfolios that can buy a security it can buy too. `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis.",
+        description="`overlap`: a portfolio waits only for higher-priority portfolios that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `sell`). `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis.",
     )
 
 
@@ -195,7 +195,7 @@ class RunConfig(StrictModel):
     schema_ref: str | None = Field(default=None, alias="$schema", description="Optional pointer to the JSON Schema for editor validation; ignored by the engine.")
     run: RunMeta = Field(description="Run identity.")
     portfolios: DatasetConfig = Field(
-        description='The portfolio list (`portfolio_id`, optional `solve_order`): a bare loader step, or `{"loader": step, "rate_limit": ...}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, and a portfolio waits only for higher-priority portfolios whose buyable securities overlap its own. A `solve_order` step replaces the column.'
+        description='The portfolio list (`portfolio_id`, optional `solve_order`): a bare loader step, or `{"loader": step, "rate_limit": ...}` to bound its source. `solve_order` is a priority: lower solves first, ties break on `portfolio_id`, and a portfolio waits only for higher-priority portfolios whose tradable set — the securities it can trade on the side the run couples through — overlaps its own. A `solve_order` step replaces the column.'
     )
     datasets: dict[str, DatasetConfig] = Field(
         description="Named datasets. `constraints` is always required; `holdings`, `universe`, `details`, and `targets` must be declared here unless an assembly step produces them. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Every dataset loader runs concurrently once the portfolio list is known."
@@ -219,7 +219,7 @@ class RunConfig(StrictModel):
     )
     objective: ObjectiveConfig = Field(description="What the optimizer minimizes.")
     constraints: tuple[ConstraintStep, ...] = Field(
-        default=(), description="Constraints: steps from `terms.py`, each with an optional `label`. The trade identity (`w = w0 + buy - sell`) is not a constraint; `sides` supplies it."
+        default=(), description="Constraints: steps from `terms.py`, each with an optional `label`. The trade identity (`w = w0 + buy - sell` under `both`) is not a constraint; `sides` supplies it."
     )
     solve: StepSpec = Field(
         default_factory=lambda: StepSpec(name="cvxpy"),

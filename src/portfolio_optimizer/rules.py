@@ -4,9 +4,11 @@ A rule is an ordinary function that takes the portfolio's data bundle and return
 Name it in the run config's ``rules`` list and it runs, in order, between loading and the
 optimizer. Declare parameters by annotating a ``params`` argument with a ``Params`` subclass. Rules
 must be pure — same bundle in, same bundle out, no I/O — and they never see other portfolios. A
-rule that shrinks the *buy* universe (marking a name ``restricted``, capping ``max_weight`` at its
-current weight) is what lets the engine solve portfolios concurrently: two portfolios wait on each
-other only when they can both buy the same security.
+rule that shrinks a portfolio's *tradable set* — the securities it can trade on the side the run
+couples through: marking a name ``restricted`` freezes it on both sides, capping ``max_weight`` at
+its current weight takes it out of the buyable set — is what lets the engine solve portfolios
+concurrently: two portfolios wait on each other only when they can both trade the same security on
+that side.
 """
 
 from decimal import Decimal

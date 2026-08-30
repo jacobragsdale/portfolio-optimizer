@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 420" role="img" aria-label="Two lanes. The run's main process: resolve config, start the cluster without blocking, load, assemble, wait for the first worker, share the run data once; then submit every build, gather the build summaries, derive the dependency graph, submit every solve with its predecessors' contributions as dependencies, classify outcomes in solve order as they complete, close the cluster, and persist, publish, and write the manifest. The workers: warm up, receive the shared data once, then build every portfolio at once (slice, rules, solve-order key, spec), summarize it, and later solve it where the build lives: fold the predecessors' buys, solve, verify, round to orders, and hand a contribution to the dependents. The graph derivation is outlined as the one serial step.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 420" role="img" aria-label="Two lanes. The run's main process: resolve config, start the cluster without blocking, load, assemble, wait for the first worker, share the run data once; then submit every build, gather the build summaries, derive the dependency graph, submit every solve with its predecessors' contributions as dependencies, classify outcomes in solve order as they complete, close the cluster, and persist, publish, and write the manifest. The workers: warm up, receive the shared data once, then build every portfolio at once (slice, rules, solve-order key, spec), summarize it, and later solve it where the build lives: fold the predecessors' trades on the side the run couples through, solve, verify, round to orders, and hand a contribution to the dependents. The graph derivation is outlined as the one serial step.">
   <style>
     svg { color: #1a211f; font-family: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
     .accent { stroke: #1f6f78; }
@@ -41,7 +41,7 @@
 
   <!-- row 2: the schedule -->
   <rect class="box" x="32" y="128" width="132" height="44" rx="4" /><text class="label" x="98" y="146">submit every build</text><text class="note" x="98" y="160">all at once, chain-free</text>
-  <rect class="box" x="176" y="128" width="132" height="44" rx="4" /><text class="label" x="242" y="146">gather summaries</text><text class="note" x="242" y="160">key · buyable ids</text>
+  <rect class="box" x="176" y="128" width="132" height="44" rx="4" /><text class="label" x="242" y="146">gather summaries</text><text class="note" x="242" y="160">key · tradable ids</text>
   <rect class="box hot" x="320" y="128" width="132" height="44" rx="4" /><text class="label" x="386" y="146">derive the graph</text><text class="note" x="386" y="160">who waits for whom</text>
   <rect class="box" x="464" y="128" width="148" height="44" rx="4" /><text class="label" x="538" y="146">submit every solve</text><text class="note" x="538" y="160">+ predecessors' contributions</text>
   <rect class="box" x="624" y="128" width="148" height="44" rx="4" /><text class="label" x="698" y="146">classify in solve order</text><text class="note" x="698" y="160">persist as each arrives</text>
@@ -64,10 +64,10 @@
   <rect class="box" x="164" y="276" width="120" height="44" rx="4" /><text class="label" x="224" y="294">keep shared data</text><text class="note" x="224" y="308">replicated on demand</text>
   <rect class="box" x="296" y="276" width="176" height="44" rx="4" /><text class="label" x="384" y="294">build</text><text class="note" x="384" y="308">slice → rules → key → spec</text>
   <rect class="box" x="484" y="276" width="104" height="44" rx="4" /><text class="label" x="536" y="294">summarize</text><text class="note" x="536" y="308">spec stays here</text>
-  <rect class="box" x="600" y="276" width="220" height="44" rx="4" /><text class="label" x="710" y="294">solve, where the build lives</text><text class="note" x="710" y="308">fold predecessors' buys → solve → verify → orders</text>
-  <rect class="box" x="832" y="276" width="120" height="44" rx="4" /><text class="label" x="892" y="294">contribution</text><text class="note" x="892" y="308">BUY rows only</text>
+  <rect class="box" x="600" y="276" width="220" height="44" rx="4" /><text class="label" x="710" y="294">solve, where the build lives</text><text class="note" x="710" y="308">fold predecessors' trades → solve → verify → orders</text>
+  <rect class="box" x="832" y="276" width="120" height="44" rx="4" /><text class="label" x="892" y="294">contribution</text><text class="note" x="892" y="308">coupled-side rows only</text>
   <path class="flow" d="M472,298 L484,298" /><path class="flow" d="M588,298 L600,298" /><path class="flow" d="M820,298 L832,298" />
   <path class="flow" d="M952,298 L980,298 L980,340 L640,340 L640,320" />
   <text class="dim" x="32" y="362">every build at once; a solve starts the moment its last predecessor's contribution exists — the graph, not the main process, is the barrier</text>
-  <text class="dim" x="32" y="384">a portfolio sees only what higher-priority portfolios bought among the securities it can buy; sells never reach anyone</text>
+  <text class="dim" x="32" y="384">a portfolio sees only what higher-priority portfolios traded on the side the run couples through, among the securities it can trade there; the other side reaches no one</text>
 </svg>

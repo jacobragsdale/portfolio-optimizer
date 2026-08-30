@@ -88,8 +88,13 @@ def _signal_tilt(spec: ProblemSpec, sol: Solution, params: Mapping[str, object])
 TERM_TWINS = {**TERM_TWINS, "portfolio_optimizer.terms:signal_tilt": _signal_tilt}
 ```
 
-A constraint twin returns `(name, residual_array)` pairs where a positive residual is a violation. The
-test `test_every_shipped_term_and_constraint_has_a_twin` pins the shipped set; extend it with yours.
+A constraint twin has the signature `(spec, sol, chain, params, profile) -> list[tuple[str, F64]]`
+(`ConstraintTwin` in `engine/check.py`): the spec, the `Solution` in place of `x`, the `ChainState`,
+the params as a mapping, and the side profile that made `x` — `profile.coupled(sol)` is the numpy twin
+of `x.coupled`. It returns `(name, residual_array)` pairs where a positive residual is a violation; the
+verifier reports each under the constraint's label and holds it to `violation_tol`. Register it in
+`CONSTRAINT_TWINS` by qualified name. The test `test_every_shipped_term_and_constraint_has_a_twin` pins
+the shipped set; extend it with yours.
 
 ## 4. If the step needs earlier portfolios' results
 

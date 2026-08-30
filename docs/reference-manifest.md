@@ -15,7 +15,7 @@
 |---|---|---|
 | `run CONFIG` | `--data-root PATH`, `--output PATH`, `--max-workers N` | Load, solve, verify, publish, and write the manifest. Prints the run id, the manifest path, and one line per portfolio. |
 | `validate-config CONFIG` | | Validate and resolve a config without loading data; prints how dependencies will be derived and lists every resolved step with `[external]` and `[chain]` markers. |
-| `verify` | `--manifest PATH --portfolio ID` | Reload the persisted spec, solution, and chain state and recompute every shipped constraint and term in numpy. Never imports cvxpy. |
+| `verify` | `--manifest PATH --portfolio ID` | Reload the persisted spec, solution, and chain state and recompute every shipped constraint and term in numpy, holding every residual to the `check.tolerance` the run used. Reads `sides` from the manifest's resolved config to pick the side profile whose identity checks apply. Never imports cvxpy. |
 | `diff-manifests LEFT RIGHT` | | Print the first stage at which two runs diverge, overall and per portfolio. |
 | `schema` | | Print the JSON Schema for run configs; `> configs/run-config.schema.json` regenerates the checked-in file. |
 
@@ -28,7 +28,7 @@
 | `manifest.json` | The run manifest (below). |
 | `orders/orders.parquet` | Written by the `orders_to_parquet` sink: every solved portfolio's orders, sorted by `(portfolio_id, security_id)`. Absent when no portfolio solved. |
 | `problem_specs/<portfolio_id>.npz` | The `ProblemSpec` as arrays plus JSON metadata; no pickle. |
-| `solutions/<portfolio_id>.npz` | The solver's `w`, `buy`, `sell`, objective, status, and versions. |
+| `solutions/<portfolio_id>.npz` | The solve step's `w` and the profile's `buy`/`sell` split, with the objective (null when the step minimized nothing), status, solver and its version, solve time, iterations, and spec hash. |
 | `chain/<portfolio_id>.npz` | The chain state the solve depended on: `traded_shares`, the shares its predecessors traded on the side the run couples through (bought under `both` and `buy`, sold under `sell`), per security, zero where the portfolio cannot trade the name on that side; the metadata names the predecessors. Chain files written before 2026-08-29 carry the key `bought_shares` and no longer load; their hash is unchanged. |
 
 Files are written to a sibling temp file and renamed, so a crash leaves no partial output.
@@ -65,7 +65,7 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `versions` | `python`, `cvxpy`, `numpy`, `pandas`, `solver`, `solver_version`, `packages`: the installed version of every distribution that supplied a step named outside the template modules (`{"my-firm-quant": "1.4.2"}`; a module no distribution provides is listed under its own name as `unknown`), and `workers[]`: every distinct environment that executed a task (`environment` — interpreter, libraries, solver, step packages, git sha, image digest — with `hosts` and `portfolios`). Normally one entry, equal to the run's own environment. |
 | `config` | `path`, `sha256` of the canonical resolved config, and `resolved` (the full config). |
 | `settings` | Every setting the run used, including the worker counts, with `cluster` resolved. |
-| `terms`, `constraints` | Qualified name and params of every configured step, in order; `verify` uses these. |
+| `terms`, `constraints` | Per configured step, in order: `qualname`, `params` (JSON-safe), and `label` — a term's bare name, a constraint's configured `label` (default its bare name). `verify` uses these, and every check in `check` is reported under its step's label. |
 | `datasets[]` | `name`, `loader_qualname`, `loader_source_sha256`, `params_sha256`, `rows`, `columns`, `content_sha256`, `load_time_s` (wall-clock seconds the loader took). |
 | `assembly[]` | Per assembly step, in order: `qualname`, `source_sha256`, `params_sha256`, `rows_in` and `rows_out` (rows per dataset before and after), `columns_added` (per dataset, the columns the step introduced). |
 | `portfolios[]` | See below. A `sink` failure appears as an extra record with `portfolio_id: "*"`. |
@@ -82,8 +82,8 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `rules[]` | `qualname`, `source_sha256`, `params_sha256`, `rows_in`, `rows_out` per rule; the row counts cover `holdings`, `universe`, `targets`, and every extra dataset in the bundle by name. |
 | `problem_spec_sha256` | Hash of every array and scalar the solver saw. |
 | `chain_inputs_sha256` | Hash of the chain state — the security ids and the shares predecessors traded on the coupled side, never which predecessors — so `overlap` and `all` runs hash alike. |
-| `solve` | `solver`, `solver_version`, `cvxpy_version`, `status`, `iterations`, `objective_value`, `solve_time_s`. |
-| `check` | Tolerances, `max_violation`, `violated`, `objective_gap`, `objective_passed`, `unverified`, `passed`. |
+| `solve` | `solver`, `solver_version`, `status`, `iterations`, `objective_value`, `solve_time_s`. For the `cvxpy` step, the cvxpy solver's name and the version of its distribution; the cvxpy version itself is in `versions.cvxpy`. A solve step that is not cvxpy records its qualified name as `solver` and its package version as `solver_version` unless it named a solver itself, and `objective_value` is `null` when it minimized nothing. |
+| `check` | `tolerance` (the `violation_tol` every residual was held to), `max_violation`, `violated` (check names), `objective_gap`, `objective_passed`, `unverified`, `passed`. |
 | `drift` | `max_weight_error`, `tolerance`, `dropped_orders`, `passed` — the effect of rounding to shares. |
 | `orders` | `count`, `sha256` (content hash excluding `run_id`), `gross_notional`. |
 | `failure_stage`, `error` | For failed portfolios: `slice`, `build`, `solve`, `worker` (the worker died, or its environment fingerprint differed from the run's), `skipped` (the error names the failed predecessor, or the `fail_fast` cut-off), `sink`, or `cluster` (on the `*` record: no worker came up), and the error. |

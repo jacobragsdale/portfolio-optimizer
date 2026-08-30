@@ -1,8 +1,9 @@
 # How to set the solve order
 
-Solve order decides who gets first pick when two portfolios compete for the same buys. It is a
-*priority*, not a sequence: a portfolio waits only for higher-priority portfolios that can buy a
-security it can buy too, and everything else solves concurrently. This guide sets it from the data
+Solve order decides who gets first pick when two portfolios compete for the same trades on the side the
+run couples through — the same buys under `sides: both` or `buy`, the same sells under `sell`. It is a
+*priority*, not a sequence: a portfolio waits only for higher-priority portfolios that can trade a
+security it can trade too, on that side, and everything else solves concurrently. This guide sets it from the data
 with a solve-order step; the alternative is the `solve_order` column of the portfolios frame.
 
 ## 1. Decide what "first" means
@@ -64,7 +65,7 @@ Each portfolio's record in the manifest carries `solve_order` (the key as a stri
 `predecessors` (how many higher-priority portfolios it waited for); the run-level `schedule` record
 says how many independent components the book split into and how long the longest chain of solves
 was. If the critical path is close to the number of portfolios, the priority is not the lever —
-the buy universes are: see [how to add a rule](how-to-add-a-rule.md), step 4.
+the tradable sets are: see [how to add a rule](how-to-add-a-rule.md), step 4.
 
 ## 5. Test it
 

@@ -20,9 +20,11 @@ class StrictModel(BaseModel):
 class Params(StrictModel):
     """Base class for a step's parameter model.
 
-    A rule, loader, term, constraint, or sink declares its parameters by annotating its
-    ``params`` argument with a subclass. The engine validates the JSON ``params`` object
-    against that subclass at config-load time, so a typo fails before any data is loaded.
+    A step of any kind — a loader, assembly step, rule, solve-order step, term, constraint, solve step,
+    or sink, in ``loaders.py``, ``assembly.py``, ``rules.py``, ``solve_order.py``, ``terms.py``,
+    ``solvers.py``, or ``sinks.py`` — declares its parameters by annotating its ``params`` argument with
+    a subclass. The engine validates the JSON ``params`` object against that subclass when the config
+    resolves, so a typo fails before any data is loaded.
     """
 
 

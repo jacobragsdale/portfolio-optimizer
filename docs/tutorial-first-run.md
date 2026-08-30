@@ -43,9 +43,16 @@ You should see `config ok` followed by one line per step. Notice the line
 ```
 
 The `[chain]` marker means this constraint reads what higher-priority portfolios in the run have already
-*bought* — it is why P2, which can buy the same securities as P1, will wait for P1. The line above the
-steps says `dependencies overlap`: a portfolio waits only for portfolios it shares a buyable security
-with.
+*traded* — the example is a two-sided run, which couples through buys, so it is why P2, which can buy the
+same securities as P1, will wait for P1. The line above the steps says `dependencies overlap`: a
+portfolio waits only for portfolios it shares a tradable security with. Notice also the line
+
+```text
+  solve               portfolio_optimizer.solvers:cvxpy
+```
+
+The solve is itself a configured step, and this run uses the default: build a cvxpy problem from the
+terms and constraints and solve it with Clarabel.
 
 ## 4. Run it
 

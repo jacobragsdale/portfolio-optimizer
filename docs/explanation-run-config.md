@@ -16,20 +16,25 @@ The engine reads the config twice, and the split explains most of what follows.
 The **first pass** happens before any data is touched. `config/models.py` parses the JSON strictly —
 an unknown key anywhere is an error, money and weights must be strings so they become exact
 `Decimal`, and `as_of` must carry a time zone. Then `config/resolve.py` takes every *step* in the
-document (the loaders, rules, terms, constraints, and sink), imports the function it names, checks
-that its signature matches the contract for its kind, validates its `params` against the function's
-own `Params` model, and finally checks that the chosen `execution` block is compatible with what those
-functions need. Every failure across the whole document is collected and reported together.
-`portfolio-optimizer validate-config` runs exactly this pass and stops.
+document (the loaders, the assembly steps, the rules, the solve-order step, the terms, the constraints,
+the solve step, and the sink), imports the function it names, checks that its signature matches the
+contract for its kind, and validates its `params` against the function's own `Params` model. It checks
+the `solver` block too — the solver is known to the adapter, installed in this process, and able to
+honor `time_limit_s` — and, once every step has resolved, it constructs every term and constraint once
+against a one-security dummy spec under the run's side profile, so a term that raises or reads a side
+the run lacks is refused here rather than on a worker. Every failure across the whole document is
+collected and reported together. `portfolio-optimizer validate-config` runs exactly this pass and
+stops; `run` runs it before asking for a cluster, and every worker runs it before it does any work, so
+all three apply identical checks.
 
 The **second pass** is the run itself: each block is consumed at the stage that needs it. `run.as_of`
 goes to every loader and to the tax calculation; `assembly` runs once after loading; `rules` run per
-portfolio; `solver` and `post_solve` are read once per solve; `sink` runs once at the end. So the
+portfolio; `solve`, `solver`, and `post_solve` are read once per solve; `sink` runs once at the end. So the
 config is not a script the engine executes top to bottom — it is a description of a pipeline, and the
 order of blocks in the file is for the reader, not the engine.
 
-One shape recurs in seven of the thirteen blocks: a **step**. A step is either a bare string naming a
-function, or an object with `name` and `params`:
+One shape recurs in nine of the sixteen top-level keys: a **step**. A step is either a bare string
+naming a function, or an object with `name` and `params`:
 
 ```json
 "add_zero_alpha"
@@ -37,8 +42,8 @@ function, or an object with `name` and `params`:
 ```
 
 A bare name is looked up in the template module for that kind of step — `loaders.py` for loaders,
-`assembly.py` for assembly steps, `rules.py` for rules, `terms.py` for terms and constraints, `sinks.py`
-for sinks. A qualified name
+`assembly.py` for assembly steps, `rules.py` for rules, `solve_order.py` for the solve-order step,
+`terms.py` for terms and constraints, `solvers.py` for the solve step, `sinks.py` for sinks. A qualified name
 such as `mypkg.rules:my_rule` is imported from anywhere the engine (and any worker process) can
 import. Because the resolver reads the function's `params` annotation, the JSON Schema knows the exact
 parameter shape of every shipped step and rejects a typo before the engine ever runs.
@@ -88,8 +93,9 @@ use the longer form, `{"loader": step, "rate_limit": ...}`, which is the same sh
 
 `solve_order` is a *priority*, not a sequence: lower solves first, ties break on `portfolio_id`, and it
 matters only when a term or constraint is chain-aware — when a later portfolio's problem depends on what
-higher-priority ones already *bought*. A portfolio waits only for higher-priority portfolios that can buy
-a security it can buy too; everything else solves concurrently. In the example, P2 solves after P1 and
+higher-priority ones already *traded* on the side the run couples through. A portfolio waits only for
+higher-priority portfolios that can trade a security it can trade too, on that side; everything else
+solves concurrently. In the example, P2 solves after P1 and
 finds that P1 has consumed the ADV budget for security C. Swap the `solve_order` values in the data and
 P2 gets the budget instead. A [`solve_order` step](#solve_order) computes the key from the data instead
 of reading this column.
@@ -147,40 +153,19 @@ whole dataset. `csv_per_portfolio` reads `<directory>/<portfolio_id>.csv` for ev
 concurrently, under the dataset's rate limiter — the shape of a loader for an API that answers one
 portfolio per call, with a file read standing in for the HTTP request.
 
-### `rate_limit` on a dataset
+### `rate_limit` on a dataset, and `rate_limits`
 
 Every entry in `datasets` (and `portfolios`) accepts an optional `rate_limit`, which the loader
-receives as `request.rate_limiter` and wraps around each call to its backend. It is written one of two
-ways, and the choice is about sharing:
-
-- An **inline bound** — `"rate_limit": {"requests_per_second": 5, "max_in_flight": 2}` — is private
-  to that one dataset. Use it when this source scales differently from every other.
-- A **pool name** — `"rate_limit": "vendor_api"` — refers to an entry in the top-level `rate_limits`.
-  Every dataset naming the same pool draws from one limiter, so two datasets fetched from the same API
-  cannot together exceed its quota.
-
-Omit it and the loader gets an unlimited limiter; the shipped file loaders never wait. The example
-sets none because it reads local files.
-
-## `rate_limits`
-
-The example has no `rate_limits` block, so this section describes what it would say.
-
-```json
-"rate_limits": {"vendor_api": {"requests_per_second": 20, "burst": 20, "max_in_flight": 8}}
-```
-
-A pool is a token bucket plus a concurrency bound. `requests_per_second` is the sustained rate the
-bucket refills at; `burst` is how many requests may go out immediately before that rate applies
-(defaulting to the rate rounded up, so one second's worth); `max_in_flight` caps how many requests are
-outstanding at once regardless of rate. A pool needs at least one of the rate or the in-flight bound;
-`burst` only means something alongside a rate. A dataset naming a pool that is not declared here is a
-config error caught in the first pass.
-
-The reason pools are declared at the top level rather than on the first dataset that needs them is
-that a pool is a property of the *backend*, not of any one input. After loading, the log reports for
-each pool how many requests it admitted and how long loaders spent waiting on it, which is the number
-to look at when a run is slower than expected.
+receives as `request.rate_limiter` and wraps around each call to its backend: either an inline bound
+private to that input, or the name of a pool declared under the top-level `rate_limits` and shared by
+every input that names it. Omit it and the loader never waits; the example sets none because it reads
+local files, and has no `rate_limits` block for the same reason. The choice between the two spellings
+is about sharing — a pool is a property of the *backend*, not of any one input, which is why pools are
+declared at the top level — and the reasoning is in
+[the architecture explanation](explanation-architecture.md#loading-is-the-slow-part-so-it-is-concurrent-and-metered).
+The keys of a bound (`requests_per_second`, `burst`, `max_in_flight`) and their defaults are in
+[the reference](reference-run-config.md#rate-limits); wiring a fan-out loader to one is in
+[how to add a loader](how-to-add-a-loader-or-sink.md#async-loaders-fan-out-and-rate-limits).
 
 ## `assembly`
 
@@ -243,8 +228,9 @@ style's `max_weight` when the style's own is looser.
 
 Ordering is meaningful: a rule sees the output of the one before it. A rule never sees other
 portfolios — it runs in a worker, on one bundle, before anything is solved — and that is what lets
-every portfolio build at once. A rule that shrinks the *buy* universe (freezing a name, capping it at
-its current weight) also shrinks the set of portfolios this one has to wait for; see `execution`.
+every portfolio build at once. A rule that shrinks the portfolio's *tradable set* — freezing a name,
+or, in a run that couples through buys, capping it at its current weight — also shrinks the set of
+portfolios this one has to wait for; see `execution`.
 
 ## `solve_order`
 
@@ -265,24 +251,15 @@ config hash, so two runs with different priorities are visibly different runs.
 "sides": "both"
 ```
 
-Which side the run trades. `both`, the default, is the two-sided problem: one solve decides buys and
-sells together, and portfolios couple through buys only. `buy` and `sell` are one-sided: the solve has
-one variable per name, `w`, held above (`buy`) or below (`sell`) the starting weight, the trade is
-`w − w0` or `w0 − w`, and the other side does not exist. The value selects a *side profile*, the one
-object in the engine that knows what a side means: which decision variables a solve has and the trade
-identity over them (for `both`, `w = w0 + buy − sell` with both non-negative and `sell ≤ w0`), how the
-solver's weights become the reported trade, the tradable set the dependency graph and the chain are
-built from, what a dependent portfolio receives, the starting books the side cannot trade out of, and
-the invariants the verifier adds. Nothing else in the engine asks.
-
-A one-sided run is a third of the problem and cannot contain a wash trade, which is why the side is a
-config value rather than a pair of bounds. Two consequences follow for the config. A term that reads a
-side the run lacks — the shipped `tax_cost` reads `sell` — is refused at `validate-config` with a message
-naming the side, so a buy-only run drops it from `objective.terms`. And `cash_bounds` keeps its
-meaning as the cash *after* the run while the side fixes the direction: a buy-only run can only lower
-cash, a sell-only run can only raise it, and a book that starts on the wrong side of its bound is
-reported as the infeasibility it is. The [architecture explanation](explanation-architecture.md#the-side-a-run-trades-is-one-object)
-covers what the profile owns and what the one-sided problem costs the solver.
+Which side the run trades: `both`, the default, is the two-sided problem; `buy` and `sell` are
+one-sided, a third the size, with the trade an expression of the one variable `w`. The value selects
+the *side profile*, the one object in the engine that knows what a side means, and it fixes which side
+portfolios couple through — buys under `both` and `buy`, sells under `sell`. Two things follow for the
+rest of the config: a term or constraint that reads a side the run lacks (the shipped `tax_cost` reads
+`sell`) is refused at `validate-config`, and `cash_bounds` keeps its meaning as the cash *after* the
+run while the side fixes the direction cash can move. [How to run one side](how-to-run-one-side.md)
+walks through both; [the architecture explanation](explanation-architecture.md#the-side-a-run-trades-is-one-object)
+covers what the profile owns and why the side is a config value rather than a pair of bounds.
 
 ## `objective`
 
@@ -346,10 +323,11 @@ Most constraints take no parameters, and the JSON Schema enforces that: `{"name"
 "params": {"x": 1}}` is rejected by your editor. `sector_bounds` is the exception with a `tolerance`
 that loosens every sector band symmetrically; with an empty `sector_bounds` map in the style, it
 contributes nothing. `cumulative_adv_participation` declares `chain: ChainState` — it needs to know how
-much of each name's ADV budget higher-priority portfolios have already *bought* — which makes it
-chain-aware, and its presence is the only reason any portfolio waits for another. It writes two rows:
-`buy + sell ≤ adv_capacity` for the portfolio's own participation, and `buy ≤ remaining` where
-predecessors' buys have consumed part of the budget. Sells are the portfolio's own business.
+much of each name's ADV budget higher-priority portfolios have already *traded* on the side the run
+couples through — which makes it chain-aware, and its presence is the only reason any portfolio waits
+for another. It writes two rows: `trade ≤ adv_capacity` for the portfolio's own participation, and
+`coupled ≤ remaining` where predecessors' trades on the coupled side have consumed part of the budget.
+The other side, where the run has one, is the portfolio's own business.
 
 Every shipped constraint has a numpy twin in the verifier, looked up by qualified name, so the
 post-solve check is a genuine second opinion for each one you list. A custom constraint without a twin
@@ -409,9 +387,11 @@ in the worker image.
 "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9}
 ```
 
-After every solve the engine re-checks the solution in numpy without cvxpy: each constraint's violation,
-the recomputed objective against the solver's reported one, complementarity of `buy` and `sell`, and
-finiteness. These three numbers are its tolerances, and they are JSON numbers rather than strings
+After every solve the engine re-checks the solution in numpy without cvxpy: the side profile's identity
+checks (under `both`, the trade balance and the complementarity of `buy` and `sell`), each constraint's
+violation, the recomputed objective against the solver's reported one, and finiteness. These three
+numbers are its tolerances — `violation_tol` bounds every residual, identity and constraint alike, and
+the other two bound the objective gap — and they are JSON numbers rather than strings
 because they are float tolerances on float arithmetic. The defaults are deliberately about a hundred
 times looser than a solver's convergence tolerance so that a pass says something about the solution
 rather than restating the solver's own stopping criterion. Tighten them and a solver that is merely
@@ -445,32 +425,25 @@ other cluster variables), so a laptop run and a cluster run of one config hash i
 only in the manifest's `settings` block, where `diff-manifests` can name the difference. The block may
 be omitted entirely; both keys have defaults.
 
-There is no schedule to choose. Every portfolio builds at once, in a worker, and the engine derives who
-waits for whom from two facts it then knows: each portfolio's solve-order key, and its **tradable set** —
-the securities its built problem allows a trade in on the side the run couples through (buyable under
-`both` and `buy`, sellable under `sell`). A run couples through that one side only, so portfolio *j*
-waits for every higher-priority *i* whose tradable set overlaps its own, and for nothing else; if no
-term or constraint declares `chain`, nothing waits for anything. The manifest
-records the graph it derived — how many edges, how many independent components, how long the longest
-chain of solves was — and the answer is the same whatever the graph: each solve sees only what its
-overlapping predecessors bought, and that is a function of the data, not of the schedule.
+There is no schedule to choose. The engine derives who waits for whom from each portfolio's solve-order
+key and its *tradable set* on the side the run couples through, and the answer never depends on the
+schedule: each solve sees only what its overlapping predecessors traded there, which is a function of
+the data. [The architecture explanation](explanation-architecture.md#a-run-couples-through-its-one-side-so-the-schedule-is-a-graph)
+makes that argument; [the life of a run](explanation-run-lifecycle.md#9-the-dependency-graph-and-where-the-work-runs)
+shows the mechanism in execution order.
 
 `dependencies` has one non-default value, `"all"`, under which every higher-priority portfolio is a
 predecessor — one line. It gives the same orders and the same chain hashes and exists for diagnosis:
 rerun a suspicious batch as a line and `diff-manifests` the two (it names the config, because the
 field is part of it, and nothing else).
 
-The cluster and its worker count are about throughput and never about output: outcomes are classified
-in solve order regardless of which worker finishes first, so two runs with different worker counts
-produce identical portfolio records. Workers — local processes on a laptop, pods on Kubernetes — receive
-the assembled datasets and the config once and re-resolve step names themselves (function objects are
-never pickled, only names). [How to run on a cluster](how-to-run-on-a-cluster.md) covers the settings.
-
 `on_error` decides what one failed portfolio does to the rest. `fail_fast` records every lower-priority
 portfolio as `skipped` — whatever it had finished, so the manifest never depends on timing. `continue`
 isolates the failure: only the portfolios that depended on it are skipped, each naming the predecessor
-that failed, and a portfolio that shared no buyable security with it is unaffected. A build that fails
-has an unknown tradable set and is treated as overlapping every lower-priority portfolio.
+that failed, and a portfolio that shared no tradable security with it is unaffected. A build that fails
+has an unknown tradable set and is treated as overlapping every lower-priority portfolio. The cluster
+and its worker count are about throughput, never about output;
+[how to run on a cluster](how-to-run-on-a-cluster.md) covers the settings.
 
 ## What the config does not decide
 
@@ -493,8 +466,9 @@ dust threshold in the data, so there is no knob for it. The only tolerances you 
 in `post_solve`.
 
 **The schedule is derived, not configured.** Which portfolios wait for which follows from the steps
-(does anything read the chain?) and the data (which securities can each portfolio buy?). The config has
-no execution mode; the only schedule knob is the diagnostic `dependencies: "all"`.
+(does anything read the chain?) and the data (which securities can each portfolio trade on the side the
+run couples through?). The config has no execution mode; the only schedule knob is the diagnostic
+`dependencies: "all"`.
 
 Put together: the config is the wiring of a pipeline — which inputs, combined how, filtered by which
 rules, prioritized how, optimized against which terms and constraints, solved with what, checked how

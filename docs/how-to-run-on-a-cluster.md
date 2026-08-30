@@ -26,7 +26,7 @@ execute.
 Which cluster the run provisions is a setting, never a config key:
 
 ```bash
-PORTFOLIO_OPTIMIZER_CLUSTER=auto             # local | kubernetes | auto | tcp://host:8786
+PORTFOLIO_OPTIMIZER_CLUSTER=auto             # local | kubernetes | auto | tcp://host:8786 | tls://host:8786
 PORTFOLIO_OPTIMIZER_MIN_WORKERS=8            # provisioned before the load stage
 PORTFOLIO_OPTIMIZER_MAX_WORKERS=48           # scaled to after assembly
 PORTFOLIO_OPTIMIZER_CLUSTER_TIMEOUT_S=300    # for the first worker to appear
@@ -37,7 +37,7 @@ PORTFOLIO_OPTIMIZER_WORKER_IMAGE=registry/optimizer@sha256:...   # kubernetes on
 |---|---|---|
 | `local` | one worker process per worker on this machine, one thread each | laptops, tests, and books that fit one node |
 | `kubernetes` | a `DaskCluster` of pods the run creates through the operator and deletes when it ends | many portfolios or several machines |
-| `tcp://host:port` | a scheduler someone else runs; the run connects, submits, and disconnects | when a shared scheduler exists anyway |
+| `tcp://host:port`, `tls://host:port` | a scheduler someone else runs; the run connects, submits, and disconnects | when a shared scheduler exists anyway |
 | `auto` | `kubernetes` inside a pod, `local` anywhere else | one setting for both places |
 
 - `MIN_WORKERS` is requested as soon as the config resolves and sits idle while data loads;
@@ -90,9 +90,11 @@ and every fingerprint carries it. What happens, in order:
    the data from their peers.
 4. Every build runs at once; the pod derives the dependency graph from what the builds report and
    submits each solve with its predecessors' contributions as dependencies, so a solve runs on the
-   worker that holds its build the moment its predecessors finish. Outcomes are classified in solve order.
-5. The cluster is deleted in a `finally` — also when inputs are rejected — and then the orders are
-   persisted, the sink is called, and the manifest is written.
+   worker that holds its build the moment its predecessors finish. Outcomes are classified in solve
+   order, and each solved portfolio's spec, solution, and chain state are written as `.npz` files the
+   moment it is classified, while the cluster is still up.
+5. The cluster is deleted in a `finally` — also when inputs are rejected — and then the sink is called
+   with every solved portfolio's orders and the manifest is written.
 
 Fairness between runs is Kubernetes' job: give each run's namespace a `ResourceQuota` and an urgent run
 a `PriorityClass`. Nothing in the engine arbitrates between runs.

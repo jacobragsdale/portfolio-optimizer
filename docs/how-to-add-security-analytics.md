@@ -55,7 +55,7 @@ already typed. Whatever dtypes leave the loader are the dtypes that land on `hol
 
 Read each join as a claim the engine checks:
 
-- `universe` gets `one_to_one` with `require_all_matched`: every buyable name has exactly one analytics
+- `universe` gets `one_to_one` with `require_all_matched`: every universe name has exactly one analytics
   row, or the run is rejected naming the unmatched securities.
 - `holdings` gets `many_to_one` without `require_all_matched`: one analytics row serves every portfolio
   that holds the name, and a held name outside coverage keeps its row with nulls in the new columns.
@@ -80,7 +80,7 @@ and after; the first join should show `{"universe": ["score", "liquidity_bucket"
 
 When the analytic is computed rather than loaded, write an assembly step. It sees every dataset by
 name and returns a new `Frames`; the engine records its source hash and what it added. This one
-standardizes a column against the buy universe's distribution and writes the result to both tables,
+standardizes a column against the universe's distribution and writes the result to both tables,
 so a held name outside the universe gets a z-score on the same scale:
 
 ```python

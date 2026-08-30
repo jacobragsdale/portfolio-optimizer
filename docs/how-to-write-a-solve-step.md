@@ -54,6 +54,21 @@ The rules of the contract:
 The shipped `pro_rata_fill` in `src/portfolio_optimizer/solvers.py` is this example finished — with
 the cap's excess redistributed — and the shape to copy.
 
+### What `SolveResult` carries
+
+Every field but `w` has a default, so a pure function sets `w` and nothing else (`solving.py`):
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `w` | `F64 \| None` | — | The weights, aligned to `spec.security_ids`; the side profile derives the trade from them. `None` is only acceptable with a status that is not optimal. |
+| `status` | `SolveStatus` | `OPTIMAL` | `optimal` or `optimal_inaccurate` are accepted and verified; `infeasible` raises `InfeasibleError` with an arithmetic diagnosis; `unbounded` raises `UnboundedError`; `solver_error` raises `SolverFailureError` carrying `detail`. |
+| `objective` | `float \| None` | `None` | The value the step minimized, when it minimized one; the verifier compares it with the terms' numpy twins. Leave it unset and the comparison is skipped. |
+| `iterations` | `int \| None` | `None` | Recorded in the manifest's `solve` record. |
+| `solve_time_s` | `float` | `0.0` | Recorded in the manifest's `solve` record. |
+| `solver` | `str \| None` | `None` | What produced the answer; the engine records the step's qualified name when unset. |
+| `solver_version` | `str \| None` | `None` | Its version; the engine records the step's package version when unset. |
+| `detail` | `str` | `""` | Free text: the solver's own status, or what a function did (`pro_rata_fill` reports what it invested). Quoted in the failure message when the status is not optimal. |
+
 ### If your library builds the cvxpy problem itself
 
 Give it the constraints as data and the terms as callables:

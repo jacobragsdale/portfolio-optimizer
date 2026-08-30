@@ -9,10 +9,15 @@ order, stage by stage, see [the life of a run](explanation-run-lifecycle.md).
 Quant developers who clone this repository want to write Python, not learn a plugin system. So the only
 mechanism for extending the engine is: write an ordinary function — in a designated module of this repository or in any installed
 package — and name it in JSON. The engine's resolver (`config/resolve.py`) does the work a framework would normally push onto the
-author — it imports the function, checks its signature against the contract for its kind, validates the
-JSON parameters against the function's own `Params` model, and detects optional context arguments by
-name — and it does all of this before any data is loaded. A mistake surfaces as a config error with the
-function's qualified name, not as a traceback halfway through a run.
+author — it imports the function, checks its signature against the contract for its kind (nine kinds:
+loader, constraints loader, assembly step, rule, solve-order step, term, constraint, solve step, sink),
+validates the JSON parameters against the function's own `Params` model, and detects the optional
+`chain` argument by name — and it does all of this before any data is loaded. It then checks the
+solver and constructs every term and constraint once, against a one-security dummy spec, under the
+run's side profile, so a step that raises or reads a side the run lacks is refused too. The same
+resolution runs in every process that will solve — at `validate-config`, at the start of `run`, and
+on every worker before it does any work — so all of them apply identical checks. A mistake surfaces
+as a config error with the function's qualified name, not as a traceback halfway through a run.
 
 The convention has a second purpose: auditability. Because every step is a named function, the manifest
 can record its qualified name and the hash of its source text. A run can be traced to the exact business
@@ -70,7 +75,8 @@ order is exactly quantity times price" a guarantee rather than a hope.
 
 `ProblemSpec` holds every input the solver will see as plain numpy arrays — and the sector membership as a
 sparse matrix, one nonzero per security, since dense it was most of every large spec — aligned to a sorted list of
-securities, plus a content hash. cvxpy objects are created only inside `solve()` and never leave it. This
+securities, plus a content hash. cvxpy objects are created inside the `solvers.cvxpy` step — and, once,
+during the dry construction at resolve — and never leave the process that made them. This
 buys three things: the spec is built on a worker and stays there until it is solved; it can be persisted as an `.npz` file that an auditor can open without the solver stack; and the hash pins down
 exactly what was optimized, so a change in any input changes the hash and shows up in `diff-manifests`.
 
@@ -94,6 +100,15 @@ removing it makes the problem a third the size and leaves no way to express a wa
 (`IDEAS.md`). The shipped terms that mean "the amount traded" read `x.trade` — `buy + sell`, `buy`, or
 `sell` — and the ADV constraint's chain half reads `x.coupled`, the amount traded on the side the run
 couples through; both exist under every profile, so a term written against them runs anywhere.
+`coupled` exists because without it that constraint would have to say `buy ≤ remaining` under `both`
+and `sell ≤ remaining` under `sell`, and its numpy twin would need the same quantity — which is why the
+verifier's twins receive the profile and read `profile.coupled(solution)`.
+
+The two one-sided profiles are exact mirrors, and that is testable: the reflection `w' = 1 − w` maps a
+buy-only book onto a sell-only one — bounds, cash, sector bounds, ADV budget, the chain, all of it —
+so `tests/engine/test_solve.py` solves a book under `buy` and its reflection under `sell` and asserts
+the answers coincide. That symmetry test is what the design asked for, and it is cheap because the
+profile is one object.
 
 A one-sided run can move cash one way only — a buy-only run lowers it, a sell-only run raises it — and
 `cash_bounds` keeps its meaning as the cash after the run, so a book that starts on the wrong side of
@@ -123,15 +138,22 @@ through.
 After every solve, `engine/check.py` recomputes each constraint's violation and each objective term in
 numpy and compares the total with the solver's reported objective. It does not import cvxpy — a test
 enforces that — and its tolerances are a hundred times looser than the solver's, so a pass is a genuine
-statement about the solution rather than a restatement of the solver's own convergence check. Custom
-terms and constraints have no numpy twin unless the author adds one; they are listed as `unverified` in
-the manifest rather than silently trusted.
+statement about the solution rather than a restatement of the solver's own convergence check. One
+violation tolerance bounds every residual, the side profile's identity checks and the constraints alike;
+the objective comparison has its own pair. Custom terms and constraints have no numpy twin unless the
+author adds one; they are listed as `unverified` in the manifest rather than silently trusted, and a
+solve step that minimized nothing reports no objective, so that comparison is skipped for it.
 
 One consequence surfaced during development: with no term charging for trading, an interior-point solver
 may return a buy/sell split that nets to the right trade but is not minimal — a free "wash trade". The
-weights were right; the split was not. The engine now canonicalizes the split to the minimal one after
-solving, which satisfies every constraint the solver's did and cannot increase any shipped term, and the
-verifier's complementarity check confirms it.
+weights were right; the split was not. So under `both` the engine reports the minimal split for the
+solver's weights — `buy = max(w − w0, 0)`, `sell = max(w0 − w, 0)` — and the verifier's complementarity
+check confirms it. That tidy-up is harmless only while no term *rewards* a round trip; the shipped
+`tax_cost` does, on a loss position, and then the solver's optimum carries round trips the minimal
+split strips out, the recomputed objective no longer matches the reported one, and the verifier fails
+the portfolio without saying why. That is a known defect of the two-sided profile, recorded with its fix
+in [`IDEAS.md`](../IDEAS.md#the-canonical-split-can-move-the-objective-and-the-verifier-then-refuses-the-portfolio);
+the one-sided profiles have one vector and cannot contain a round trip.
 
 ## Rounding
 
@@ -157,8 +179,10 @@ sellable (held, `lb < w0`) — and its solve-order key, a priority from an optio
 the portfolios frame's column, ties broken on `portfolio_id`. From those the engine derives the
 dependency graph (`engine/schedule.py`): portfolio *j* depends on every higher-priority *i* whose
 tradable set intersects its own, and on nothing else; with no chain-aware step there are no edges. The
-graph is what `execution.mode` used to approximate by hand, and the manifest records its shape — edges,
-components, the longest chain of solves — so a slow batch explains itself.
+graph is never transitively reduced — a solve folds its *direct* predecessors' own trades, so every
+overlapping earlier portfolio stays a direct dependency. There is no execution mode to choose: the graph
+replaces one, and the manifest records its shape — edges, components, the longest chain of solves — so a
+slow batch explains itself.
 
 Each solve folds its predecessors' orders on that side into a `ChainState` — `traded_shares`, aligned
 to its own securities and **masked to its own tradable set**. The mask is load-bearing: a predecessor's
@@ -224,3 +248,9 @@ Tax lots (holdings are security-level with an average cost), shorting, fractiona
 risk term, and automatic solver fallback. Each is a real extension, and each would have made the
 template harder to read without changing the shape of the engine. The manifest, the hashes, and the
 verifier are designed so that adding them leaves the audit story intact.
+
+Also left out, on the numbers: building the cvxpy problem somewhere other than the worker that solves
+it — pickling the `Problem` back, shipping canonicalized data, a DPP split with the chain as
+parameters. Every variant moves canonicalization, which is 0.6 s of a 9 s critical path at 100,000
+names, and would move a canonical form three to five times the spec's size in its place; `IDEAS.md`
+has the measurements.
