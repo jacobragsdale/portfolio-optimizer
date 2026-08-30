@@ -74,6 +74,15 @@ def test_validate_config_lists_every_resolved_step() -> None:
     assert "constraint          portfolio_optimizer.terms:cumulative_adv_participation [chain]" in out
 
 
+def test_validate_config_constructs_every_term_and_constraint_before_saying_ok(tmp_path: Path) -> None:
+    body = json.loads(EXAMPLE_CONFIG.read_text())
+    body["objective"] = {"terms": ["tests.conftest:lying_term"]}
+    config = tmp_path / "lying.json"
+    config.write_text(json.dumps(body))
+    code, _, err = cli(["validate-config", str(config)])
+    assert code == 2 and "objective.terms[0]: tests.conftest:lying_term: returned ConstraintSet, expected ObjectiveTerm" in err
+
+
 def test_validate_config_rejects_a_solver_the_adapter_does_not_know(tmp_path: Path) -> None:
     body = json.loads(EXAMPLE_CONFIG.read_text())
     body["solver"] = {"name": "SCIPY"}  # cvxpy ships it; the adapter has no record for it, so its version could not be fingerprinted

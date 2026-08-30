@@ -13,7 +13,7 @@ import pytest
 from pydantic import Field
 
 from portfolio_optimizer.config.models import RunConfig, StepSpec
-from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedStep, StepKind, resolve_config, resolve_step
+from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedStep, StepKind, construction_failures, resolve_config, resolve_step
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec
@@ -75,6 +75,17 @@ def solve_step(request: SolveRequest) -> SolveResult:
 
 def solve_wrong_args(spec: ProblemSpec) -> SolveResult:  # the missing `request` is the case under test
     raise NotImplementedError
+
+
+def constraint_that_raises(x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:  # noqa: ARG001  # raising at construction is the case under test
+    msg = "no such column 'beta' in the risk model"
+    raise RuntimeError(msg)
+
+
+def term_needing_a_column(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:
+    from portfolio_optimizer.cvx.adapter import dot  # local: the header stays about the resolver
+
+    return ObjectiveTerm("needs_column", dot(spec.column("momentum"), x.w))
 
 
 def solve_order_step(data: PortfolioData) -> Decimal:
@@ -258,13 +269,14 @@ def fake_config(
     solve_order: str | None = None,
     solver: dict[str, object] | None = None,
     solve: str | None = None,
+    terms: list[str] | None = None,
 ) -> RunConfig:
     body: dict[str, object] = {
         "run": {"name": "r", "as_of": "2026-01-01T00:00:00Z"},
         "portfolios": f"{fake_steps}:loader",
         "datasets": {name: {"loader": f"{fake_steps}:loader"} for name in ("holdings", "universe", "details", "targets")} | {"constraints": {"loader": f"{fake_steps}:constraints_loader"}},
         "rules": rules if rules is not None else [f"{fake_steps}:plain_rule"],
-        "objective": {"terms": [f"{fake_steps}:term"]},
+        "objective": {"terms": terms if terms is not None else [f"{fake_steps}:term"]},
         "constraints": constraints if constraints is not None else [],
         "sink": f"{fake_steps}:sink",
         "execution": {"on_error": on_error},
@@ -320,6 +332,12 @@ def test_resolve_config_checks_the_solver_against_what_this_process_has_installe
     with pytest.raises(ConfigResolutionError) as info:
         resolve_config(config, config_sha256="abc", installed=lambda: installed)
     assert info.value.failures == (failure,)
+
+
+def test_construction_failures_surface_a_step_that_raises_and_skip_one_that_needs_data(fake_steps: str) -> None:
+    resolved = resolve_config(fake_config(fake_steps, constraints=[f"{fake_steps}:constraint_that_raises"], terms=[f"{fake_steps}:term_needing_a_column"]), config_sha256="abc")
+    assert construction_failures(resolved) == ["constraints[0]: fake_steps:constraint_that_raises: construction failed: RuntimeError: no such column 'beta' in the risk model"]
+    assert construction_failures(resolve_config(fake_config(fake_steps, terms=["tracking_error"], constraints=["long_only", "cumulative_adv_participation"]), config_sha256="abc")) == []
 
 
 def test_the_solve_step_is_resolved_against_its_contract(fake_steps: str) -> None:

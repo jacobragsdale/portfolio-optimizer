@@ -13,7 +13,7 @@ from typing import TextIO
 from pydantic import ValidationError
 
 from portfolio_optimizer.config.models import config_sha256, load_run_config
-from portfolio_optimizer.config.resolve import ConfigResolutionError, resolve_config
+from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedConfig, construction_failures, resolve_config
 from portfolio_optimizer.config.schema import run_config_schema, schema_json
 from portfolio_optimizer.domain.data import IoContext
 from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec, Solution, StepRef, Tolerances
@@ -99,6 +99,7 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, ids:
     try:
         config = load_run_config(config_path.read_text())
         resolved = resolve_config(config, config_sha256(config))
+        _check_construction(resolved)
     except OSError as error:
         stderr.write(f"cannot read config: {error}\n")
         return EXIT_INFRASTRUCTURE
@@ -133,10 +134,18 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, ids:
     return report.exit_code
 
 
+def _check_construction(resolved: ResolvedConfig) -> None:
+    """Every term and constraint must construct under the run's side profile before a cluster is asked for."""
+    failures = construction_failures(resolved)
+    if failures:
+        raise ConfigResolutionError(failures)
+
+
 def _validate_config(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
     try:
         config = load_run_config(Path(args.config).read_text())
         resolved = resolve_config(config, config_sha256(config))
+        _check_construction(resolved)
     except OSError as error:
         stderr.write(f"cannot read config: {error}\n")
         return EXIT_INFRASTRUCTURE

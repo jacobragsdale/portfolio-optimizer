@@ -18,22 +18,37 @@ import inspect
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import get_type_hints
 
+import numpy as np
 import pandas as pd
 from pydantic import ValidationError
+from scipy.sparse import csr_array
 
 from portfolio_optimizer.config.models import RunConfig, StepSpec
 from portfolio_optimizer.config.steps import ResolvedConstraint, ResolvedStep, StepKind
-from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, installed_solvers, solver_failures
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, installed_solvers, solver_failures, variables
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
-from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec
+from portfolio_optimizer.domain.results import Artifact, ChainState, MissingSpecColumnError, ProblemSpec
 from portfolio_optimizer.domain.sides import SideProfile, profile_for
 from portfolio_optimizer.domain.types import Params
 from portfolio_optimizer.solving import SolveRequest, SolveResult
 
-__all__ = ["CONTRACTS", "TEMPLATE_MODULES", "ConfigResolutionError", "Contract", "ResolvedConfig", "ResolvedConstraint", "ResolvedStep", "StepKind", "resolve_config", "resolve_step"]
+__all__ = [
+    "CONTRACTS",
+    "TEMPLATE_MODULES",
+    "ConfigResolutionError",
+    "Contract",
+    "ResolvedConfig",
+    "ResolvedConstraint",
+    "ResolvedStep",
+    "StepKind",
+    "construction_failures",
+    "resolve_config",
+    "resolve_step",
+]
 
 TEMPLATE_MODULES: Mapping[StepKind, str] = {
     "portfolios": "portfolio_optimizer.loaders",
@@ -163,6 +178,62 @@ def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable
         solve=solve,
         sink=sink,
         profile=profile_for(config.sides),
+    )
+
+
+def construction_failures(resolved: ResolvedConfig) -> list[str]:
+    """Construct every term and constraint once against a one-security dummy spec, under the run's side profile.
+
+    What resolution cannot see — a term that raises when called, a constraint reaching for a decision
+    vector the side does not have — surfaces here instead of on a worker. A step that asks for a spec
+    column or flag the dummy does not carry is skipped rather than failed: whether the universe has it
+    is a question for the data, not the config. The solve step is not run; a firm's step may reach a
+    service, and the dummy is not a problem worth solving.
+    """
+    spec = _dry_run_spec()
+    chain = ChainState.empty(spec.security_ids)
+    failures: list[str] = []
+    for where, step, expected in (
+        *((f"objective.terms[{i}]", step, ObjectiveTerm) for i, step in enumerate(resolved.terms)),
+        *((f"constraints[{i}]", c.step, ConstraintSet) for i, c in enumerate(resolved.constraints)),
+    ):
+        try:
+            result = step.invoke(x=variables(spec.n), spec=spec, context=chain if step.needs_context else None)
+        except MissingSpecColumnError:
+            continue
+        except Exception as error:  # noqa: BLE001  # any construction failure is what this check exists to report
+            failures.append(f"{where}: {step.qualname}: construction failed: {type(error).__name__}: {error}")
+            continue
+        if not isinstance(result, expected):
+            failures.append(f"{where}: {step.qualname}: returned {type(result).__name__}, expected {expected.__name__}")
+    return failures
+
+
+def _dry_run_spec() -> ProblemSpec:
+    one = np.ones(1)
+    return ProblemSpec(
+        portfolio_id="dry-run",
+        as_of=datetime(2000, 1, 1, tzinfo=UTC),
+        security_ids=("DRY",),
+        sector_names=("DRY",),
+        nav=1.0,
+        w0=one * 0.5,
+        price=one,
+        shares_held=one * 0.5,
+        lot_size=one,
+        w_target=one * 0.5,
+        tax_per_dollar=np.zeros(1),
+        tcost_per_dollar=np.zeros(1),
+        lb=np.zeros(1),
+        ub=one,
+        adv_capacity=one,
+        sector_matrix=csr_array(np.ones((1, 1))),
+        sector_lb=np.zeros(1),
+        sector_ub=one,
+        max_turnover=2.0,
+        cash_lb=0.0,
+        cash_ub=1.0,
+        min_trade_notional=0.0,
     )
 
 
