@@ -15,7 +15,7 @@ from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.results import PortfolioResult
 from portfolio_optimizer.engine.backends import Backend
-from portfolio_optimizer.engine.runner import EXIT_OK, RunReport, run
+from portfolio_optimizer.engine.runner import EXIT_OK, RunContext, RunReport, run
 from portfolio_optimizer.settings import ExecutionSettings
 from tests.conftest import EXAMPLE_CONFIG, EXAMPLE_DATA, execution_on, io_context, resolved_example_real
 from tests.engine.test_backends import GIT, LazyBackend
@@ -60,7 +60,8 @@ def execute(tmp_path: Path, root: Path, dependencies: str, run_id: str) -> RunRe
         del execution, run_id
         return LazyBackend()
 
-    return run(resolved, io_context(tmp_path / run_id, data_root=root, run_id=run_id), execution=execution_on("tcp://fake:8786"), git=GIT, config_path="c.json", settings={}, backend_factory=factory)
+    context = RunContext(io=io_context(tmp_path / run_id, data_root=root, run_id=run_id), execution=execution_on("tcp://fake:8786"), git=GIT, config_path="c.json", settings={})
+    return run(resolved, context, backend_factory=factory)
 
 
 @pytest.mark.parametrize("seed", range(6))

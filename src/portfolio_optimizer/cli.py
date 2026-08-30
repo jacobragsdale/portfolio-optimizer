@@ -23,7 +23,7 @@ from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.environment import read_git_info
 from portfolio_optimizer.engine.logging import configure_logging
 from portfolio_optimizer.engine.manifest import diff_manifests, load_manifest
-from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_INPUT_REJECTED, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, run
+from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_INPUT_REJECTED, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunContext, run
 from portfolio_optimizer.settings import SettingsError, load_settings
 
 
@@ -112,10 +112,15 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, ids:
             stderr.write(f"--max-workers must be at least PORTFOLIO_OPTIMIZER_MIN_WORKERS ({execution.min_workers})\n")
             return EXIT_INPUT_REJECTED
         execution = replace(execution, max_workers=int(args.max_workers))
-    io = IoContext(data_root=data_root, output_dir=output_dir, run_id=ids.new_run_id(), clock=clock)
-    shown_settings = settings.shown() | {"data_root": str(data_root), "output_dir": str(output_dir), "max_workers": str(execution.max_workers)}
+    context = RunContext(
+        io=IoContext(data_root=data_root, output_dir=output_dir, run_id=ids.new_run_id(), clock=clock),
+        execution=execution,
+        git=read_git_info(Path.cwd()),
+        config_path=str(config_path),
+        settings=settings.shown() | {"data_root": str(data_root), "output_dir": str(output_dir), "max_workers": str(execution.max_workers)},
+    )
     try:
-        report = run(resolved, io, execution=execution, git=read_git_info(Path.cwd()), config_path=str(config_path), settings=shown_settings)
+        report = run(resolved, context)
     except InputRejectedError as error:
         stderr.write(f"{error}\n")
         return EXIT_INPUT_REJECTED

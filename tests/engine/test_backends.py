@@ -12,7 +12,7 @@ from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.backends import Backend, ClusterError, Pending, SharedRunData, TaskOutput, WorkersReady
 from portfolio_optimizer.engine.environment import GitInfo, WorkerEnvironment, environment_for, external_modules
 from portfolio_optimizer.engine.load import assemble, load_datasets
-from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, RunReport, run
+from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, RunContext, RunReport, run
 from portfolio_optimizer.engine.tasks import BuildResult, build_task
 from portfolio_optimizer.settings import ExecutionSettings
 from tests.conftest import BUY_ONLY_OBJECTIVE, EXAMPLE_DATA, NO_CHAIN_CONSTRAINTS, example_config, example_config_real, execution_on, half_cash_book, io_context, resolved_example_real, sell_book
@@ -135,7 +135,8 @@ def execute(
         del execution, run_id
         return backend
 
-    return run(resolved, io_context(tmp_path / run_id, data_root=data_root, run_id=run_id), execution=execution, git=GIT, config_path="c.json", settings={}, backend_factory=factory)
+    context = RunContext(io=io_context(tmp_path / run_id, data_root=data_root, run_id=run_id), execution=execution, git=GIT, config_path="c.json", settings={})
+    return run(resolved, context, backend_factory=factory)
 
 
 def test_the_runner_builds_everything_first_then_solves_along_the_schedule(tmp_path: Path) -> None:

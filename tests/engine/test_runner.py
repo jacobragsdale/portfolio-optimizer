@@ -11,7 +11,7 @@ from pandas.testing import assert_frame_equal
 from portfolio_optimizer.domain.results import PortfolioFailure, PortfolioResult
 from portfolio_optimizer.engine.backends import Backend
 from portfolio_optimizer.engine.environment import GitInfo
-from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunReport, run
+from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunContext, RunReport, run
 from portfolio_optimizer.settings import ExecutionSettings
 from tests.conftest import BUY_ONLY_OBJECTIVE, EXAMPLE_DATA, NO_CHAIN_CONSTRAINTS, execution_on, half_cash_book, io_context, resolved_example_real, sell_book
 from tests.engine.test_backends import LazyBackend
@@ -33,9 +33,10 @@ def execute(
 ) -> RunReport:
     resolved = resolved_example_real(execution={"on_error": on_error, "dependencies": dependencies}, sink=sink, **overrides)
     execution = execution_on(scheduler_address, max_workers=max_workers)
-    return run(
-        resolved, io_context(tmp_path / run_id, data_root=data_root, run_id=run_id), execution=execution, git=GIT, config_path="configs/example_run.json", settings={"data_root": str(data_root)}
+    context = RunContext(
+        io=io_context(tmp_path / run_id, data_root=data_root, run_id=run_id), execution=execution, git=GIT, config_path="configs/example_run.json", settings={"data_root": str(data_root)}
     )
+    return run(resolved, context)
 
 
 def test_the_run_reproduces_the_hand_checked_orders(tmp_path: Path, scheduler_address: str) -> None:
@@ -236,7 +237,8 @@ def test_manifest_records_the_package_behind_every_external_step(tmp_path: Path)
         return LazyBackend()
 
     resolved = resolved_example_real(sink="tests.conftest:noop_sink")
-    report = run(resolved, io_context(tmp_path / "run-test", run_id="run-test"), execution=execution_on("tcp://fake:8786"), git=GIT, config_path="c.json", settings={}, backend_factory=in_process)
+    context = RunContext(io=io_context(tmp_path / "run-test", run_id="run-test"), execution=execution_on("tcp://fake:8786"), git=GIT, config_path="c.json", settings={})
+    report = run(resolved, context, backend_factory=in_process)
     assert report.exit_code == EXIT_OK
     assert report.manifest.versions.packages == {"tests": "unknown"}  # tests.conftest is importable but no installed distribution provides it
 

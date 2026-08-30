@@ -80,12 +80,22 @@ class Executed:
     artifacts: tuple[Artifact, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class RunContext:
+    """The run's surroundings, beyond its config: where it reads and writes, its id and clock, the cluster it provisions, the code revision, and the settings the manifest records."""
+
+    io: IoContext
+    execution: ExecutionSettings
+    git: GitInfo
+    config_path: str
+    settings: Mapping[str, str]
+
+
 @dataclass(slots=True)
 class _Session:
     """The cluster's lifetime, and what the manifest records about it: timestamps, size, and every environment that did work."""
 
-    execution: ExecutionSettings
-    io: IoContext
+    context: RunContext
     backend_factory: BackendFactory
     backend: Backend | None = None
     provision_started_at: datetime | None = None
@@ -96,27 +106,28 @@ class _Session:
 
     def start(self) -> None:
         """Ask for the backend now; the cluster then warms up while data loads."""
-        self.backend = self.backend_factory(self.execution, run_id=self.io.run_id)
-        self.provision_started_at = self.io.clock.now()
+        self.backend = self.backend_factory(self.context.execution, run_id=self.context.io.run_id)
+        self.provision_started_at = self.context.io.clock.now()
         self.backend.start()
-        log.info("backend %s starting", self.backend.kind, extra={"run_id": self.io.run_id, "stage": "cluster"})
+        log.info("backend %s starting", self.backend.kind, extra={"run_id": self.context.io.run_id, "stage": "cluster"})
 
     def wait(self) -> Backend:
         """Scale to the full size and block until one worker can take a task."""
         if self.backend is None:
             msg = "no backend was started"
             raise ClusterError(msg)
-        self.backend.scale(self.execution.max_workers)
-        self.ready = self.backend.ready(1, self.execution.cluster_timeout_s)
-        self.first_worker_ready_at = self.io.clock.now()
-        log.info("backend %s ready with %d worker(s)", self.backend.kind, self.ready.workers, extra={"run_id": self.io.run_id, "stage": "cluster"})
+        execution = self.context.execution
+        self.backend.scale(execution.max_workers)
+        self.ready = self.backend.ready(1, execution.cluster_timeout_s)
+        self.first_worker_ready_at = self.context.io.clock.now()
+        log.info("backend %s ready with %d worker(s)", self.backend.kind, self.ready.workers, extra={"run_id": self.context.io.run_id, "stage": "cluster"})
         return self.backend
 
     def close(self) -> None:
         """Release the backend; always called."""
         if self.backend is not None:
             self.backend.close()
-            self.closed_at = self.io.clock.now()
+            self.closed_at = self.context.io.clock.now()
 
     def saw(self, environment: WorkerEnvironment, host: str, *, solved: bool) -> None:
         """Record that ``host``, running ``environment``, did work; only solves count toward its portfolio total."""
@@ -129,8 +140,8 @@ class _Session:
             return None
         return ClusterRecord(
             kind=self.backend.kind,
-            min_workers=self.execution.min_workers,
-            max_workers=self.execution.max_workers,
+            min_workers=self.context.execution.min_workers,
+            max_workers=self.context.execution.max_workers,
             workers_ready=self.ready.workers if self.ready is not None else None,
             scheduler_address=self.ready.scheduler_address if self.ready is not None else None,
             provision_started_at=self.provision_started_at,
@@ -146,13 +157,12 @@ class _Session:
 # --- the run ---
 
 
-def run(
-    resolved: ResolvedConfig, io: IoContext, *, execution: ExecutionSettings, git: GitInfo, config_path: str, settings: Mapping[str, str], backend_factory: BackendFactory = DaskBackend
-) -> RunReport:
+def run(resolved: ResolvedConfig, context: RunContext, *, backend_factory: BackendFactory = DaskBackend) -> RunReport:
     """Execute the run end to end and write its manifest. Raises only when nothing could start."""
     config = resolved.config
+    io = context.io
     log.info("run starting", extra={"run_id": io.run_id, "stage": "load"})
-    session = _Session(execution, io, backend_factory)
+    session = _Session(context, backend_factory)
     order: tuple[PortfolioId, ...] = ()
     dataset_audits: tuple[DatasetAudit, ...] = ()
     assembly_audits: tuple[AssemblyAuditRecord, ...] = ()
@@ -183,7 +193,7 @@ def run(
     artifacts = (*persisted, *published)
     infrastructure_error = publish_error if publish_error is not None else cluster_error
     exit_code = _exit_code(ordered, infrastructure_error)
-    manifest = _manifest(resolved, io, git, config_path, settings, dataset_audits, assembly_audits, ordered, executed, artifacts, exit_code, infrastructure_error, session)
+    manifest = _manifest(resolved, session, dataset_audits, assembly_audits, ordered, executed, artifacts, exit_code, infrastructure_error)
     manifest_path = write_manifest(manifest, io.output_dir / io.run_id)
     log.info("run finished", extra={"run_id": io.run_id, "stage": "manifest", "exit_code": exit_code})
     return RunReport(run_id=io.run_id, outcomes=ordered, manifest=manifest, manifest_path=manifest_path, artifacts=artifacts, exit_code=exit_code)
@@ -209,7 +219,7 @@ def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session,
     config = resolved.config
     fail_fast = config.execution.on_error == "fail_fast"
     backend = session.wait()
-    expected = environment_for(config, cwd=Path.cwd(), image_digest=session.execution.image_digest)
+    expected = environment_for(config, cwd=Path.cwd(), image_digest=session.context.execution.image_digest)
     _check_workers(backend, shared, session, expected)
     dispatch = _Dispatch(backend, backend.share(shared), shared.run_id, len(shared.assembled.portfolio_ids), session, expected)
     builds, failed, keys, tradable = _build_all(dispatch, shared)
@@ -431,10 +441,7 @@ def _exit_code(outcomes: Sequence[Outcome], infrastructure_error: PortfolioFailu
 
 def _manifest(
     resolved: ResolvedConfig,
-    io: IoContext,
-    git: GitInfo,
-    config_path: str,
-    settings: Mapping[str, str],
+    session: _Session,
     audits: Sequence[DatasetAudit],
     assembly_audits: Sequence[AssemblyAuditRecord],
     outcomes: Sequence[Outcome],
@@ -442,9 +449,9 @@ def _manifest(
     artifacts: Sequence[Artifact],
     exit_code: int,
     infrastructure_error: PortfolioFailure | None,
-    session: _Session,
 ) -> RunManifest:
     config = resolved.config
+    context = session.context
     post = config.post_solve
     keys: Mapping[PortfolioId, Decimal] = executed.keys if executed is not None else {}
     predecessors: Mapping[PortfolioId, tuple[PortfolioId, ...]] = executed.schedule.predecessors if executed is not None else {}
@@ -460,17 +467,17 @@ def _manifest(
     solver_ver = solved[0].solution.solver_version if solved else solver_version(config.solver.name)
     packages = package_versions(step.qualname.partition(":")[0] for step in resolved.all_steps if step.is_external)
     manifest = RunManifest(
-        run_id=io.run_id,
+        run_id=context.io.run_id,
         run_name=config.run.name,
-        created_at_utc=created_at(io.clock.now()),
+        created_at_utc=created_at(context.io.clock.now()),
         as_of=config.run.as_of,
-        git_sha=git.sha,
-        git_dirty=git.dirty,
+        git_sha=context.git.sha,
+        git_dirty=context.git.dirty,
         schedule=executed.schedule.summary() if executed is not None else None,
         cluster=session.cluster_record(),
         versions=versions(config.solver.name, solver_ver, packages, session.worker_records()),
-        config=ConfigInfo(path=config_path, sha256=resolved.config_sha256, resolved=config.model_dump(mode="json")),
-        settings=dict(settings),
+        config=ConfigInfo(path=context.config_path, sha256=resolved.config_sha256, resolved=config.model_dump(mode="json")),
+        settings=dict(context.settings),
         terms=step_refs(resolved.terms),
         constraints=constraint_refs(resolved.constraints),
         datasets=tuple(audits),
