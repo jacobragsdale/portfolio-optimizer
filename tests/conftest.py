@@ -121,6 +121,10 @@ class Frames:
         """Build an ``orders`` frame."""
         return build(ORDERS, *rows)
 
+    def parameters(self, **values: object) -> pd.DataFrame:
+        """A ``name``/``value`` extra dataset of runtime settings, typed the way the csv loader's `decimal` kind produces it."""
+        return pd.DataFrame({"name": pd.Series(list(values), dtype="string"), "value": pd.Series([Decimal(str(value)) for value in values.values()], dtype="object")})
+
     def three_security_universe(self) -> pd.DataFrame:
         """The example's securities: A, B, C at 100, 50, 10 in one sector, C thin and dear to trade but worth the most."""
         return self.universe(

@@ -69,6 +69,16 @@ def test_pro_rata_fill_verifies_like_a_solve(make: Factories) -> None:
     assert result.w.sum() == pytest.approx(1.0), "cash_bounds [0, 0] means every dollar is invested"
 
 
+def test_the_runs_parameter_datasets_reach_the_solve_step_through_the_build(tmp_path: Path) -> None:
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), solve="tests.steps:cvxpy_reporting_a_runtime_parameter")
+    assert report.exit_code == EXIT_OK
+    for outcome in report.outcomes:
+        assert isinstance(outcome, PortfolioResult) and outcome.report.passed
+        assert outcome.solution.solver == "risk_aversion=2.5", "the example's global_parameters frame reached the step untouched, past the spec the build produced"
+    assert report.manifest.portfolios[0].solve is not None
+    assert report.manifest.portfolios[0].solve.solver == "risk_aversion=2.5", "and what the step read is recorded with the rest of the provenance"
+
+
 def test_the_example_runs_end_to_end_on_the_pro_rata_fill(tmp_path: Path) -> None:
     report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=half_cash_book(tmp_path), solve="pro_rata_fill")
     assert report.exit_code == EXIT_OK

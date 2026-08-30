@@ -30,7 +30,7 @@ def test_shipped_example_validates(example_text: str) -> None:
     assert config.run.name == "example_rebalance"
     assert config.execution.dependencies == "overlap"
     assert config.solve_order is None
-    assert config.rules[0].params == {"min_adv_shares": 1000}
+    assert config.rules[0].params == {}, "the liquidity threshold is loaded at runtime, not written into the config"
 
 
 def test_step_spec_accepts_bare_names_and_objects() -> None:

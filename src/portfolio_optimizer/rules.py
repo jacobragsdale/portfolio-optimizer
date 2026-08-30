@@ -48,16 +48,49 @@ def add_zero_alpha(data: PortfolioData) -> PortfolioData:
 
 
 class LiquidityParams(Params):
-    """Parameters for :func:`restrict_low_liquidity`."""
+    """Where :func:`restrict_low_liquidity` reads its threshold: an extra dataset of named values, not a number in the config."""
 
-    min_adv_shares: int = Field(ge=0)
+    dataset: str = Field(default="buy_universe_parameters", min_length=1)
+    key: str = Field(default="min_adv_shares", min_length=1)
 
 
 def restrict_low_liquidity(data: PortfolioData, params: LiquidityParams) -> PortfolioData:
-    """Freeze names whose average daily volume is below ``min_adv_shares``; they keep their current weight."""
-    illiquid = data.universe["adv_shares"] < params.min_adv_shares
+    """Freeze names whose average daily volume is below the threshold the parameter frame names; they keep their current weight.
+
+    The threshold is loaded at runtime rather than written into the config, which is what lets it change
+    daily without changing the run's identity — the frame is content-hashed and recorded in the manifest
+    like any other input, so two runs that used different thresholds are visibly different runs.
+    """
+    try:
+        frame = data.extras[params.dataset]
+    except KeyError:
+        msg = f"no extra dataset {params.dataset!r} to read {params.key!r} from; the run carries {sorted(data.extras)}"
+        raise ValueError(msg) from None
+    minimum = parameter(frame, params.key)
+    illiquid = data.universe["adv_shares"] < minimum
     universe = data.universe.assign(restricted=(data.universe["restricted"] | illiquid).astype("bool"))
     return data.with_changes(universe=universe)
+
+
+def parameter(frame: pd.DataFrame, key: str) -> Decimal:
+    """Read one value out of a ``name``/``value`` parameter frame, the narrowest shape a runtime setting can take.
+
+    The engine knows nothing about such a frame — it is an ordinary extra dataset — so this is a
+    convention of the template layer, and a desk with a wider one writes its own reader.
+    """
+    missing = [column for column in ("name", "value") if column not in frame.columns]
+    if missing:
+        msg = f"parameter frame is missing column(s) {missing}; it should carry 'name' and 'value'"
+        raise ValueError(msg)
+    rows = frame.loc[frame["name"] == key, "value"]
+    if len(rows) != 1:
+        msg = f"parameter {key!r}: expected exactly one row, found {len(rows)} among {sorted(str(name) for name in frame['name'])}"
+        raise ValueError(msg)
+    value = rows.iloc[0]
+    if isinstance(value, bool) or not isinstance(value, Decimal | int):
+        msg = f"parameter {key!r} is {type(value).__name__}, expected an exact Decimal — declare its kind in the loader's dtypes"
+        raise TypeError(msg)
+    return Decimal(value)
 
 
 class AttachUniverseColumnsParams(Params):

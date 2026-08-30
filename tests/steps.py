@@ -5,6 +5,7 @@ Nothing here is a test. A config refers to these as ``tests.steps:<name>``.
 
 import asyncio
 import threading
+from dataclasses import replace
 from decimal import Decimal
 
 import numpy as np
@@ -14,6 +15,8 @@ from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, Objecti
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ProblemSpec
 from portfolio_optimizer.loaders import CsvPerPortfolioParams, csv_per_portfolio
+from portfolio_optimizer.rules import parameter
+from portfolio_optimizer.solvers import cvxpy
 from portfolio_optimizer.solving import SolveRequest, SolveResult
 
 # --- steps that satisfy the resolver's contracts, for tests that need a resolvable config ---
@@ -70,6 +73,12 @@ def score_by_price(frames: Frames) -> Frames:
     holdings = frames["holdings"].merge(scores, on="security_id", how="left", validate="many_to_one")
     universe = frames["universe"].merge(scores, on="security_id", how="left", validate="one_to_one")
     return frames.with_frame("holdings", holdings).with_frame("universe", universe)
+
+
+def cvxpy_reporting_a_runtime_parameter(request: SolveRequest) -> SolveResult:
+    """The shipped cvxpy step, naming the runtime parameter it read as its solver: proof an extra dataset reaches this seam, and the shape of a step driven by one."""
+    value = parameter(request.extras["global_parameters"], "risk_aversion")
+    return replace(cvxpy(request), solver=f"risk_aversion={value}")
 
 
 def refuse_assembly(frames: Frames) -> Frames:

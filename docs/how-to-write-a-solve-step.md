@@ -19,7 +19,7 @@ A solve step takes a `SolveRequest` and returns a `SolveResult`. Everything it m
 request: the `ProblemSpec` (every input the solver would see, as numpy arrays aligned to
 `spec.security_ids`), the `ChainState` (what higher-priority portfolios traded on the side the run
 couples through, masked to what this one can trade there), the side profile, the resolved terms, this
-portfolio's constraint rows, and the `solver` block.
+portfolio's constraint rows, the run's extra datasets, and the `solver` block.
 
 ```python
 import numpy as np
@@ -93,6 +93,24 @@ are independently checked, which is honest but worth choosing deliberately.
 The shipped `solvers.cvxpy` is the worked example: `interpret_constraints` reads the template's
 `name`/`label`/`params` convention and resolves each row to a function in `terms.py`. Replacing that
 one function is how a desk brings its own syntax without touching the engine.
+
+### Runtime parameters arrive the same way
+
+`request.extras` is every extra dataset the run carried — any name the engine does not know — as the
+rules left it, each frame reduced to this portfolio's rows where it has a `portfolio_id` column. It is
+where a setting that is not a per-security column belongs: a risk aversion, a name count, a cash
+buffer. Nothing shipped interprets it, which is the point — the engine loads, hashes and records these
+frames and hands them over untouched.
+
+```python
+def with_our_library(request: SolveRequest) -> SolveResult:
+    settings = our_library.settings(request.extras["global_parameters"])  # a name/value frame, loaded and hashed like any input
+    ...
+```
+
+Because they are loaded rather than configured, changing one changes the manifest's dataset hashes and
+not the config hash, so `diff-manifests` reports "the data changed" — which is what a parameter change
+is.
 
 Set `solver` and `solver_version` on the result when your library can say what solved the problem;
 otherwise the engine records the step's qualified name and its package version.

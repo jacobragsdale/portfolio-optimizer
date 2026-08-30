@@ -46,6 +46,8 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
         buy_list.extend(f"{portfolio_id},{security}" for security in sorted(rng.sample(SECURITIES, k=rng.randint(1, 3))))
     (root / "portfolios.csv").write_text("\n".join(["portfolio_id,solve_order", *(f"{portfolio_id},{rng.randint(0, 1)}" for portfolio_id in portfolio_ids)]) + "\n")
     (root / "buy_list.csv").write_text("\n".join(buy_list) + "\n")
+    (root / "buy_universe_parameters.csv").write_text("name,value\nmin_adv_shares,1000\n")
+    (root / "global_parameters.csv").write_text("name,value\nrisk_aversion,2.5\n")
     universe_rows = (f"{security},{PRICES[security]},TECH,20000,1,false,{ALPHAS[security]}" for security in SECURITIES)
     (root / "universe.csv").write_text("\n".join(["security_id,price,sector,adv_shares,lot_size,restricted,alpha", *universe_rows]) + "\n")
     constraints = ["portfolio_id,name,label,params"]

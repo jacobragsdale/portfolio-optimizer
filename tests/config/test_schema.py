@@ -71,7 +71,7 @@ REJECTED: list[tuple[str, dict[str, object], str]] = [
     ("unknown top-level key", {"parallelism": 4}, "<root>"),
     ("missing required dataset", {"datasets": {name: {"loader": "csv"} for name in ("holdings", "universe", "details", "constraints")}}, "datasets"),
     ("malformed step name", {"rules": ["1bad"]}, "rules/0"),
-    ("shipped rule with required params given as a string", {"rules": ["restrict_low_liquidity"]}, "rules/0"),
+    ("shipped rule with required params given as a string", {"rules": ["cap_single_name"]}, "rules/0"),
     ("shipped rule with a wrong param type", {"rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": "many"}}]}, "rules/0"),
     ("shipped rule with an unknown param", {"rules": [{"name": "add_zero_alpha", "params": {"fill": 0}}]}, "rules/0"),
     ("shipped term with a negative weight", {"objective": {"terms": [{"name": "alpha", "params": {"weight": -1}}]}}, "objective/terms/0"),

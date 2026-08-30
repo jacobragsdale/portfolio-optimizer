@@ -157,12 +157,28 @@ trade identity its side implies. The section below explains why it is data rathe
 **Any other name is an extra dataset.** The engine knows nothing about its columns. It is visible to
 every assembly step by name, and whatever is still present after the last step is carried into each
 portfolio's bundle as `data.extras` — reduced to that portfolio's rows when it has a `portfolio_id`
-column, passed whole otherwise — where a rule can use it. A vendor's per-security analytics file is the
-usual shape: declared here, joined onto the universe by an assembly step, then dropped so it is not
-carried into every bundle for nothing. Because the engine cannot type an extra frame from a schema, the
-loader has to be told: `dtypes` names each column's kind — `security_id` a `string` key, a score a
-`decimal` so it arrives as an exact `Decimal` rather than a float — in the same vocabulary the engine's
-own schemas are written in.
+column, passed whole otherwise — where a rule can use it, and on past the build to the solve step as
+`request.extras`. Because the engine cannot type an extra frame from a schema, the loader has to be
+told: `dtypes` names each column's kind — `security_id` a `string` key, a score a `decimal` so it
+arrives as an exact `Decimal` rather than a float — in the same vocabulary the engine's own schemas are
+written in.
+
+Two shapes recur. A vendor's **per-security analytics** file is declared here, joined onto the universe
+by an assembly step, and then dropped so it is not carried into every bundle for nothing; from the
+universe the build exports it as a spec column a term can read. **Runtime parameters** are the other:
+a narrow `name`/`value` frame of numbers that change without the config changing.
+
+```json
+"global_parameters": {"loader": {"name": "csv", "params": {"path": "global_parameters.csv",
+                                                           "dtypes": {"name": "string", "value": "decimal"}}}}
+```
+
+The example declares two. `buy_universe_parameters` holds the `min_adv_shares` that
+`restrict_low_liquidity` reads, which is why that rule takes no number in the config;
+`global_parameters` holds settings for a solve step, and nothing shipped reads it — the `cvxpy` step has
+no business interpreting a desk's own settings. Both are content-hashed and recorded in the manifest
+like every other input, which is the point: a run driven by parameters is still a pure function of a
+snapshot, and `diff-manifests` says so when one changes.
 
 Once the portfolio list is known, **every dataset loader starts at once**, called with a `LoadRequest`
 carrying the dataset name, portfolio ids, `as_of_date`, the data root, the run id, and a rate limiter. An

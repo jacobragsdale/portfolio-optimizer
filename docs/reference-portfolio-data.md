@@ -33,7 +33,7 @@ raises `PortfolioDataError` listing all failures.
 | `universe` | frame | The whole `universe`, identical for every portfolio. Schema columns `security_id`, `price`, `sector`, `adv_shares`, `lot_size`, `restricted`; optional `alpha`, `tcost_bps`, `min_weight`, `max_weight`; any further columns allowed. |
 | `constraints` | frame | This portfolio's rows of `constraints`, in the desk's own shape. The engine validates only that `portfolio_id` is present and names this portfolio; every other column is carried untouched to the solve step. Empty when the run declares no such dataset. A rule may replace it. |
 | `as_of_date` | `datetime` | The run's `as_of_date`, timezone-aware UTC. |
-| `extras` | `Mapping[str, frame]` | Every non-engine dataset that remained after assembly. A dataset with a `portfolio_id` column is reduced to this portfolio's rows; one without is passed whole. Default `{}`. |
+| `extras` | `Mapping[str, frame]` | Every non-engine dataset that remained after assembly. A dataset with a `portfolio_id` column is reduced to this portfolio's rows; one without is passed whole. Carried past the build to the solve step as `request.extras`, which is where runtime parameters reach a solver. Default `{}`. |
 | `applied_rules` | `tuple[str, ...]` | Qualified names of the rules applied so far; maintained by the pipeline. |
 | `portfolio_id` | property | `details.portfolio_id`. |
 

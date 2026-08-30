@@ -5,6 +5,7 @@ turns them into a :class:`~portfolio_optimizer.domain.results.Solution` through 
 split, explains an infeasibility with arithmetic, and raises for everything else.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -43,7 +44,7 @@ class SolverFailureError(RuntimeError):
     """The solve step raised, or returned a status the engine cannot act on."""
 
 
-def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig, constraints: pd.DataFrame) -> Solution:
+def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig, constraints: pd.DataFrame, extras: Mapping[str, pd.DataFrame] | None = None) -> Solution:
     """Solve one portfolio with the configured step. Raises on infeasible, unbounded, or failure; never returns ``w0`` as a default."""
     spec_hash = spec.content_hash()
     step = resolved.solve
@@ -52,7 +53,7 @@ def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig, constr
         return Solution(
             w=empty, buy=empty, sell=empty, objective=0.0, status=SolveStatus.OPTIMAL, solver=step.qualname, solver_version=_step_version(step), solve_time_s=0.0, iterations=0, spec_hash=spec_hash
         )
-    request = SolveRequest(spec=spec, chain=chain, profile=resolved.profile, terms=resolved.terms, constraints=constraints, solver=resolved.config.solver)
+    request = SolveRequest(spec=spec, chain=chain, profile=resolved.profile, terms=resolved.terms, constraints=constraints, extras=extras or {}, solver=resolved.config.solver)
     result = step.invoke(request=request)
     if not isinstance(result, SolveResult):
         msg = f"solve step {step.qualname!r} returned {type(result).__name__}, expected SolveResult"

@@ -2,8 +2,8 @@
 
 The engine builds the problem as data (a :class:`~portfolio_optimizer.domain.results.ProblemSpec`),
 folds the chain, and then hands *one* step — configured as ``solve`` — everything it needs to decide
-the weights: the spec, the chain, the side profile, the resolved terms and constraints, and the
-cvxpy options block. The shipped step (``solvers.cvxpy``) builds and solves a cvxpy problem; a firm's
+the weights: the spec, the chain, the side profile, the resolved terms and constraints, the run's
+extra datasets, and the cvxpy options block. The shipped step (``solvers.cvxpy``) builds and solves a cvxpy problem; a firm's
 own library or a pure numpy function fits the same contract. Whatever the step does, the side profile
 turns its ``w`` into the trade and the verifier decides whether the answer is acceptable — the
 guarantees are the verifier's, not the step's.
@@ -12,6 +12,7 @@ A solve step returns weights and nothing else: it writes no files, reads no cloc
 portfolio. It may raise; the engine records that as the portfolio's failure at stage ``solve``.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -45,6 +46,17 @@ class SolveRequest:
 
     solver: SolverConfig
     """The ``solver`` block of the run config: cvxpy's solver and its options. A step that is not cvxpy may ignore it."""
+
+    extras: Mapping[str, pd.DataFrame] = field(default_factory=dict)
+    """Every extra dataset the run carried, as the rules left it: each one reduced to this portfolio's rows where it has a ``portfolio_id`` column, passed whole where it does not.
+
+    An extra is any dataset the engine does not know, and it knows nothing about these either — they
+    reach the step exactly as they were loaded. This is where runtime parameters live: a
+    ``global_parameters`` frame of run-wide settings, a per-security score a desk's own library reads,
+    anything a step needs that is not a per-security column of the universe. Each one is
+    content-hashed and recorded in the manifest like every other input, so a run driven by them is
+    still a pure function of a snapshot.
+    """
 
 
 @dataclass(frozen=True, slots=True, eq=False)

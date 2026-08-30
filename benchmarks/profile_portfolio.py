@@ -67,6 +67,7 @@ class Book:
     holdings: pd.DataFrame
     universe: pd.DataFrame
     constraints: pd.DataFrame
+    extras: dict[str, pd.DataFrame]
 
 
 def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, held: int, sides: str) -> Book:
@@ -127,7 +128,8 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
             "params": pd.Series(params, dtype="string"),
         }
     )
-    return Book(details=details, holdings=holdings, universe=universe, constraints=constraints)
+    extras = {"buy_universe_parameters": pd.DataFrame({"name": pd.Series(["min_adv_shares"], dtype="string"), "value": pd.Series([Decimal(1000)], dtype="object")})}
+    return Book(details=details, holdings=holdings, universe=universe, constraints=constraints, extras=extras)
 
 
 @dataclass(slots=True)
@@ -218,7 +220,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     book = synthetic_book(rng, securities=securities, sectors=sectors, held=held, sides=sides)
     report = Report()
     with report.stage("validate bundle", f"{securities:,} securities in {sectors} sectors, {held:,} held; sides {sides}, terms {', '.join(step.name for step in resolved.terms)}") as row:
-        data = PortfolioData(details=book.details, holdings=book.holdings, universe=book.universe, constraints=book.constraints, as_of_date=AS_OF)
+        data = PortfolioData(details=book.details, holdings=book.holdings, universe=book.universe, constraints=book.constraints, extras=book.extras, as_of_date=AS_OF)
     with report.stage("rules", ", ".join(step.name for step in resolved.rules)):
         ruled, _ = apply_rules(data, resolved.rules)
     with report.stage("spec build") as row:
@@ -274,7 +276,9 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
         solution.to_npz(solution_path)
         row.note = f"spec {spec_path.stat().st_size / MB:.1f} MB, solution {solution_path.stat().st_size / MB:.1f} MB on disk"
     with report.stage("pickle sizes") as row:
-        built = BuildResult(portfolio_id=PortfolioId(spec.portfolio_id), spec=spec, order_inputs=output.order_inputs, rule_audit=(), solve_order=Decimal(0), tradable=(), constraints=book.constraints)
+        built = BuildResult(
+            portfolio_id=PortfolioId(spec.portfolio_id), spec=spec, order_inputs=output.order_inputs, rule_audit=(), solve_order=Decimal(0), tradable=(), constraints=book.constraints, extras={}
+        )
         result = PortfolioResult(
             portfolio_id=spec.portfolio_id,
             spec=spec,

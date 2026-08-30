@@ -184,7 +184,8 @@ Loaders: `csv` (`path`, `dtypes`), `csv_per_portfolio` (`directory`, `dtypes`; r
 `Float64`, `bool`, `decimal` (an exact `Decimal`), or `datetime_utc` (a timezone-aware timestamp) —
 and applies to extra datasets only; engine-known datasets are typed by their schema, and a column no
 kind is declared for arrives as pandas inferred it. Assembly steps: `join`, `union`, `select`, `drop` (parameters above). Rules:
-`cap_single_name` (`max_weight`), `add_zero_alpha`, `restrict_low_liquidity` (`min_adv_shares`),
+`cap_single_name` (`max_weight`), `add_zero_alpha`, `restrict_low_liquidity` (`dataset`, `key`; reads its
+threshold from a `name`/`value` extra dataset, by default `buy_universe_parameters`/`min_adv_shares`),
 `attach_universe_columns` (`columns`; copies per-security columns from the universe onto holdings,
 matched on `security_id` — default every column the universe carries beyond its schema).
 Solve-order steps: `most_uninvested_first`. Terms: `alpha` (`column`), `tax_cost`,

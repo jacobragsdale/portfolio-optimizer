@@ -16,7 +16,7 @@ own failure: it returns a :class:`PortfolioFailure` naming the stage, so ``on_er
 
 import logging
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -99,6 +99,9 @@ class BuildResult:
     constraints: pd.DataFrame
     """This portfolio's constraint rows as the rules left them, carried to the solve step that interprets them."""
 
+    extras: Mapping[str, pd.DataFrame]
+    """The run's extra datasets as the rules left them, carried past the spec to the solve step for the same reason: the engine does not know what they mean."""
+
 
 @dataclass(frozen=True, slots=True)
 class BuildSummary:
@@ -127,6 +130,7 @@ def build_portfolio(data: PortfolioData, resolved: ResolvedConfig, fallback_solv
         solve_order=key,
         tradable=tradable_ids(resolved.profile, output.spec),
         constraints=ruled.constraints,
+        extras=ruled.extras,
     )
 
 
@@ -145,7 +149,7 @@ def solve_order_key(step: ResolvedStep, data: PortfolioData) -> Decimal:
 
 def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainState, run_id: str) -> PortfolioResult:
     """Solve, verify independently, round to orders, and bound the rounding drift."""
-    solution = solve(built.spec, chain, resolved, built.constraints)
+    solution = solve(built.spec, chain, resolved, built.constraints, built.extras)
     post = resolved.config.post_solve
     report = verify(
         built.spec,

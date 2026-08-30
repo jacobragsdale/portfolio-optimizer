@@ -8,6 +8,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from pandas.testing import assert_frame_equal
 
+from portfolio_optimizer.domain.data import PortfolioData
 from portfolio_optimizer.rules import AttachUniverseColumnsParams, CapSingleNameParams, LiquidityParams, add_zero_alpha, attach_universe_columns, cap_single_name, restrict_low_liquidity
 from tests.conftest import Factories, Frames, make_portfolio_data
 
@@ -41,9 +42,14 @@ def test_add_zero_alpha_on_an_empty_universe(make: Factories, frames: Frames) ->
 # --- restrict_low_liquidity ---
 
 
+def _with_threshold(make: Factories, threshold: int, **kwargs: object) -> PortfolioData:
+    """The canonical bundle carrying the parameter frame the rule reads its threshold from."""
+    return make.portfolio_data(extras={"buy_universe_parameters": Frames().parameters(min_adv_shares=threshold)}, **kwargs)
+
+
 @pytest.mark.parametrize(("threshold", "restricted"), [(100_000, [False, False, False]), (100_001, [False, False, True]), (1_000_001, [True, True, True])])
 def test_restrict_low_liquidity_freezes_names_strictly_below_the_threshold(make: Factories, threshold: int, restricted: list[bool]) -> None:
-    result = restrict_low_liquidity(make.portfolio_data(), LiquidityParams(min_adv_shares=threshold))
+    result = restrict_low_liquidity(_with_threshold(make, threshold), LiquidityParams())
     assert result.universe["restricted"].tolist() == restricted
     assert str(result.universe["restricted"].dtype) == "bool"
 
@@ -51,15 +57,27 @@ def test_restrict_low_liquidity_freezes_names_strictly_below_the_threshold(make:
 def test_restrict_low_liquidity_keeps_names_already_restricted(make: Factories, frames: Frames) -> None:
     universe = frames.three_security_universe()
     universe.loc[0, "restricted"] = True
-    result = restrict_low_liquidity(make.portfolio_data(universe=universe), LiquidityParams(min_adv_shares=0))
+    result = restrict_low_liquidity(_with_threshold(make, 0, universe=universe), LiquidityParams())
     assert result.universe["restricted"].tolist() == [True, False, False]
+
+
+def test_restrict_low_liquidity_says_which_dataset_it_wanted(make: Factories) -> None:
+    with pytest.raises(ValueError, match=r"no extra dataset 'buy_universe_parameters' to read 'min_adv_shares' from; the run carries \[\]"):
+        restrict_low_liquidity(make.portfolio_data(), LiquidityParams())
+
+
+def test_restrict_low_liquidity_says_which_parameter_is_missing(make: Factories) -> None:
+    empty = make.portfolio_data(extras={"buy_universe_parameters": Frames().parameters(max_names=150)})
+    with pytest.raises(ValueError, match=r"parameter 'min_adv_shares': expected exactly one row, found 0 among \['max_names'\]"):
+        restrict_low_liquidity(empty, LiquidityParams())
 
 
 @given(threshold=st.integers(min_value=0, max_value=2_000_000))
 @settings(deadline=None, max_examples=25)
 def test_restrict_low_liquidity_is_idempotent(threshold: int) -> None:
-    params = LiquidityParams(min_adv_shares=threshold)
-    once = restrict_low_liquidity(make_portfolio_data(), params)  # hypothesis tests cannot take fixtures
+    params = LiquidityParams()
+    extras = {"buy_universe_parameters": Frames().parameters(min_adv_shares=threshold)}
+    once = restrict_low_liquidity(make_portfolio_data(extras=extras), params)  # hypothesis tests cannot take fixtures
     twice = restrict_low_liquidity(once, params)
     assert_frame_equal(once.universe, twice.universe)
 

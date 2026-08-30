@@ -59,12 +59,28 @@ The quickest way to see what the engine does is to read the run it ships with,
     // terms.py, an optional `label`, and optional `params` as JSON text — which is where a sector
     // band's numbers live. Optional, like any dataset: omit it and nothing is constrained beyond
     // the trade identity.
-    "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}}
+    "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
+
+    // Any name the engine does not know is an extra dataset: loaded, content-hashed, and recorded in
+    // the manifest like every other input, then carried untouched to the rules and on to the solve
+    // step. That is where runtime parameters belong — numbers that change daily without changing the
+    // config. It cannot be typed from a schema, so `dtypes` declares each column's kind: `value` as
+    // `decimal` arrives as an exact `Decimal`. Nothing shipped reads `global_parameters`; the cvxpy
+    // step has no business interpreting a desk's settings, and a desk's own step reads it off
+    // `request.extras`.
+    "global_parameters": {
+      "loader": {"name": "csv", "params": {"path": "global_parameters.csv", "dtypes": {"name": "string", "value": "decimal"}}}
+    },
+
+    // The same shape, read earlier: `restrict_low_liquidity` takes its `min_adv_shares` from here.
+    "buy_universe_parameters": {
+      "loader": {"name": "csv", "params": {"path": "buy_universe_parameters.csv", "dtypes": {"name": "string", "value": "decimal"}}}
+    }
   },
 
   // Business logic, applied in order to each portfolio's bundle. A rule never sees another portfolio.
   // Freezing a name shrinks the tradable set, which is what lets portfolios solve concurrently.
-  "rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}],
+  "rules": ["restrict_low_liquidity"],
 
   // The sum of these terms is minimized; express a reward as a negative term — `alpha` is one, so
   // the run buys expected return and pays for it in tax and trading cost. Weights are strings so the
@@ -119,8 +135,9 @@ that kind of step, or by `package.module:function`, with optional `params` (see
   alone instead of stopping the run. An input from a throttled source adds a `rate_limit`.
 - **`rules`** — business logic, run per portfolio in order: each takes one portfolio's validated bundle
   and returns a modified one, and never sees other portfolios. The example runs one, freezing names too
-  illiquid to trade; `rules.py` also ships a rule that copies the universe's analytics columns onto
-  holdings — the attachment an assembly `join` would do if holdings were global.
+  illiquid to trade at a threshold it reads from `buy_universe_parameters` rather than from the config;
+  `rules.py` also ships a rule that copies the universe's analytics columns onto holdings — the
+  attachment an assembly `join` would do if holdings were global.
 - **`objective`** — the sum of the listed terms, always minimized; a reward is a negative term. Each term
   is a function returning a convex expression, and its `weight` is a string so the manifest records an
   exact `Decimal`.
@@ -145,7 +162,8 @@ one-sided problem a third the size), `solve` (`cvxpy`; a heuristic or your own l
 `solve_order` (a step that computes each portfolio's priority from the data instead of the column), and
 `rate_limits` (named pools shared by inputs on one backend).
 
-Numbers — positions, prices, caps, bands, tax rates — are never in the config; they live in the data.
+Numbers — positions, prices, caps, bands, tax rates, a liquidity threshold — are never in the config;
+they live in the data, including the run's own parameters.
 Behavior is never in the config either; it lives in the functions the config names.
 [Reading a run config](docs/explanation-run-config.md) explains each block in depth, and
 [the reference](docs/reference-run-config.md) lists every key with its type and default.

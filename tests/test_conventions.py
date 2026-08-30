@@ -30,15 +30,13 @@ def _kind_for(fn: object, module: ModuleType) -> StepKind:
     raise AssertionError(msg)
 
 
+HELPERS: dict[str, frozenset[str]] = {terms.__name__: frozenset({"adv_remaining"}), rules.__name__: frozenset({"parameter"})}
+"""Public functions in a step module that are not steps: helpers the shipped steps, the verifier, and a desk's own steps share."""
+
+
 def _public_step_functions(module: ModuleType) -> list[str]:
-    names: list[str] = []
-    for name, value in vars(module).items():
-        if name.startswith("_") or not inspect.isfunction(value) or value.__module__ != module.__name__:
-            continue
-        if module is terms and name == "adv_remaining":
-            continue  # a helper shared with the verifier, not a step
-        names.append(name)
-    return names
+    helpers = HELPERS.get(module.__name__, frozenset())
+    return [name for name, value in vars(module).items() if not name.startswith("_") and inspect.isfunction(value) and value.__module__ == module.__name__ and name not in helpers]
 
 
 @pytest.mark.parametrize("module", [loaders, rules, terms, sinks], ids=lambda m: m.__name__.rsplit(".", 1)[-1])

@@ -158,7 +158,7 @@ constructs a new `PortfolioData` and therefore **re-runs every check from stage 
 the optimizer a broken bundle. Each rule gets an audit record of row counts before and after.
 
 The shipped rules (`rules.py`) show the patterns: `restrict_low_liquidity` freezes names below an ADV
-threshold, `add_zero_alpha` fills in a column the objective needs, `attach_universe_columns` copies the universe's analytics
+threshold it reads from an extra dataset rather than from the config, `add_zero_alpha` fills in a column the objective needs, `attach_universe_columns` copies the universe's analytics
 onto holdings for a book that loads holdings per account, `cap_single_name` tightens the style. A rule never sees other
 portfolios. What it *can* do is shrink the portfolio's tradable set — freeze a name, or cap it at its
 current weight in a run that couples through buys — and that is what lets portfolios solve
@@ -194,8 +194,10 @@ for stage 8.
 ## 6. Solve
 
 `engine/solve.py` hands the configured **solve step** a `SolveRequest` — the spec, the chain, the
-side profile, the resolved terms and constraints, the `solver` block — and takes back a
-`SolveResult`: weights aligned to the spec and, if the step minimized one, an objective. The default
+side profile, the resolved terms and constraints, the run's extra datasets as the rules left them, the
+`solver` block — and takes back a `SolveResult`: weights aligned to the spec and, if the step minimized
+one, an objective. The constraints and the extras cross the build unchanged for the same reason: the
+engine does not know what either means, so it carries rather than interprets them. The default
 step, `solvers.cvxpy`, creates the side profile's decision variables — `w`, `buy`, and `sell` under
 `both`; `w` alone under `buy` or `sell`, with the trade an expression of it — all fractions of NAV,
 adds the profile's trade identity, invokes each configured term and constraint function to obtain
