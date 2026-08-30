@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, Field
 
-from portfolio_optimizer.domain.results import Artifact, AssemblyAuditRecord, ConstraintReport, DriftReport, PortfolioFailure, PortfolioResult, RuleAuditRecord, StepRef
+from portfolio_optimizer.domain.results import Artifact, AssemblyAuditRecord, PortfolioFailure, PortfolioResult, RuleAuditRecord, StepRef
 from portfolio_optimizer.domain.types import StrictModel
 from portfolio_optimizer.engine.environment import WorkerEnvironment, distribution_version
 from portfolio_optimizer.engine.hashing import frame_sha256, json_sha256
@@ -17,7 +17,6 @@ from portfolio_optimizer.engine.load import DatasetAudit
 from portfolio_optimizer.engine.schedule import ScheduleSummary
 
 MANIFEST_FILENAME = "manifest.json"
-STAGES: tuple[str, ...] = ("config", "datasets", "assembly", "rules", "spec", "solve", "orders")
 
 
 class WorkerRecord(StrictModel):
@@ -126,11 +125,10 @@ class RuleRecord(StrictModel):
 
 
 class SolveRecord(StrictModel):
-    """Solver identity and outcome."""
+    """Solver identity and outcome; the cvxpy version behind the shipped step is in ``versions``."""
 
     solver: str
     solver_version: str
-    cvxpy_version: str
     status: str
     iterations: int | None
     objective_value: float | None
@@ -138,10 +136,9 @@ class SolveRecord(StrictModel):
 
 
 class CheckRecord(StrictModel):
-    """Outcome of the independent verification."""
+    """Outcome of the independent verification; ``tolerance`` is the violation every residual was held to."""
 
-    tolerance_eq: float
-    tolerance_ineq: float
+    tolerance: float
     max_violation: float
     violated: tuple[str, ...]
     objective_gap: float
@@ -285,9 +282,9 @@ def rule_records(audits: Sequence[RuleAuditRecord]) -> tuple[RuleRecord, ...]:
     return tuple(RuleRecord(qualname=a.qualname, source_sha256=a.source_sha256, params_sha256=a.params_sha256, rows_in=dict(a.rows_in), rows_out=dict(a.rows_out)) for a in audits)
 
 
-def solved_record(result: PortfolioResult, report: ConstraintReport, drift: DriftReport, tolerance_eq: float, tolerance_ineq: float, *, solve_order: str | None = None) -> PortfolioRecord:
-    """The manifest record for a portfolio that produced orders."""
-    solution = result.solution
+def solved_record(result: PortfolioResult, violation_tol: float, *, solve_order: str | None = None) -> PortfolioRecord:
+    """The manifest record for a portfolio that produced orders; ``violation_tol`` is what its verification was held to."""
+    solution, report, drift = result.solution, result.report, result.drift
     gross = sum((notional for notional in result.orders["notional"]), start=0)
     return PortfolioRecord(
         portfolio_id=result.portfolio_id,
@@ -300,15 +297,13 @@ def solved_record(result: PortfolioResult, report: ConstraintReport, drift: Drif
         solve=SolveRecord(
             solver=solution.solver,
             solver_version=solution.solver_version,
-            cvxpy_version=solution.cvxpy_version,
             status=str(solution.status),
             iterations=solution.iterations,
             objective_value=solution.objective,
             solve_time_s=solution.solve_time_s,
         ),
         check=CheckRecord(
-            tolerance_eq=tolerance_eq,
-            tolerance_ineq=tolerance_ineq,
+            tolerance=violation_tol,
             max_violation=report.max_violation,
             violated=report.violated,
             objective_gap=report.objective_gap,

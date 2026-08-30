@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal, Self, override
+from typing import Self, override
 
 import pandas as pd
 from pydantic import Field, model_validator
@@ -97,7 +97,6 @@ class StyleConstraints(StrictModel):
     cash_bounds: tuple[Decimal, Decimal]
     max_adv_participation: Decimal = Field(ge=0, le=1)
     sector_bounds: dict[str, tuple[Decimal, Decimal]] = Field(default_factory=dict)
-    long_only: Literal[True] = True
 
     @model_validator(mode="after")
     def _bounds_are_ordered(self) -> Self:
@@ -118,10 +117,11 @@ def style_constraints_from_mapping(mapping: Mapping[str, object]) -> StyleConstr
     The mapping is round-tripped through JSON so that money written as strings becomes
     ``Decimal`` exactly; ``Decimal`` values already present are serialized as strings first.
     """
-    return StyleConstraints.model_validate_json(json.dumps(mapping, default=_json_default))
+    return StyleConstraints.model_validate_json(json.dumps(mapping, default=json_default))
 
 
-def _json_default(value: object) -> str:
+def json_default(value: object) -> str:
+    """``json.dumps(default=...)`` for the engine's values: a ``Decimal`` is written as plain digits, nothing else is serializable."""
     if isinstance(value, Decimal):
         return format(value, "f")
     msg = f"object of type {type(value).__name__} is not JSON serializable"
@@ -138,8 +138,8 @@ def details_from_frame(frame: pd.DataFrame, portfolio_id: PortfolioId) -> Portfo
     return PortfolioDetails.model_validate(record)
 
 
-_SCHEMA_FRAMES: tuple[str, ...] = ("holdings", "universe", "targets")
-"""The bundle's frames that have a schema, and the only names ``prevalidated`` may carry."""
+PREVALIDATED_FRAMES: frozenset[str] = frozenset({"holdings", "universe", "targets"})
+"""The bundle's frames that have a schema: the only names ``prevalidated`` may carry, and what the engine marks when it slices from assembled datasets."""
 
 
 class PortfolioDataError(ValueError):
@@ -184,7 +184,7 @@ class PortfolioData:
     def __post_init__(self) -> None:
         object.__setattr__(self, "extras", dict(self.extras))
         failures: list[str] = []
-        unknown = sorted(self.prevalidated - set(_SCHEMA_FRAMES))
+        unknown = sorted(self.prevalidated - PREVALIDATED_FRAMES)
         if unknown:
             failures.append(f"prevalidated names unknown frames {unknown}")
         for name, frame, schema in (("holdings", self.holdings, HOLDINGS), ("universe", self.universe, UNIVERSE), ("targets", self.targets, TARGETS)):

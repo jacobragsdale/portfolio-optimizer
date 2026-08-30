@@ -71,12 +71,11 @@ def test_pro_rata_fill_verifies_like_a_solve(make: Factories) -> None:
         status=SolveStatus.OPTIMAL,
         solver="f",
         solver_version="0",
-        cvxpy_version="n/a",
         solve_time_s=0.0,
         iterations=None,
         spec_hash=output.spec.content_hash(),
     )
-    report = verify(output.spec, solution, chain, step_refs(resolved.terms), constraint_refs(resolved.constraints))
+    report = verify(output.spec, solution, chain, step_refs(resolved.terms), constraint_refs(resolved.constraints), profile=TWO_SIDED)
     assert report.passed, report.violated
     assert result.w.sum() == pytest.approx(1.0), "cash_bounds [0, 0] means every dollar is invested"
 

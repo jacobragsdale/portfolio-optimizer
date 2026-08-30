@@ -24,13 +24,12 @@ from distributed import LocalCluster
 
 from portfolio_optimizer.config.models import RunConfig, load_run_config
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
-from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, scale, total
 from portfolio_optimizer.domain.data import Frames as DatasetFrames
 from portfolio_optimizer.domain.data import IoContext, LoadRequest, PortfolioData, PortfolioDetails, StyleConstraints
 from portfolio_optimizer.domain.frames import FrameSchema
 from portfolio_optimizer.domain.results import F64, Artifact, ProblemSpec
 from portfolio_optimizer.domain.schemas import DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, TARGETS, UNIVERSE
-from portfolio_optimizer.domain.types import Clock, IdFactory
 from portfolio_optimizer.settings import ExecutionSettings
 from portfolio_optimizer.solving import SolveRequest, SolveResult
 
@@ -85,7 +84,6 @@ _DEFAULTS: dict[str, Row] = {
         "as_of": AS_OF,
     },
 }
-_SCHEMAS: dict[str, FrameSchema] = {schema.name: schema for schema in (PORTFOLIOS, DETAILS, HOLDINGS, UNIVERSE, TARGETS, ORDERS)}
 
 
 def build(schema: FrameSchema, *rows: Row) -> pd.DataFrame:
@@ -221,7 +219,6 @@ class Factories:
     style: Callable[..., StyleConstraints]
     portfolio_data: Callable[..., PortfolioData]
     spec: Callable[..., ProblemSpec]
-    schemas: Mapping[str, FrameSchema]
 
 
 @pytest.fixture
@@ -233,10 +230,11 @@ def frames() -> Frames:
 @pytest.fixture
 def make() -> Factories:
     """Domain-object factories."""
-    return Factories(details=make_details, style=make_style, portfolio_data=make_portfolio_data, spec=make_spec, schemas=_SCHEMAS)
+    return Factories(details=make_details, style=make_style, portfolio_data=make_portfolio_data, spec=make_spec)
 
 
 NO_CHAIN_CONSTRAINTS = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds"]
+"""The example's constraints without the chain-aware ADV cap: nothing reads the chain, so no portfolio waits for another."""
 BUY_ONLY_OBJECTIVE: dict[str, object] = {"terms": [{"name": "tracking_error", "params": {"weight": "1.0"}}, {"name": "transaction_cost", "params": {"weight": "1.0"}}]}
 """The example's objective without ``tax_cost``, which reads ``sell`` and so cannot run in a buy-only run."""
 
@@ -277,15 +275,13 @@ def sell_book(tmp_path: Path) -> Path:
     return root
 
 
-"""The example's constraints without the chain-aware ADV cap: nothing reads the chain, so no portfolio waits for another."""
-
-
 # --- steps that satisfy the resolver's contracts, for tests that need a resolvable config ---
 
 
 def noop_term(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:
-    """Never invoked; exists so a config can resolve before real terms are exercised."""
-    raise NotImplementedError
+    """A zero objective: lets a config resolve and solve without exercising a real term."""
+    del spec
+    return ObjectiveTerm("noop", scale(0.0, total(x.w)))
 
 
 def lying_term(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:
@@ -371,12 +367,12 @@ def example_config_real(**overrides: object) -> RunConfig:
 
 def resolved_example(**overrides: object) -> ResolvedConfig:
     """``example_config`` resolved."""
-    return resolve_config(example_config(**overrides), config_sha256="example")
+    return resolve_config(example_config(**overrides))
 
 
 def resolved_example_real(**overrides: object) -> ResolvedConfig:
     """``example_config_real`` resolved."""
-    return resolve_config(example_config_real(**overrides), config_sha256="example")
+    return resolve_config(example_config_real(**overrides))
 
 
 class FixedClock:
@@ -401,23 +397,9 @@ class FixedIds:
         return self.run_id
 
 
-def failing_sink(orders: pd.DataFrame, io: IoContext) -> tuple[Artifact, ...]:
-    """A sink whose destination is down."""
-    del orders, io
-    msg = "trading gateway unreachable"
-    raise OSError(msg)
-
-
 def io_context(output_dir: Path, data_root: Path = EXAMPLE_DATA, run_id: str = "run-test") -> IoContext:
     """An ``IoContext`` with a fixed clock."""
     return IoContext(data_root=data_root, output_dir=output_dir, run_id=run_id, clock=FixedClock())
-
-
-def _protocols_hold(clock: Clock, ids: IdFactory) -> None:
-    del clock, ids
-
-
-_protocols_hold(FixedClock(), FixedIds())
 
 
 # --- one local Dask cluster for the whole session; runs connect to it by address so no test pays a cluster start ---

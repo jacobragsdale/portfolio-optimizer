@@ -12,11 +12,9 @@ import numpy as np
 from portfolio_optimizer.config.resolve import ResolvedConfig
 from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus
-from portfolio_optimizer.domain.sides import TWO_SIDED, SideProfile
+from portfolio_optimizer.domain.sides import SideProfile
 from portfolio_optimizer.engine.environment import package_versions
 from portfolio_optimizer.solving import SolveRequest, SolveResult, SolveSetupError
-
-__all__ = ["InfeasibilityReport", "InfeasibleError", "SolveSetupError", "SolverFailureError", "UnboundedError", "diagnose_infeasibility", "solve"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,17 +49,7 @@ def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig) -> Sol
     if spec.n == 0:
         empty = np.zeros(0)
         return Solution(
-            w=empty,
-            buy=empty,
-            sell=empty,
-            objective=0.0,
-            status=SolveStatus.OPTIMAL,
-            solver=step.qualname,
-            solver_version=_step_version(step),
-            cvxpy_version="n/a",
-            solve_time_s=0.0,
-            iterations=0,
-            spec_hash=spec_hash,
+            w=empty, buy=empty, sell=empty, objective=0.0, status=SolveStatus.OPTIMAL, solver=step.qualname, solver_version=_step_version(step), solve_time_s=0.0, iterations=0, spec_hash=spec_hash
         )
     request = SolveRequest(spec=spec, chain=chain, profile=resolved.profile, terms=resolved.terms, constraints=resolved.constraints, solver=resolved.config.solver)
     result = step.invoke(request=request)
@@ -92,7 +80,6 @@ def _classify(result: SolveResult, spec: ProblemSpec, chain: ChainState, spec_ha
             status=result.status,
             solver=solver,
             solver_version=result.solver_version if result.solver_version is not None else _step_version(step),
-            cvxpy_version=result.cvxpy_version,
             solve_time_s=result.solve_time_s,
             iterations=result.iterations,
             spec_hash=spec_hash,
@@ -111,7 +98,7 @@ def _step_version(step: ResolvedStep) -> str:
     return next(iter(package_versions([step.qualname.partition(":")[0]]).values()), "unknown")
 
 
-def diagnose_infeasibility(spec: ProblemSpec, chain: ChainState, *, profile: SideProfile = TWO_SIDED) -> InfeasibilityReport:
+def diagnose_infeasibility(spec: ProblemSpec, chain: ChainState, *, profile: SideProfile) -> InfeasibilityReport:
     """Arithmetic checks that explain the common infeasibilities without another solve; the profile adds the ones its side creates."""
     findings: list[str] = profile.infeasible_starts(spec)
     invested_lb = 1.0 - spec.cash_ub

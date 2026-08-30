@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus, StepRef, Tolerances
+from portfolio_optimizer.domain.sides import TWO_SIDED
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.check import CONSTRAINT_TWINS, TERM_TWINS, verify
 from portfolio_optimizer.engine.solve import solve
@@ -29,7 +30,6 @@ def rest_solution(spec: ProblemSpec, **overrides: object) -> Solution:
         "status": SolveStatus.OPTIMAL,
         "solver": "X",
         "solver_version": "0",
-        "cvxpy_version": "0",
         "solve_time_s": 0.0,
         "iterations": 1,
         "spec_hash": spec.content_hash(),
@@ -39,7 +39,7 @@ def rest_solution(spec: ProblemSpec, **overrides: object) -> Solution:
 
 def test_the_resting_portfolio_verifies_when_it_is_feasible(make: Factories) -> None:
     spec = make.spec()
-    report = verify(spec, rest_solution(spec), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS)
+    report = verify(spec, rest_solution(spec), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS, profile=TWO_SIDED)
     assert report.passed
     assert report.violated == ()
     assert report.unverified == ()
@@ -68,23 +68,25 @@ PERTURBATIONS: list[tuple[str, Perturbation]] = [
 def test_each_violation_is_detected(make: Factories, name: str, perturb: Perturbation) -> None:
     spec = make.spec()
     solution = rest_solution(spec, **perturb(spec, spec.w0))
-    report = verify(spec, solution, ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS)
+    report = verify(spec, solution, ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS, profile=TWO_SIDED)
     assert name in report.violated, report.violated
     assert report.max_violation > 0
 
 
 def test_sector_bounds_use_the_configured_tolerance(make: Factories) -> None:
     spec = make.spec(sector_ub=np.array([0.5]))
-    tight = verify(spec, rest_solution(spec), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS)
+    tight = verify(spec, rest_solution(spec), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS, profile=TWO_SIDED)
     assert "sector_ub" in tight.violated
-    loose = verify(spec, rest_solution(spec), ChainState.empty(spec.security_ids), TERMS, [StepRef("portfolio_optimizer.terms:sector_bounds", {"tolerance": "0.5"}, "sector_bounds")])
+    loose = verify(
+        spec, rest_solution(spec), ChainState.empty(spec.security_ids), TERMS, [StepRef("portfolio_optimizer.terms:sector_bounds", {"tolerance": "0.5"}, "sector_bounds")], profile=TWO_SIDED
+    )
     assert loose.passed
 
 
 def test_a_violation_exactly_at_tolerance_passes(make: Factories) -> None:
     spec = make.spec()
     solution = rest_solution(spec, w=spec.w0 + np.array([1e-6, 0, 0]))
-    report = verify(spec, solution, ChainState.empty(spec.security_ids), [], [CONSTRAINTS[0]], Tolerances(eq=1e-6))
+    report = verify(spec, solution, ChainState.empty(spec.security_ids), [], [CONSTRAINTS[0]], profile=TWO_SIDED, tolerances=Tolerances(violation=1e-6))
     trade_balance = next(check for check in report.checks if check.name == "trade_balance")
     assert trade_balance.label == "identity"
     assert next(check for check in report.checks if check.name == "long_only").label == "long_only"
@@ -95,18 +97,23 @@ def test_a_violation_exactly_at_tolerance_passes(make: Factories) -> None:
 
 def test_hash_mismatch_and_non_finite_values_fail(make: Factories) -> None:
     spec = make.spec()
-    stale = verify(spec, rest_solution(spec, spec_hash="0" * 64), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS)
+    stale = verify(spec, rest_solution(spec, spec_hash="0" * 64), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS, profile=TWO_SIDED)
     assert "spec_hash_matches" in stale.violated
-    broken = verify(spec, rest_solution(spec, w=np.array([np.nan, 0.5, 0.5])), ChainState.empty(spec.security_ids), TERMS, [])
+    broken = verify(spec, rest_solution(spec, w=np.array([np.nan, 0.5, 0.5])), ChainState.empty(spec.security_ids), TERMS, [], profile=TWO_SIDED)
     assert "finite" in broken.violated
 
 
 def test_objective_gap_is_checked_and_custom_steps_are_reported_unverified(make: Factories) -> None:
     spec = make.spec()
-    wrong_objective = verify(spec, rest_solution(spec, objective=0.5), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS)
+    wrong_objective = verify(spec, rest_solution(spec, objective=0.5), ChainState.empty(spec.security_ids), TERMS, CONSTRAINTS, profile=TWO_SIDED)
     assert not wrong_objective.objective_passed
     custom = verify(
-        spec, rest_solution(spec, objective=0.5), ChainState.empty(spec.security_ids), [*TERMS, StepRef("my_firm.terms:esg", {}, "esg")], [*CONSTRAINTS, StepRef("my_firm.terms:beta", {}, "beta")]
+        spec,
+        rest_solution(spec, objective=0.5),
+        ChainState.empty(spec.security_ids),
+        [*TERMS, StepRef("my_firm.terms:esg", {}, "esg")],
+        [*CONSTRAINTS, StepRef("my_firm.terms:beta", {}, "beta")],
+        profile=TWO_SIDED,
     )
     assert custom.unverified == ("my_firm.terms:beta", "my_firm.terms:esg")
     assert custom.objective_passed  # the total cannot be compared when a term is unknown
@@ -132,7 +139,7 @@ def test_true_optimum_verifies_including_the_objective(make: Factories, frames: 
     solution = solve(spec, chain, resolved)
     refs_terms = step_refs(resolved.terms)
     refs_constraints = constraint_refs(resolved.constraints)
-    report = verify(spec, solution, chain, refs_terms, refs_constraints)
+    report = verify(spec, solution, chain, refs_terms, refs_constraints, profile=TWO_SIDED)
     assert report.passed, (report.violated, report.objective_gap)
     assert report.objective_gap <= 1e-9 + 1e-5 * abs(report.recomputed_objective)
 
@@ -144,7 +151,7 @@ def test_verification_works_from_persisted_files(make: Factories, tmp_path: Path
     solution.to_npz(tmp_path / "solution.npz")
     loaded_spec = ProblemSpec.from_npz(tmp_path / "spec.npz")
     loaded_solution = Solution.from_npz(tmp_path / "solution.npz")
-    assert verify(loaded_spec, loaded_solution, ChainState.empty(loaded_spec.security_ids), TERMS, CONSTRAINTS).passed
+    assert verify(loaded_spec, loaded_solution, ChainState.empty(loaded_spec.security_ids), TERMS, CONSTRAINTS, profile=TWO_SIDED).passed
 
 
 def test_check_module_never_imports_cvxpy() -> None:

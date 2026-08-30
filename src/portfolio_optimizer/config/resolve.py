@@ -7,9 +7,10 @@ and — for terms and constraints only — an optional ``chain`` argument that r
 portfolios traded on the side the run couples through. The engine calls steps with keyword arguments, so the order does not matter.
 Loaders may be ``async def``; every other kind runs synchronously.
 
-The solver is checked here too — known to the adapter, installed, able to honor ``time_limit_s`` —
-because every process that will solve resolves the config first: the client at ``validate-config``
-and at the start of ``run``, and each worker before it does any work.
+Resolution is every check a config can pass without data: the solver — known to the adapter, installed,
+able to honor ``time_limit_s`` — and one dry construction of every term and constraint under the run's
+side profile. Every process that will solve resolves the config first: the client at ``validate-config``
+and at the start of ``run``, and each worker before it does any work, so all of them apply the same checks.
 """
 
 import hashlib
@@ -27,7 +28,7 @@ import pandas as pd
 from pydantic import ValidationError
 from scipy.sparse import csr_array
 
-from portfolio_optimizer.config.models import RunConfig, StepSpec
+from portfolio_optimizer.config.models import RunConfig, StepSpec, config_sha256
 from portfolio_optimizer.config.steps import ResolvedConstraint, ResolvedStep, StepKind
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, installed_solvers, solver_failures
 from portfolio_optimizer.cvx.sides import decision_variables
@@ -37,22 +38,7 @@ from portfolio_optimizer.domain.sides import SideProfile, profile_for
 from portfolio_optimizer.domain.types import Params
 from portfolio_optimizer.solving import SolveRequest, SolveResult
 
-__all__ = [
-    "CONTRACTS",
-    "TEMPLATE_MODULES",
-    "ConfigResolutionError",
-    "Contract",
-    "ResolvedConfig",
-    "ResolvedConstraint",
-    "ResolvedStep",
-    "StepKind",
-    "construction_failures",
-    "resolve_config",
-    "resolve_step",
-]
-
 TEMPLATE_MODULES: Mapping[StepKind, str] = {
-    "portfolios": "portfolio_optimizer.loaders",
     "loader": "portfolio_optimizer.loaders",
     "constraints_loader": "portfolio_optimizer.loaders",
     "assembly": "portfolio_optimizer.assembly",
@@ -69,25 +55,24 @@ type ConstraintsMapping = Mapping[str, Mapping[str, object]]
 
 @dataclass(frozen=True, slots=True)
 class Contract:
-    """The signature a step of one kind must have."""
+    """The signature a step of one kind must have; ``chain`` says whether the kind may declare a ``chain: ChainState`` argument."""
 
     engine_args: Mapping[str, type]
-    context: tuple[str, type] | None
     returns: tuple[object, ...]
+    chain: bool = False
     allows_async: bool = False
 
 
 CONTRACTS: Mapping[StepKind, Contract] = {
-    "portfolios": Contract({"request": LoadRequest}, None, (pd.DataFrame,), allows_async=True),
-    "loader": Contract({"request": LoadRequest}, None, (pd.DataFrame,), allows_async=True),
-    "constraints_loader": Contract({"request": LoadRequest}, None, (ConstraintsMapping.__value__, dict[str, dict[str, object]]), allows_async=True),
-    "assembly": Contract({"frames": Frames}, None, (Frames,)),
-    "rule": Contract({"data": PortfolioData}, None, (PortfolioData,)),
-    "solve_order": Contract({"data": PortfolioData}, None, (Decimal,)),
-    "term": Contract({"x": DecisionVars, "spec": ProblemSpec}, ("chain", ChainState), (ObjectiveTerm,)),
-    "constraint": Contract({"x": DecisionVars, "spec": ProblemSpec}, ("chain", ChainState), (ConstraintSet,)),
-    "solve": Contract({"request": SolveRequest}, None, (SolveResult,)),
-    "sink": Contract({"orders": pd.DataFrame, "io": IoContext}, None, (tuple[Artifact, ...],)),
+    "loader": Contract({"request": LoadRequest}, (pd.DataFrame,), allows_async=True),
+    "constraints_loader": Contract({"request": LoadRequest}, (ConstraintsMapping.__value__, dict[str, dict[str, object]]), allows_async=True),
+    "assembly": Contract({"frames": Frames}, (Frames,)),
+    "rule": Contract({"data": PortfolioData}, (PortfolioData,)),
+    "solve_order": Contract({"data": PortfolioData}, (Decimal,)),
+    "term": Contract({"x": DecisionVars, "spec": ProblemSpec}, (ObjectiveTerm,), chain=True),
+    "constraint": Contract({"x": DecisionVars, "spec": ProblemSpec}, (ConstraintSet,), chain=True),
+    "solve": Contract({"request": SolveRequest}, (SolveResult,)),
+    "sink": Contract({"orders": pd.DataFrame, "io": IoContext}, (tuple[Artifact, ...],)),
 }
 
 
@@ -119,7 +104,7 @@ class ResolvedConfig:
     @property
     def chain_aware_steps(self) -> tuple[ResolvedStep, ...]:
         """Terms and constraints that read what higher-priority portfolios traded; if there are none, no portfolio waits for another."""
-        return tuple(step for step in (*self.terms, *(constraint.step for constraint in self.constraints)) if step.needs_context)
+        return tuple(step for step in (*self.terms, *(constraint.step for constraint in self.constraints)) if step.reads_chain)
 
     @property
     def all_steps(self) -> tuple[ResolvedStep, ...]:
@@ -128,11 +113,12 @@ class ResolvedConfig:
         return (self.portfolios, *self.loaders.values(), *self.assembly, *self.rules, *ordering, *self.terms, *(constraint.step for constraint in self.constraints), self.solve, self.sink)
 
 
-def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable[[], Sequence[str]] = installed_solvers) -> ResolvedConfig:
-    """Resolve every step in ``config`` and check its solver can run in this process; every failure is collected and reported together.
+def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] = installed_solvers) -> ResolvedConfig:
+    """Resolve every step in ``config``, check its solver can run in this process, and construct every term and constraint once.
 
-    ``installed`` names the solvers cvxpy can use here; it is a parameter so the check can be exercised
-    against any environment.
+    Every failure resolution can see is collected and reported together; dry construction runs only
+    on a config whose steps all resolved. ``installed`` names the solvers cvxpy can use here; it is a
+    parameter so the check can be exercised against any environment.
     """
     failures: list[str] = [f"solver: {failure}" for failure in solver_failures(config.solver.name, config.solver.time_limit_s, installed())]
 
@@ -143,7 +129,7 @@ def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable
             failures.extend(f"{where}: {failure}" for failure in error.failures)
             return None
 
-    portfolios = resolve(config.portfolios.loader, "portfolios", "portfolios")
+    portfolios = resolve(config.portfolios.loader, "loader", "portfolios")
     loaders = {name: resolve(dataset.loader, "constraints_loader" if name == "constraints" else "loader", f"datasets.{name}") for name, dataset in config.datasets.items()}
     assembly = [resolve(spec, "assembly", f"assembly[{i}]") for i, spec in enumerate(config.assembly)]
     rules = [resolve(spec, "rule", f"rules[{i}]") for i, spec in enumerate(config.rules)]
@@ -166,9 +152,9 @@ def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable
     resolved_loaders = {name: step for name, step in loaders.items() if step is not None}
     if failures or portfolios is None or solve is None or sink is None or len(resolved_loaders) != len(loaders):
         raise ConfigResolutionError(failures)
-    return ResolvedConfig(
+    resolved = ResolvedConfig(
         config=config,
-        config_sha256=config_sha256,
+        config_sha256=config_sha256(config),
         portfolios=portfolios,
         loaders=resolved_loaders,
         assembly=tuple(step for step in assembly if step is not None),
@@ -180,12 +166,16 @@ def resolve_config(config: RunConfig, config_sha256: str, *, installed: Callable
         sink=sink,
         profile=profile_for(config.sides),
     )
+    construction = _construction_failures(resolved)
+    if construction:
+        raise ConfigResolutionError(construction)
+    return resolved
 
 
-def construction_failures(resolved: ResolvedConfig) -> list[str]:
+def _construction_failures(resolved: ResolvedConfig) -> list[str]:
     """Construct every term and constraint once against a one-security dummy spec, under the run's side profile.
 
-    What resolution cannot see — a term that raises when called, a constraint reaching for a decision
+    What signature checks cannot see — a term that raises when called, a constraint reaching for a decision
     vector the side does not have — surfaces here instead of on a worker. A step that asks for a spec
     column or flag the dummy does not carry is skipped rather than failed: whether the universe has it
     is a question for the data, not the config. The solve step is not run; a firm's step may reach a
@@ -199,7 +189,7 @@ def construction_failures(resolved: ResolvedConfig) -> list[str]:
         *((f"constraints[{i}]", c.step, ConstraintSet) for i, c in enumerate(resolved.constraints)),
     ):
         try:
-            result = step.invoke(x=decision_variables(resolved.profile.sides, spec.w0), spec=spec, context=chain if step.needs_context else None)
+            result = step.invoke(x=decision_variables(resolved.profile.sides, spec.w0), spec=spec, chain=chain)
         except MissingSpecColumnError:
             continue
         except Exception as error:  # noqa: BLE001  # any construction failure is what this check exists to report
@@ -260,14 +250,13 @@ def resolve_step(spec: StepSpec, kind: StepKind) -> ResolvedStep:
         raise ConfigResolutionError(failures)
     params_model = hints.get("params")
     params = _validate_params(spec, params_model, qualname)
-    context_name = contract.context[0] if contract.context is not None and contract.context[0] in inspect.signature(fn).parameters else None
     return ResolvedStep(
         kind=kind,
         name=spec.name,
         qualname=qualname,
         fn=fn,
         params=params,
-        context_name=context_name,
+        reads_chain=contract.chain and "chain" in inspect.signature(fn).parameters,
         source_sha256=hashlib.sha256(inspect.getsource(fn).encode()).hexdigest(),
         params_sha256=hashlib.sha256(json.dumps(spec.params, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         is_external=module_name != TEMPLATE_MODULES[kind],
@@ -299,9 +288,9 @@ def _signature_failures(fn: Callable[..., object], hints: Mapping[str, object], 
         elif name == "params":
             if not (inspect.isclass(annotation) and issubclass(annotation, Params)):
                 failures.append(f"{qualname}: 'params' must be annotated with a Params subclass, got {_describe(annotation)}")
-        elif contract.context is not None and name == contract.context[0]:
-            if annotation is not contract.context[1]:
-                failures.append(f"{qualname}: parameter {name!r} must be annotated {contract.context[1].__name__}, got {_describe(annotation)}")
+        elif contract.chain and name == "chain":
+            if annotation is not ChainState:
+                failures.append(f"{qualname}: parameter {name!r} must be annotated ChainState, got {_describe(annotation)}")
         else:
             failures.append(f"{qualname}: unexpected parameter {name!r}; allowed: {_allowed_names(contract)}")
     failures.extend(f"{qualname}: missing required parameter {name!r}" for name in contract.engine_args if name not in parameters)
@@ -313,8 +302,8 @@ def _signature_failures(fn: Callable[..., object], hints: Mapping[str, object], 
 
 def _allowed_names(contract: Contract) -> list[str]:
     names = [*contract.engine_args, "params"]
-    if contract.context is not None:
-        names.append(contract.context[0])
+    if contract.chain:
+        names.append("chain")
     return names
 
 

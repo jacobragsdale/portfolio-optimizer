@@ -13,7 +13,7 @@ from decimal import Decimal
 import numpy as np
 
 from portfolio_optimizer.domain.results import F64, ChainState, ConstraintCheck, ConstraintReport, ProblemSpec, Solution, StepRef, Tolerances
-from portfolio_optimizer.domain.sides import TWO_SIDED, SideProfile
+from portfolio_optimizer.domain.sides import SideProfile
 
 DEFAULT_TOLERANCES = Tolerances()
 
@@ -116,12 +116,15 @@ TERM_TWINS: Mapping[str, TermTwin] = {
 
 
 def verify(
-    spec: ProblemSpec, solution: Solution, chain: ChainState, terms: Sequence[StepRef], constraints: Sequence[StepRef], tolerances: Tolerances = DEFAULT_TOLERANCES, profile: SideProfile = TWO_SIDED
+    spec: ProblemSpec, solution: Solution, chain: ChainState, terms: Sequence[StepRef], constraints: Sequence[StepRef], *, profile: SideProfile, tolerances: Tolerances = DEFAULT_TOLERANCES
 ) -> ConstraintReport:
-    """Recompute the trade identity, every verifiable constraint's violation, and the objective, and compare with the solver."""
+    """Recompute the trade identity, every verifiable constraint's violation, and the objective, and compare with the solver.
+
+    ``profile`` is the side the run traded: it supplies the identity checks and the coupled quantity the twins read.
+    """
     checks: list[ConstraintCheck] = []
     unverified: list[str] = []
-    checks.append(_check("finite", 0.0 if all(np.isfinite(a).all() for a in (solution.w, solution.buy, solution.sell)) else float("inf"), tolerances.eq, None, SOLUTION_LABEL))
+    checks.append(_check("finite", 0.0 if all(np.isfinite(a).all() for a in (solution.w, solution.buy, solution.sell)) else float("inf"), tolerances.violation, None, SOLUTION_LABEL))
     checks.append(_check("spec_hash_matches", 0.0 if solution.spec_hash == spec.content_hash() else float("inf"), 0.0, None, SOLUTION_LABEL))
     checks.extend(_residual_check(name, residual, spec, tolerances, IDENTITY_LABEL) for name, residual in profile.identity_residuals(spec, solution))
     for ref in constraints:
@@ -153,10 +156,9 @@ def verify(
 
 
 def _residual_check(name: str, residual: F64, spec: ProblemSpec, tolerances: Tolerances, label: str) -> ConstraintCheck:
-    """The worst entry of a residual vector against its tolerance; an equality residual is the identity's ``trade_balance``."""
-    tolerance = tolerances.eq if name == "trade_balance" else tolerances.ineq
+    """The worst entry of a residual vector against the violation tolerance, naming the security it sits at when the residual is per security."""
     worst = int(np.argmax(residual)) if residual.size and residual.size == spec.n else None
-    return _check(name, float(residual.max(initial=0.0)), tolerance, spec.security_ids[worst] if worst is not None else None, label)
+    return _check(name, float(residual.max(initial=0.0)), tolerances.violation, spec.security_ids[worst] if worst is not None else None, label)
 
 
 def _check(name: str, violation: float, tolerance: float, worst: str | None, label: str) -> ConstraintCheck:

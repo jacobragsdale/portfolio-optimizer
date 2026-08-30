@@ -22,7 +22,8 @@ from decimal import Decimal
 from pathlib import Path
 
 from portfolio_optimizer.config.models import RunConfig
-from portfolio_optimizer.config.resolve import ResolvedConfig, ResolvedConstraint, ResolvedStep, resolve_config
+from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
+from portfolio_optimizer.config.steps import ResolvedConstraint, ResolvedStep
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError
 from portfolio_optimizer.domain.results import (
     ChainState,
@@ -140,8 +141,8 @@ def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainS
         chain,
         step_refs(resolved.terms),
         constraint_refs(resolved.constraints),
-        Tolerances(eq=post.violation_tol, ineq=post.violation_tol, obj_rel=post.objective_rel_tol, obj_abs=post.objective_abs_tol),
         profile=resolved.profile,
+        tolerances=Tolerances(violation=post.violation_tol, obj_rel=post.objective_rel_tol, obj_abs=post.objective_abs_tol),
     )
     if not report.passed:
         raise VerificationError(report)
@@ -231,7 +232,7 @@ def resolved_for(shared: SharedRunData) -> ResolvedConfig:
     """
     resolved = _RESOLVED.get(shared.config_sha256)
     if resolved is None or resolved.config != shared.config:
-        resolved = _RESOLVED[shared.config_sha256] = resolve_config(shared.config, shared.config_sha256)
+        resolved = _RESOLVED[shared.config_sha256] = resolve_config(shared.config)
     return resolved
 
 
@@ -240,17 +241,20 @@ def worker_environment(shared: SharedRunData) -> WorkerEnvironment:
     return environment_for(shared.config, cwd=Path.cwd(), image_digest=os.environ.get(IMAGE_DIGEST_VARIABLE))
 
 
-def probe_task(config: RunConfig, config_sha256: str) -> TaskOutput[None]:
+def probe_task(config: RunConfig) -> TaskOutput[None]:
     """Resolve the config in this process and report the fingerprint; a resolution failure is returned, never raised.
 
     The resolution is kept, so the first build on this worker does not repeat it.
     """
     environment = environment_for(config, cwd=Path.cwd(), image_digest=os.environ.get(IMAGE_DIGEST_VARIABLE))
     try:
-        _RESOLVED[config_sha256] = resolve_config(config, config_sha256)
+        resolved = resolve_config(config)
     except Exception as error:  # noqa: BLE001  # a solver or step package missing on this worker is what the probe exists to report
-        return TaskOutput(outcome=failure("*", "worker", error), environment=environment, host=host_name())
-    return TaskOutput(outcome=None, environment=environment, host=host_name())
+        failed: TaskOutput[None] = TaskOutput(outcome=failure("*", "worker", error), environment=environment, host=host_name())
+        return failed
+    _RESOLVED[resolved.config_sha256] = resolved
+    passed: TaskOutput[None] = TaskOutput(outcome=None, environment=environment, host=host_name())
+    return passed
 
 
 def build_task(shared: SharedRunData, portfolio_id: PortfolioId) -> TaskOutput[BuildResult]:

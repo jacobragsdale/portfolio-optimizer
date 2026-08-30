@@ -47,7 +47,7 @@ def test_example_data_loads_in_solve_order_with_audit_records(example_loaded: Lo
 
 
 def test_assembly_joins_prices_into_universe_drops_them_and_slices_each_portfolio(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
-    assembled = assemble(example_loaded, example_resolved)
+    assembled = assemble(example_loaded, example_resolved, run_id="test")
     assert assembled.universe["price"].tolist() == [Decimal(100), Decimal(50), Decimal(10)]
     assert assembled.extras == {}
     assert [audit.qualname for audit in assembled.audits] == ["portfolio_optimizer.assembly:join", "portfolio_optimizer.assembly:drop"]
@@ -67,7 +67,7 @@ def test_assembly_joins_prices_into_universe_drops_them_and_slices_each_portfoli
 
 
 def test_a_custom_step_attaches_analytics_to_holdings_and_universe_and_is_audited(example_loaded: LoadedDatasets) -> None:
-    assembled = assemble(example_loaded, _with_assembly(JOIN_PRICES, "tests.conftest:score_by_price", {"name": "drop", "params": {"datasets": ["prices"]}}))
+    assembled = assemble(example_loaded, _with_assembly(JOIN_PRICES, "tests.conftest:score_by_price", {"name": "drop", "params": {"datasets": ["prices"]}}), run_id="test")
     assert assembled.audits[1].columns_added == {"holdings": ("score",), "universe": ("score",)}
     assert len(assembled.audits[1].source_sha256) == 64
     frame = slice_portfolio(assembled, PortfolioId("P1")).optimizer_frame()
@@ -77,7 +77,7 @@ def test_a_custom_step_attaches_analytics_to_holdings_and_universe_and_is_audite
 
 def test_extras_not_dropped_are_carried_into_every_bundle_reduced_to_its_portfolio(example_loaded: LoadedDatasets) -> None:
     notes = pd.DataFrame({"portfolio_id": pd.Series(["P1", "P2", "P2"], dtype="string"), "note": pd.Series(["a", "b", "c"], dtype="string")})
-    assembled = assemble(_loaded_with(example_loaded, notes=notes), _with_assembly(JOIN_PRICES))
+    assembled = assemble(_loaded_with(example_loaded, notes=notes), _with_assembly(JOIN_PRICES), run_id="test")
     assert set(assembled.extras) == {"prices", "notes"}
     p1 = slice_portfolio(assembled, PortfolioId("P1"))
     p2 = slice_portfolio(assembled, PortfolioId("P2"))
@@ -90,7 +90,7 @@ def test_duplicate_join_key_violates_declared_cardinality(example_loaded: Loaded
     prices = example_loaded.frames["prices"]
     duplicated = pd.concat([prices, prices.iloc[[0]]], ignore_index=True)
     with pytest.raises(AssemblyError, match=r"assembly\[0\] portfolio_optimizer.assembly:join: cardinality 'one_to_one' violated"):
-        assemble(_loaded_with(example_loaded, prices=duplicated), example_resolved)
+        assemble(_loaded_with(example_loaded, prices=duplicated), example_resolved, run_id="test")
 
 
 def test_unmatched_rows_are_named_when_all_must_match(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig, frames: Frames) -> None:
@@ -98,48 +98,48 @@ def test_unmatched_rows_are_named_when_all_must_match(example_loaded: LoadedData
     extra = frames.universe({"security_id": "D", "price": Decimal(1)}).drop(columns=["price"])
     with_d = pd.concat([universe, extra], ignore_index=True)
     with pytest.raises(AssemblyError, match=r"1 row\(s\) of universe had no match in prices, e.g. \['D'\]"):
-        assemble(_loaded_with(example_loaded, universe=with_d), example_resolved)
+        assemble(_loaded_with(example_loaded, universe=with_d), example_resolved, run_id="test")
 
 
 def test_join_refuses_to_overwrite_existing_columns_unless_told_to(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
     prices = example_loaded.frames["prices"].assign(sector=pd.Series(["X", "X", "X"], dtype="string"))
     with pytest.raises(AssemblyError, match=r"would overwrite columns \['sector'\] already present in universe"):
-        assemble(_loaded_with(example_loaded, prices=prices), example_resolved)
+        assemble(_loaded_with(example_loaded, prices=prices), example_resolved, run_id="test")
     overwriting = _with_assembly({"name": "join", "params": {**JOIN_PRICES_PARAMS, "overwrite": True}})
-    assert assemble(_loaded_with(example_loaded, prices=prices), overwriting).universe["sector"].tolist() == ["X", "X", "X"]
+    assert assemble(_loaded_with(example_loaded, prices=prices), overwriting, run_id="test").universe["sector"].tolist() == ["X", "X", "X"]
 
 
 def test_a_step_naming_an_unknown_dataset_is_told_what_exists(example_loaded: LoadedDatasets) -> None:
     resolved = _with_assembly({"name": "join", "params": {**JOIN_PRICES_PARAMS, "source": "sectors"}})
     with pytest.raises(AssemblyError, match=r"assembly\[0\] portfolio_optimizer.assembly:join: no dataset 'sectors'; available: \['details', 'holdings', 'prices', 'targets', 'universe'\]"):
-        assemble(example_loaded, resolved)
+        assemble(example_loaded, resolved, run_id="test")
 
 
 def test_a_step_that_refuses_its_input_rejects_the_run_with_its_own_message(example_loaded: LoadedDatasets) -> None:
     with pytest.raises(AssemblyError, match=r"assembly\[0\] tests.conftest:refuse_assembly: vendor scores are stale"):
-        assemble(example_loaded, _with_assembly("tests.conftest:refuse_assembly"))
+        assemble(example_loaded, _with_assembly("tests.conftest:refuse_assembly"), run_id="test")
 
 
 def test_a_step_returning_the_wrong_type_is_rejected(example_loaded: LoadedDatasets) -> None:
     with pytest.raises(AssemblyError, match="returned DataFrame, expected Frames"):
-        assemble(example_loaded, _with_assembly("tests.conftest:lying_assembly_step"))
+        assemble(example_loaded, _with_assembly("tests.conftest:lying_assembly_step"), run_id="test")
 
 
 def test_dropping_an_engine_frame_is_caught_after_the_last_step(example_loaded: LoadedDatasets) -> None:
     with pytest.raises(LoadError, match=r"required datasets are missing \['universe'\]"):
-        assemble(example_loaded, _with_assembly(JOIN_PRICES, {"name": "drop", "params": {"datasets": ["universe"]}}))
+        assemble(example_loaded, _with_assembly(JOIN_PRICES, {"name": "drop", "params": {"datasets": ["universe"]}}), run_id="test")
 
 
 def test_schema_failures_after_assembly_name_the_dataset(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
     holdings = example_loaded.frames["holdings"].assign(quantity=example_loaded.frames["holdings"]["quantity"] * -1)
     with pytest.raises(LoadError, match="holdings: column 'quantity'"):
-        assemble(_loaded_with(example_loaded, holdings=holdings), example_resolved)
+        assemble(_loaded_with(example_loaded, holdings=holdings), example_resolved, run_id="test")
 
 
 def test_analytics_dtype_conflicts_between_holdings_and_universe_fail_at_slice(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
     holdings = example_loaded.frames["holdings"].assign(score=pd.Series([1.0, 2.0, 3.0], dtype="Float64"))
     universe = example_loaded.frames["universe"].assign(score=pd.Series([1.0, 2.0, 3.0], dtype="float64"))
-    assembled = assemble(_loaded_with(example_loaded, holdings=holdings, universe=universe), example_resolved)
+    assembled = assemble(_loaded_with(example_loaded, holdings=holdings, universe=universe), example_resolved, run_id="test")
     with pytest.raises(PortfolioDataError, match="holdings and universe disagree on column 'score'"):
         slice_portfolio(assembled, PortfolioId("P1"))
 
@@ -153,7 +153,7 @@ def test_missing_constraints_for_a_portfolio_fail_loudly(example_loaded: LoadedD
         audits=example_loaded.audits,
     )
     with pytest.raises(LoadError, match="constraints missing for portfolios \\['P2'\\]"):
-        assemble(partial, example_resolved)
+        assemble(partial, example_resolved, run_id="test")
 
 
 def test_loader_returning_the_wrong_type_is_rejected() -> None:

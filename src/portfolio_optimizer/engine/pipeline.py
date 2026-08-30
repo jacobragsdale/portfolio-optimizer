@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 
-from portfolio_optimizer.config.resolve import ResolvedStep
+from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.data import PortfolioData
 from portfolio_optimizer.domain.results import RuleAuditRecord
 

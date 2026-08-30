@@ -25,22 +25,11 @@ def cvxpy(request: SolveRequest) -> SolveResult:
     x = decision_variables(request.profile.sides, spec.w0)
     terms = [_term(step, x, spec, chain) for step in request.terms]
     constraints = [identity_constraints(request.profile.sides, x, spec.w0), *(_constraint_set(constraint.step, x, spec, chain) for constraint in request.constraints)]
-    raw = solve_problem(x, terms, constraints, solver=solver.name, options=solver.options, time_limit_s=solver.time_limit_s, verbose=solver.verbose)
-    return SolveResult(
-        w=raw.w,
-        status=raw.status,
-        objective=raw.objective,
-        iterations=raw.iterations,
-        solve_time_s=raw.solve_time_s,
-        solver=raw.solver,
-        solver_version=raw.solver_version,
-        cvxpy_version=raw.cvxpy_version,
-        detail=raw.detail,
-    )
+    return solve_problem(x, terms, constraints, solver=solver.name, options=solver.options, time_limit_s=solver.time_limit_s, verbose=solver.verbose)
 
 
 def _term(step: ResolvedStep, x: object, spec: ProblemSpec, chain: ChainState) -> ObjectiveTerm:
-    result = step.invoke(x=x, spec=spec, context=chain if step.needs_context else None)
+    result = step.invoke(x=x, spec=spec, chain=chain)
     if not isinstance(result, ObjectiveTerm):
         msg = f"term {step.qualname!r} returned {type(result).__name__}, expected ObjectiveTerm"
         raise SolveSetupError(msg)
@@ -48,7 +37,7 @@ def _term(step: ResolvedStep, x: object, spec: ProblemSpec, chain: ChainState) -
 
 
 def _constraint_set(step: ResolvedStep, x: object, spec: ProblemSpec, chain: ChainState) -> ConstraintSet:
-    result = step.invoke(x=x, spec=spec, context=chain if step.needs_context else None)
+    result = step.invoke(x=x, spec=spec, chain=chain)
     if not isinstance(result, ConstraintSet):
         msg = f"constraint {step.qualname!r} returned {type(result).__name__}, expected ConstraintSet"
         raise SolveSetupError(msg)

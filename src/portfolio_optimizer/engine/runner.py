@@ -179,7 +179,7 @@ def run(
         session.start()
         try:
             loaded = load_datasets(resolved, data_root=io.data_root, run_id=io.run_id)
-            assembled = assemble(loaded, resolved)
+            assembled = assemble(loaded, resolved, run_id=io.run_id)
         except (ValueError, KeyError) as error:
             msg = f"inputs rejected: {error}"
             raise InputRejectedError(msg) from error
@@ -261,7 +261,7 @@ def _check_workers(backend: Backend, shared: SharedRunData, session: _Session, e
     has done any work. Workers that join later are gated per result by :func:`_accept`.
     """
     problems: list[str] = []
-    probes = backend.probe(probe_task, shared.config, shared.config_sha256)
+    probes = backend.probe(probe_task, shared.config)
     for address, output in probes.items():
         session.saw(output.environment, output.host, solved=False)
         if isinstance(output.outcome, PortfolioFailure):
@@ -465,7 +465,7 @@ def _manifest(
     keys: Mapping[PortfolioId, Decimal] = executed.keys if executed is not None else {}
     predecessors: Mapping[PortfolioId, tuple[PortfolioId, ...]] = executed.schedule.predecessors if executed is not None else {}
     records = [
-        solved_record(o, o.report, o.drift, post.violation_tol, post.violation_tol, solve_order=_key_text(keys, o.portfolio_id))
+        solved_record(o, post.violation_tol, solve_order=_key_text(keys, o.portfolio_id))
         if isinstance(o, PortfolioResult)
         else failed_record(o, solve_order=_key_text(keys, o.portfolio_id), predecessors=len(predecessors[PortfolioId(o.portfolio_id)]) if PortfolioId(o.portfolio_id) in predecessors else None)
         for o in outcomes

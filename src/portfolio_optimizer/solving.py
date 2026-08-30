@@ -55,5 +55,4 @@ class SolveResult:
     solve_time_s: float = 0.0
     solver: str | None = None
     solver_version: str | None = None
-    cvxpy_version: str = "n/a"
     detail: str = ""

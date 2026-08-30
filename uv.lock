@@ -1758,7 +1758,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "scipy", specifier = ">=1.18.1" },
 ]
-provides-extras = ["dask", "kubernetes", "piqp"]
+provides-extras = ["kubernetes", "piqp"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, Expr, at_least, at_most, equals, minus, plus, shifted, shortfall, variable
 from portfolio_optimizer.domain.results import F64
+from portfolio_optimizer.domain.sides import Sides
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +61,7 @@ def _sell_only_identity(x: DecisionVars, w0: F64) -> ConstraintSet:
     return ConstraintSet("no_buys", (at_most(x.w, w0),))
 
 
-SIDES: Mapping[str, CvxSide] = {
+SIDES: Mapping[Sides, CvxSide] = {
     "both": CvxSide(_two_sided_variables, _two_sided_identity),
     "buy": CvxSide(_buy_only_variables, _buy_only_identity),
     "sell": CvxSide(_sell_only_variables, _sell_only_identity),
@@ -68,11 +69,11 @@ SIDES: Mapping[str, CvxSide] = {
 """The cvxpy half for every ``sides`` value; a test holds this in step with ``domain.sides.PROFILES``."""
 
 
-def decision_variables(sides: str, w0: F64) -> DecisionVars:
+def decision_variables(sides: Sides, w0: F64) -> DecisionVars:
     """The decision variables a ``sides`` run has, over the starting weights ``w0``."""
     return SIDES[sides].variables(w0)
 
 
-def identity_constraints(sides: str, x: DecisionVars, w0: F64) -> ConstraintSet:
+def identity_constraints(sides: Sides, x: DecisionVars, w0: F64) -> ConstraintSet:
     """The trade identity for ``sides`` over the variables ``x`` and the starting weights ``w0``."""
     return SIDES[sides].identity(x, w0)

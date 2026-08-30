@@ -331,7 +331,7 @@ def report_kinds(report: RunReport) -> list[type]:
 
 def _shared() -> SharedRunData:
     resolved = resolved_example_real(sink="orders_to_parquet")  # every step from the template modules: a spawned worker cannot import tests.conftest
-    assembled = assemble(load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="run-x"), resolved)
+    assembled = assemble(load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="run-x"), resolved, run_id="run-x")
     return SharedRunData(assembled=assembled, config=resolved.config, config_sha256="example", run_id="run-x")
 
 

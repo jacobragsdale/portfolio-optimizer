@@ -9,6 +9,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from portfolio_optimizer.domain.data import json_default
+
 
 def frame_sha256(frame: pd.DataFrame, key: Sequence[str] = ()) -> str:
     """Hash a frame's content independently of row order (given ``key``), column order, and index.
@@ -65,14 +67,7 @@ def _render(value: object) -> str:
 
 def json_sha256(value: object) -> str:
     """Hash a JSON-serializable value in canonical form (sorted keys, no whitespace)."""
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=_json_default).encode()).hexdigest()
-
-
-def _json_default(value: object) -> str:
-    if isinstance(value, Decimal):
-        return format(value, "f")
-    msg = f"object of type {type(value).__name__} is not JSON serializable"
-    raise TypeError(msg)
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=json_default).encode()).hexdigest()
 
 
 def file_sha256(path: Path) -> str:

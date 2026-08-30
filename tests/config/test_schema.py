@@ -96,7 +96,7 @@ def test_schema_and_models_agree_on_what_to_reject(validator: Validator, patch: 
     except (ValidationError, ValueError):
         return  # the models refused it, as the schema did
     with pytest.raises(ConfigResolutionError):  # params-level problems are the resolver's to refuse
-        resolve_config(config, config_sha256(config))
+        resolve_config(config)
 
 
 def test_custom_qualified_steps_are_allowed_with_any_params(validator: Validator) -> None:

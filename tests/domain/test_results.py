@@ -98,17 +98,7 @@ def test_missing_column_names_what_is_available(make: Factories) -> None:
 
 def test_solution_round_trips_through_npz(tmp_path: Path) -> None:
     solution = Solution(
-        w=np.array([0.5, 0.5]),
-        buy=np.zeros(2),
-        sell=np.zeros(2),
-        objective=1.5,
-        status=SolveStatus.OPTIMAL,
-        solver="CLARABEL",
-        solver_version="0.11",
-        cvxpy_version="1.9",
-        solve_time_s=0.01,
-        iterations=7,
-        spec_hash="ab",
+        w=np.array([0.5, 0.5]), buy=np.zeros(2), sell=np.zeros(2), objective=1.5, status=SolveStatus.OPTIMAL, solver="CLARABEL", solver_version="0.11", solve_time_s=0.01, iterations=7, spec_hash="ab"
     )
     path = tmp_path / "solution.npz"
     solution.to_npz(path)

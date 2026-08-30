@@ -229,14 +229,14 @@ TWO_SIDED: SideProfile = TwoSided()
 BUY_ONLY: SideProfile = BuyOnly()
 SELL_ONLY: SideProfile = SellOnly()
 
-PROFILES: Mapping[str, SideProfile] = {profile.sides: profile for profile in (TWO_SIDED, BUY_ONLY, SELL_ONLY)}
+PROFILES: Mapping[Sides, SideProfile] = {profile.sides: profile for profile in (TWO_SIDED, BUY_ONLY, SELL_ONLY)}
 """Every profile a config may select, by its ``sides`` value; ``cvx/sides.py`` carries the matching variables and identities."""
 
 
 def profile_for(sides: str) -> SideProfile:
-    """The profile ``sides`` selects; a value outside :data:`PROFILES` is a config error."""
-    profile = PROFILES.get(sides)
-    if profile is None:
-        msg = f"sides {sides!r} is not one the engine knows; known: {sorted(PROFILES)}"
-        raise ValueError(msg)
-    return profile
+    """The profile ``sides`` selects; ``sides`` is text because it may come from a manifest, and a value outside :data:`PROFILES` is an error."""
+    for profile in PROFILES.values():
+        if profile.sides == sides:
+            return profile
+    msg = f"sides {sides!r} is not one the engine knows; known: {sorted(PROFILES)}"
+    raise ValueError(msg)

@@ -8,7 +8,8 @@ import pandas as pd
 import pytest
 
 from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedConfig
-from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus, derive_chain_state
+from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus
+from portfolio_optimizer.domain.sides import TWO_SIDED
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.solve import InfeasibleError, SolveSetupError, solve
@@ -120,7 +121,6 @@ def _with_sell(solution: Solution, spec: ProblemSpec, sell: np.ndarray) -> Solut
         status=solution.status,
         solver=solution.solver,
         solver_version=solution.solver_version,
-        cvxpy_version=solution.cvxpy_version,
         solve_time_s=solution.solve_time_s,
         iterations=solution.iterations,
         spec_hash=solution.spec_hash,
@@ -209,9 +209,9 @@ def test_a_solve_step_that_is_not_an_optimizer_returns_weights_and_no_objective(
     solution = solve(spec, chain, resolved_with(["tracking_error"], CORE_CONSTRAINTS, solve="tests.conftest:hold_still"))
     np.testing.assert_array_equal(solution.w, spec.w0)
     assert solution.buy.tolist() == solution.sell.tolist() == [0.0, 0.0, 0.0]
-    assert (solution.objective, solution.iterations, solution.cvxpy_version) == (None, None, "n/a")
+    assert (solution.objective, solution.iterations) == (None, None)
     assert (solution.solver, solution.solver_version) == ("tests.conftest:hold_still", "unknown"), "the step's qualified name, and the version of its distribution — which a test module has none of"
-    report = verify(spec, solution, chain, step_refs(resolved_with(["tracking_error"], CORE_CONSTRAINTS).terms), [])
+    report = verify(spec, solution, chain, step_refs(resolved_with(["tracking_error"], CORE_CONSTRAINTS).terms), [], profile=TWO_SIDED)
     assert report.passed and report.objective_passed and report.solver_objective is None
     assert report.objective_terms == (("portfolio_optimizer.terms:tracking_error", pytest.approx(float(((spec.w0 - spec.w_target) ** 2).sum()))),), (
         "the configured terms are still evaluated, as a report line"
@@ -245,14 +245,3 @@ def test_tax_and_transaction_costs_discourage_selling_gains(make: Factories, fra
     taxed = solve(spec, ChainState.empty(spec.security_ids), resolved)
     untaxed = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tracking_error"], CORE_CONSTRAINTS))
     assert taxed.sell[0] < untaxed.sell[0]
-
-
-def test_a_term_that_returns_the_wrong_type_is_rejected(make: Factories) -> None:
-    spec = make.spec()
-    with pytest.raises(SolveSetupError, match="returned ConstraintSet, expected ObjectiveTerm"):
-        solve(spec, ChainState.empty(spec.security_ids), resolved_with(["tests.conftest:lying_term"], CORE_CONSTRAINTS))
-
-
-def test_chain_state_derives_from_prior_orders_for_the_next_solve(make: Factories, frames: Frames) -> None:
-    spec = hand_case(make, frames)
-    assert derive_chain_state(spec.security_ids, spec.buyable, ()).traded_shares.tolist() == [0.0, 0.0, 0.0]

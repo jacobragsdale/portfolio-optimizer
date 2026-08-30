@@ -31,6 +31,7 @@ _ENUM_DESCRIPTIONS: Mapping[str, str] = {
     "JoinCardinality": "Expected key cardinality of a join, enforced by pandas.",
     "JoinHow": "Join type: keep every left row, or only matched rows.",
     "OnError": "What happens after a portfolio fails.",
+    "Sides": "Which side the run trades: `both`, `buy`, or `sell`; see `sides`.",
 }
 
 _STEP_DEFINITIONS: Mapping[StepKind, tuple[str, str, ModuleType]] = {

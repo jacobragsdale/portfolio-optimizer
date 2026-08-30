@@ -16,6 +16,8 @@ from cvxpy.error import SolverError
 from scipy.sparse import csr_array
 
 from portfolio_optimizer.domain.results import F64, SolveStatus
+from portfolio_optimizer.domain.sides import Sides
+from portfolio_optimizer.solving import SolveResult
 
 type Expr = cp.Expression
 type Constraint = cp.Constraint
@@ -60,7 +62,7 @@ _STATUS: Mapping[str, SolveStatus] = {
 class SideUnavailableError(LookupError):
     """A term or constraint reached for a decision vector the run's side does not have."""
 
-    def __init__(self, side: str, sides: str) -> None:
+    def __init__(self, side: str, sides: Sides) -> None:
         self.side = side
         self.sides = sides
         super().__init__(f"a {sides!r} run has no {side!r} vector; this term or constraint reads x.{side}, so it cannot run under sides={sides!r}")
@@ -80,7 +82,7 @@ class DecisionVars:
 
     w: cp.Variable
     n: int
-    sides: str
+    sides: Sides
     trade: Expr
     coupled: Expr
     _buy: Expr | None = field(default=None, repr=False)
@@ -202,21 +204,6 @@ def at_least(expr: Expr, bound: F64 | float) -> Constraint:
     return _constraint(expr >= bound)
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class RawSolve:
-    """What came back from cvxpy, before the engine decides what it means."""
-
-    status: SolveStatus
-    objective: float | None
-    w: F64 | None
-    iterations: int | None
-    solve_time_s: float
-    solver: str
-    solver_version: str
-    cvxpy_version: str
-    detail: str
-
-
 class UnavailableSolverError(RuntimeError):
     """The configured solver cannot run in this environment."""
 
@@ -256,8 +243,8 @@ def solver_version(solver: str) -> str:
 
 def solve_problem(
     x: DecisionVars, terms: Sequence[ObjectiveTerm], constraints: Sequence[ConstraintSet], *, solver: str, options: Mapping[str, float | int | bool | str], time_limit_s: float | None, verbose: bool
-) -> RawSolve:
-    """Build the cvxpy problem from the given terms and constraints and solve it once."""
+) -> SolveResult:
+    """Build the cvxpy problem from the given terms and constraints and solve it once; what comes back is the solve step's result as is."""
     failures = solver_failures(solver, time_limit_s, installed_solvers())
     if failures:
         raise UnavailableSolverError("; ".join(failures))
@@ -286,15 +273,14 @@ def solve_problem(
     stats = problem.solver_stats
     iterations = None if stats is None or stats.num_iters is None else int(stats.num_iters)
     value = problem.value
-    return RawSolve(
+    return SolveResult(
+        w=_value(x.w),
         status=status,
         objective=None if value is None or not np.isfinite(float(value)) else float(value),
-        w=_value(x.w),
         iterations=iterations,
         solve_time_s=elapsed,
         solver=solver,
         solver_version=solver_version(solver),
-        cvxpy_version=str(cp.__version__),
         detail=detail or str(problem.status),
     )
 

@@ -28,7 +28,6 @@ def solution_at(spec: ProblemSpec, w: np.ndarray) -> Solution:
         status=SolveStatus.OPTIMAL,
         solver="X",
         solver_version="0",
-        cvxpy_version="0",
         solve_time_s=0.0,
         iterations=1,
         spec_hash=spec.content_hash(),

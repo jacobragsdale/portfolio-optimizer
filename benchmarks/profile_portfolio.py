@@ -171,7 +171,7 @@ def _config(solver: str, sides: str, *, verbose: bool) -> ResolvedConfig:
     objective = dict(body["objective"])
     objective["terms"] = [term for term in objective["terms"] if _term_name(term) not in SIDE_BLIND_TERMS[sides]]
     body["objective"] = objective
-    return resolve_config(load_run_config(json.dumps(body)), config_sha256="benchmark")
+    return resolve_config(load_run_config(json.dumps(body)))
 
 
 def _term_name(term: object) -> str:
@@ -220,9 +220,9 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
         spec.content_hash()
     chain = ChainState.empty(spec.security_ids)
     with report.stage("expression tree") as row:
-        x = decision_variables(sides, spec.w0)
-        terms = [step.invoke(x=x, spec=spec, context=chain if step.needs_context else None) for step in resolved.terms]
-        sets = [constraint.step.invoke(x=x, spec=spec, context=chain if constraint.reads_chain else None) for constraint in resolved.constraints]
+        x = decision_variables(resolved.profile.sides, spec.w0)
+        terms = [step.invoke(x=x, spec=spec, chain=chain) for step in resolved.terms]
+        sets = [constraint.step.invoke(x=x, spec=spec, chain=chain) for constraint in resolved.constraints]
     constraint_sets = [item for item in sets if isinstance(item, ConstraintSet)]
     expressions = [item.expression for item in terms if isinstance(item, ObjectiveTerm)]
     flat = [constraint for group in constraint_sets for constraint in group.constraints]

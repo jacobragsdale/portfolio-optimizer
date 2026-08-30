@@ -30,7 +30,7 @@ def solution_to_orders(spec: ProblemSpec, solution: Solution, inputs: OrderInput
         raise ValueError(msg)
     rows: list[dict[str, object]] = []
     for index, security in enumerate(spec.security_ids):
-        quantity, unrounded = _shares(index, spec, solution, inputs)
+        quantity, unrounded = _shares(index, solution, inputs)
         if quantity == 0:
             continue
         price = inputs.price[index]
@@ -55,9 +55,8 @@ def solution_to_orders(spec: ProblemSpec, solution: Solution, inputs: OrderInput
     return validate_frame(_orders_frame(rows), ORDERS)
 
 
-def _shares(index: int, spec: ProblemSpec, solution: Solution, inputs: OrderInputs) -> tuple[int, float]:
+def _shares(index: int, solution: Solution, inputs: OrderInputs) -> tuple[int, float]:
     """Signed whole shares for one name after nearest-share, lot, held-quantity, and bound rounding."""
-    del spec
     delta = Decimal(float(solution.buy[index] - solution.sell[index])) * inputs.nav / inputs.price[index]
     unrounded = float(delta)
     lot = inputs.lot_size[index]

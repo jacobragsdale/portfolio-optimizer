@@ -5,6 +5,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, StepRef
+from portfolio_optimizer.domain.sides import TWO_SIDED
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.solve import solve
 from tests.conftest import make_spec, resolved_example
@@ -29,7 +30,7 @@ def test_solutions_verify_and_never_do_worse_than_resting(spec: ProblemSpec) -> 
     solution = solve(spec, chain, resolved)
     terms = [StepRef("portfolio_optimizer.terms:tracking_error", {"weight": "1"}, "tracking_error")]
     constraints = [StepRef(f"portfolio_optimizer.terms:{name}", {}, name) for name in CONSTRAINT_NAMES]
-    report = verify(spec, solution, chain, terms, constraints)
+    report = verify(spec, solution, chain, terms, constraints, profile=TWO_SIDED)
     assert report.passed, (report.violated, report.objective_gap)
     resting = float(((spec.w0 - spec.w_target) ** 2).sum())
     assert solution.objective is not None and solution.objective <= resting + 1e-7

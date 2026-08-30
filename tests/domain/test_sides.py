@@ -6,20 +6,19 @@ from typing import get_args
 import numpy as np
 import pytest
 
-from portfolio_optimizer.config.models import RunConfig
 from portfolio_optimizer.cvx.adapter import SideUnavailableError
 from portfolio_optimizer.cvx.sides import SIDES, decision_variables
 from portfolio_optimizer.domain.results import ChainState, Contribution, Solution, SolveStatus
-from portfolio_optimizer.domain.sides import BUY_ONLY, PROFILES, SELL_ONLY, TWO_SIDED, profile_for
+from portfolio_optimizer.domain.sides import BUY_ONLY, PROFILES, SELL_ONLY, TWO_SIDED, Sides, profile_for
 from tests.conftest import Factories, Frames
 
 
 def _solution(w: np.ndarray, buy: np.ndarray, sell: np.ndarray) -> Solution:
-    return Solution(w=w, buy=buy, sell=sell, objective=0.0, status=SolveStatus.OPTIMAL, solver="X", solver_version="0", cvxpy_version="0", solve_time_s=0.0, iterations=1, spec_hash="h")
+    return Solution(w=w, buy=buy, sell=sell, objective=0.0, status=SolveStatus.OPTIMAL, solver="X", solver_version="0", solve_time_s=0.0, iterations=1, spec_hash="h")
 
 
 def test_every_profile_has_its_cvxpy_half_and_the_config_can_select_it() -> None:
-    assert set(PROFILES) == set(SIDES) == set(get_args(RunConfig.model_fields["sides"].annotation)) == {"both", "buy", "sell"}
+    assert set(PROFILES) == set(SIDES) == set(get_args(Sides.__value__)) == {"both", "buy", "sell"}
     assert profile_for("both") is TWO_SIDED
     assert profile_for("buy") is BUY_ONLY
     assert profile_for("sell") is SELL_ONLY

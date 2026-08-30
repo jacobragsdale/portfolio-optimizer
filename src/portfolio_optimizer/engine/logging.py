@@ -4,7 +4,7 @@ import json
 import logging
 from typing import TextIO, override
 
-CONTEXT_FIELDS: tuple[str, ...] = ("run_id", "portfolio_id", "stage", "mode")
+CONTEXT_FIELDS: tuple[str, ...] = ("run_id", "portfolio_id", "stage")
 
 
 class ContextFormatter(logging.Formatter):

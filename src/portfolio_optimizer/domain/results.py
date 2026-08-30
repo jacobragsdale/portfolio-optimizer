@@ -371,7 +371,6 @@ class Solution:
     status: SolveStatus
     solver: str
     solver_version: str
-    cvxpy_version: str
     solve_time_s: float
     iterations: int | None
     spec_hash: str
@@ -382,7 +381,7 @@ class Solution:
 
     def to_npz(self, path: Path) -> None:
         """Persist the solution vectors and provenance without pickle."""
-        meta = {name: getattr(self, name) for name in ("objective", "status", "solver", "solver_version", "cvxpy_version", "solve_time_s", "iterations", "spec_hash")}
+        meta = {name: getattr(self, name) for name in ("objective", "status", "solver", "solver_version", "solve_time_s", "iterations", "spec_hash")}
         np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(meta, sort_keys=True)), w=self.w, buy=self.buy, sell=self.sell)
 
     @classmethod
@@ -399,7 +398,6 @@ class Solution:
             status=SolveStatus(str(meta["status"])),
             solver=str(meta["solver"]),
             solver_version=str(meta["solver_version"]),
-            cvxpy_version=str(meta["cvxpy_version"]),
             solve_time_s=float(meta["solve_time_s"]),
             iterations=None if meta["iterations"] is None else int(meta["iterations"]),
             spec_hash=str(meta["spec_hash"]),
@@ -408,17 +406,20 @@ class Solution:
 
 @dataclass(frozen=True, slots=True)
 class Tolerances:
-    """Verification tolerances; deliberately looser than the solver's so a pass is meaningful."""
+    """Verification tolerances; deliberately looser than the solver's so a pass is meaningful.
 
-    eq: float = 1e-6
-    ineq: float = 1e-6
+    ``violation`` bounds every residual, equality and inequality alike; the objective comparison
+    passes within ``obj_abs + obj_rel · |recomputed|``.
+    """
+
+    violation: float = 1e-6
     obj_rel: float = 1e-5
     obj_abs: float = 1e-9
 
 
 @dataclass(frozen=True, slots=True)
 class ConstraintCheck:
-    """Maximum violation of one residual, compared with its tolerance; ``label`` names the constraint it belongs to."""
+    """Maximum violation of one residual, compared with the tolerance; ``label`` names the constraint it belongs to."""
 
     name: str
     violation: float

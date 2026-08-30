@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 from portfolio_optimizer.config.models import ConstraintStep
+from portfolio_optimizer.domain.data import LoadRequest
+from portfolio_optimizer.domain.results import ChainState
 from portfolio_optimizer.domain.types import Params
 
-type StepKind = Literal["portfolios", "loader", "constraints_loader", "assembly", "rule", "solve_order", "term", "constraint", "solve", "sink"]
+type StepKind = Literal["loader", "constraints_loader", "assembly", "rule", "solve_order", "term", "constraint", "solve", "sink"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,37 +27,32 @@ class ResolvedStep:
     qualname: str
     fn: Callable[..., object]
     params: Params | None
-    context_name: str | None
+    reads_chain: bool
     source_sha256: str
     params_sha256: str
     is_external: bool
     is_async: bool = False
 
-    @property
-    def needs_context(self) -> bool:
-        """True when the function declares the optional context argument for its kind."""
-        return self.context_name is not None
-
-    def invoke(self, *, context: object | None = None, **engine_args: object) -> object:
-        """Call the function with the engine arguments, its validated params, and its context.
+    def invoke(self, *, chain: ChainState | None = None, **engine_args: object) -> object:
+        """Call the function with the engine arguments, its validated params, and — when it declared ``chain`` — the chain.
 
         For an async step this returns the coroutine; :meth:`invoke_async` awaits it.
         """
         kwargs: dict[str, object] = dict(engine_args)
         if self.params is not None:
             kwargs["params"] = self.params
-        if self.context_name is not None:
-            if context is None:
-                msg = f"step {self.qualname!r} requires {self.context_name!r} but none was supplied"
+        if self.reads_chain:
+            if chain is None:
+                msg = f"step {self.qualname!r} reads the chain but none was supplied"
                 raise ValueError(msg)
-            kwargs[self.context_name] = context
+            kwargs["chain"] = chain
         return self.fn(**kwargs)
 
-    async def invoke_async(self, *, context: object | None = None, **engine_args: object) -> object:
-        """Await an async step, or run a sync step in a worker thread so it cannot block the event loop."""
+    async def invoke_async(self, *, request: LoadRequest) -> object:
+        """Await an async loader, or run a sync one in a worker thread so it cannot block the event loop; only loaders may be async."""
         if not self.is_async:
-            return await asyncio.to_thread(self.invoke, context=context, **engine_args)
-        result = self.invoke(context=context, **engine_args)
+            return await asyncio.to_thread(self.invoke, request=request)
+        result = self.invoke(request=request)
         if not inspect.isawaitable(result):
             msg = f"async step {self.qualname!r} returned {type(result).__name__} instead of an awaitable"
             raise TypeError(msg)
@@ -73,7 +70,7 @@ class ResolvedConstraint:
     @property
     def reads_chain(self) -> bool:
         """True when the constraint reads what higher-priority portfolios traded; what the dependency graph is derived from."""
-        return self.step.needs_context
+        return self.step.reads_chain
 
     @property
     def qualname(self) -> str:

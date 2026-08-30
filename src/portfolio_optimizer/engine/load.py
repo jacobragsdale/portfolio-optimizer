@@ -18,8 +18,9 @@ from pathlib import Path
 import pandas as pd
 
 from portfolio_optimizer.config.models import DatasetConfig
-from portfolio_optimizer.config.resolve import ResolvedConfig, ResolvedStep
-from portfolio_optimizer.domain.data import Frames, LoadRequest, PortfolioData, details_from_frame, style_constraints_from_mapping
+from portfolio_optimizer.config.resolve import ResolvedConfig
+from portfolio_optimizer.config.steps import ResolvedStep
+from portfolio_optimizer.domain.data import PREVALIDATED_FRAMES, Frames, LoadRequest, PortfolioData, details_from_frame, style_constraints_from_mapping
 from portfolio_optimizer.domain.frames import FrameSchemaError, validate_frame
 from portfolio_optimizer.domain.results import AssemblyAuditRecord
 from portfolio_optimizer.domain.schemas import DATASET_SCHEMAS, PORTFOLIOS, REQUIRED_FRAMES
@@ -61,7 +62,6 @@ class LoadedDatasets:
     frames: Mapping[str, pd.DataFrame]
     constraints: Mapping[str, Mapping[str, object]]
     audits: tuple[DatasetAudit, ...]
-    run_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,12 +161,12 @@ async def load_datasets_async(resolved: ResolvedConfig, *, data_root: Path, run_
         log.info("rate limit %r: %d request(s), %.2fs spent waiting", limiter.name, limiter.acquired, limiter.waited_s, extra={"run_id": run_id, "stage": "load"})
     failures = [outcome for outcome in outcomes if isinstance(outcome, _Failed)]
     if failures:
-        _raise_load_failures(failures, run_id)
+        _raise_load_failures(failures)
     loaded = [outcome for outcome in outcomes if isinstance(outcome, _Loaded)]
     frames = {outcome.name: outcome.frame for outcome in loaded if outcome.frame is not None}
     constraints: Mapping[str, Mapping[str, object]] = next((outcome.constraints for outcome in loaded if outcome.constraints is not None), {})
     audits.extend(outcome.audit for outcome in loaded)
-    return LoadedDatasets(portfolio_ids=portfolio_ids, solve_orders=solve_orders, frames=frames, constraints=constraints, audits=tuple(audits), run_id=run_id)
+    return LoadedDatasets(portfolio_ids=portfolio_ids, solve_orders=solve_orders, frames=frames, constraints=constraints, audits=tuple(audits))
 
 
 async def _load_dataset(name: str, step: ResolvedStep, request: LoadRequest) -> _Loaded | _Failed:
@@ -188,9 +188,8 @@ async def _load_dataset(name: str, step: ResolvedStep, request: LoadRequest) -> 
         return _Failed(name, error)
 
 
-def _raise_load_failures(failures: list[_Failed], run_id: str) -> None:
+def _raise_load_failures(failures: list[_Failed]) -> None:
     """Raise one error for every failed dataset; an infrastructure error keeps its own type."""
-    del run_id
     hard = [failure for failure in failures if not isinstance(failure.error, ValueError | KeyError)]
     if hard:
         raise hard[0].error
@@ -222,7 +221,7 @@ def _audit(name: str, step: ResolvedStep, frame: pd.DataFrame, key: tuple[str, .
     return DatasetAudit(name, step.qualname, step.source_sha256, step.params_sha256, len(frame), tuple(str(column) for column in frame.columns), frame_sha256(frame, key), load_time_s)
 
 
-def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig) -> AssembledDatasets:
+def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -> AssembledDatasets:
     """Run the assembly steps in order, then validate every engine-known frame against its schema.
 
     A step that raises ``ValueError`` or ``KeyError`` (a missing dataset, a violated cardinality, a
@@ -254,7 +253,7 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig) -> AssembledDatas
                 columns_added=_columns_added(before, frames),
             )
         )
-        log.info("assembly step %r applied: %s", step.qualname, ", ".join(f"{name}={rows}" for name, rows in frames.row_counts().items()), extra={"run_id": loaded.run_id, "stage": "assembly"})
+        log.info("assembly step %r applied: %s", step.qualname, ", ".join(f"{name}={rows}" for name, rows in frames.row_counts().items()), extra={"run_id": run_id, "stage": "assembly"})
     missing_frames = [name for name in REQUIRED_FRAMES if name not in frames]
     if missing_frames:
         msg = f"after assembly, required datasets are missing {missing_frames}; declare a loader for each or produce it in an assembly step"
@@ -307,17 +306,13 @@ def _columns_added(before: Frames, after: Frames) -> dict[str, tuple[str, ...]]:
     return added
 
 
-PREVALIDATED_AT_SLICE: frozenset[str] = frozenset({"holdings", "universe", "targets"})
-"""Frames the bundle need not re-validate when sliced from assembled datasets.
-
-:func:`assemble` validated all three against their schemas. The universe is passed whole; the
-holdings and targets slices are row subsets, and a row subset keeps every per-column check, the
-key's uniqueness, and — because targets are sliced by whole benchmark — the sum-to-one invariant.
-"""
-
-
 def slice_portfolio(assembled: AssembledDatasets, portfolio_id: PortfolioId) -> PortfolioData:
-    """Build the validated per-portfolio bundle: its own holdings, constraints, and extras rows; its benchmark's targets; the whole universe."""
+    """Build the validated per-portfolio bundle: its own holdings, constraints, and extras rows; its benchmark's targets; the whole universe.
+
+    The three schema frames are marked prevalidated: :func:`assemble` validated them, the universe is
+    passed whole, and the holdings and targets slices are row subsets, which keep every per-column
+    check, the key's uniqueness, and — because targets are sliced by whole benchmark — the sum-to-one invariant.
+    """
     details = details_from_frame(assembled.details, portfolio_id)
     holdings = assembled.holdings[assembled.holdings["portfolio_id"] == portfolio_id].reset_index(drop=True)
     targets = assembled.targets[assembled.targets["benchmark_id"] == details.benchmark_id].reset_index(drop=True)
@@ -330,7 +325,7 @@ def slice_portfolio(assembled: AssembledDatasets, portfolio_id: PortfolioId) -> 
         style=style_constraints_from_mapping(assembled.constraints[portfolio_id]),
         as_of=assembled.as_of,
         extras=extras,
-        prevalidated=PREVALIDATED_AT_SLICE,
+        prevalidated=PREVALIDATED_FRAMES,
     )
 
 
