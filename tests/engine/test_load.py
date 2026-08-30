@@ -63,8 +63,8 @@ def test_example_data_loads_in_solve_order_with_audit_records(example_loaded: Lo
     assert set(example_loaded.frames) == {"universe", "targets", "prices"}
     assert set(example_loaded.per_portfolio) == {"details", "holdings"}, "the example loads both per account, and assembly never sees either"
     audit = {record.name: record for record in example_loaded.audits}
-    assert (audit["holdings"].rows, audit["holdings"].batches) == (4, 2)
-    assert (audit["details"].rows, audit["details"].batches) == (2, 2), "batch_size 1 on a per-account dataset is one call per portfolio"
+    assert (audit["holdings"].rows, audit["holdings"].batches) == (4, 2), "batch_size 1 is one call per portfolio"
+    assert (audit["details"].rows, audit["details"].batches) == (2, 1), "batch_size 2 puts this two-account book in a single call"
     assert audit["constraints"].rows == 2
     assert len(audit["prices"].content_sha256) == 64
     assert audit["universe"].loader_qualname == "portfolio_optimizer.loaders:csv"
@@ -322,8 +322,9 @@ def test_a_per_portfolio_dataset_no_batch_of_which_loads_rejects_the_run() -> No
 def test_a_missing_account_file_is_reported_as_the_error_the_loader_raised(tmp_path: Path) -> None:
     root = tmp_path / "book"
     shutil.copytree(EXAMPLE_DATA, root)
-    (root / "details" / "P2.csv").unlink()
+    (root / "holdings" / "P2.csv").unlink()
     loaded = load_datasets(resolved_example(), data_root=root, run_id="test")
+    assert set(loaded.rejected) == {P2}, "holdings is batched one account per call, so P2's batch fails alone"
     failure = loaded.rejected[P2]
     assert failure.error_type == "FileNotFoundError", "the group a fan-out loader raises is unwrapped to the one failure inside it"
     assert "P2.csv" in failure.message and "TaskGroup" not in failure.message
@@ -334,7 +335,8 @@ def test_a_per_portfolio_source_that_is_down_raises_the_failure_not_the_group(tm
     shutil.copytree(EXAMPLE_DATA, root)
     for portfolio_id in ("P1", "P2"):
         (root / "details" / f"{portfolio_id}.csv").unlink()
-    with pytest.raises(FileNotFoundError, match=r"\.csv"):
+    # details is batched two at a time, so both accounts are in one call and its group holds two failures
+    with pytest.raises(FileNotFoundError, match=r"P1\.csv"):
         load_datasets(resolved_example(), data_root=root, run_id="test")
 
 

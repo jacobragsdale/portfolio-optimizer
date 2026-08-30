@@ -317,10 +317,16 @@ def _describe(error: Exception) -> str:
 
 
 def _raise_load_failures(failures: list[_Failed]) -> None:
-    """Raise one error for every failed dataset; an infrastructure error keeps its own type."""
-    hard = [failure for failure in failures if not isinstance(failure.error, ValueError | KeyError)]
+    """Raise one error for every failed dataset; an infrastructure error keeps its own type.
+
+    A batch that failed more than once over — a fan-out loader against a source that is down — arrives as
+    an exception group :func:`_unwrap` cannot collapse, so classification looks *inside* it: the first
+    failure that is not an input error is raised as itself, and the exit code and message are the
+    source's rather than the group's. Every failure is in the log line and in each portfolio's record.
+    """
+    hard = [leaf for failure in failures for leaf in _leaves(failure.error) if not isinstance(leaf, ValueError | KeyError)]
     if hard:
-        raise hard[0].error
+        raise hard[0]
     raise LoadError("; ".join(f"{failure.name}: {_describe(failure.error)}" for failure in failures))
 
 
