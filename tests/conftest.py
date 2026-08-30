@@ -271,7 +271,7 @@ def sell_book(tmp_path: Path) -> Path:
     for style in constraints.values():
         style["cash_bounds"] = ["0", "1"]
     (root / "constraints.json").write_text(json.dumps(constraints))
-    (root / "universe.csv").write_text("security_id,sector,adv_shares,lot_size,restricted\nA,TECH,4000,1,false\nB,TECH,1000000,1,false\nC,TECH,100000,1,false\n")
+    (root / "universe.csv").write_text("security_id,sector,adv_shares,lot_size,restricted\nA,TECH,4000,1,false\nB,TECH,1000000,1,false\nC,HEALTH,100000,1,false\n")
     return root
 
 

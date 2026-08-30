@@ -39,7 +39,7 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
             nav += quantity * PRICES[security]
         details.append(f"{portfolio_id},{portfolio_id} book,NY,0.40,0.20,0,{nav},B1")
         buy_list.extend(f"{portfolio_id},{security}" for security in sorted(rng.sample(SECURITIES, k=rng.randint(1, 3))))
-    style = json.loads((EXAMPLE_DATA / "constraints.json").read_text())["P1"]
+    style = {**json.loads((EXAMPLE_DATA / "constraints.json").read_text())["P1"], "sector_bounds": {}}  # one sector, no bounds: the schedule is what this test is about
     (root / "portfolios.csv").write_text("\n".join(["portfolio_id,solve_order", *(f"{portfolio_id},{rng.randint(0, 1)}" for portfolio_id in portfolio_ids)]) + "\n")
     (root / "holdings.csv").write_text("\n".join(holdings) + "\n")
     (root / "details.csv").write_text("\n".join(details) + "\n")
