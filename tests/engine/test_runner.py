@@ -160,8 +160,12 @@ def test_manifest_records_provenance_for_every_stage(tmp_path: Path, scheduler_a
     assert p1.orders.gross_notional == "500000"
     assert (p1.solve_order, p1.predecessors) == ("0", 0)
     assert len(manifest.manifest_sha256) == 64
-    assert {a.path.rsplit("/", 1)[-1] for a in manifest.artifacts} >= {"P1.npz", "P2.npz", "orders.parquet"}
+    assert {a.path.rsplit("/", 1)[-1] for a in manifest.artifacts} >= {"P1.npz", "P2.npz", "orders.parquet", "trace.json"}
     assert manifest.versions.packages == {}  # every step came from the template modules; git_sha covers them
+    stages = {span.stage for span in manifest.timing}
+    assert {"load", "assembly", "dataset", "cluster", "build", "solve", "sink"} <= stages, "every stage the run passed through left a span"
+    assert {span.portfolio_id for span in manifest.timing if span.name == "solve"} == {"P1", "P2"}
+    assert {span.name for span in manifest.timing if span.stage == "dataset"} == {f"dataset:{d.name}" for d in manifest.datasets}
 
 
 def test_manifest_records_the_package_behind_every_external_step(tmp_path: Path) -> None:

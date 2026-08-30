@@ -24,6 +24,7 @@ from portfolio_optimizer.engine.environment import read_git_info
 from portfolio_optimizer.engine.logging import configure_logging
 from portfolio_optimizer.engine.manifest import diff_manifests, load_manifest
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_INPUT_REJECTED, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunContext, run
+from portfolio_optimizer.engine.timing import render_timeline
 from portfolio_optimizer.settings import SettingsError, load_settings
 
 
@@ -62,6 +63,8 @@ def run_cli(argv: Sequence[str], *, env: Mapping[str, str], clock: Clock, ids: I
         return _validate_config(args, stdout=stdout, stderr=stderr)
     if command == "verify":
         return _verify(args, stdout=stdout, stderr=stderr)
+    if command == "timeline":
+        return _timeline(args, stdout=stdout, stderr=stderr)
     if command == "schema":
         stdout.write(schema_json(run_config_schema()))
         return EXIT_OK
@@ -82,6 +85,9 @@ def _parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--manifest", type=Path, required=True)
     verify_parser.add_argument("--portfolio", required=True)
     commands.add_parser("schema", help="print the JSON Schema for run configs (redirect to configs/run-config.schema.json)")
+    timeline = commands.add_parser("timeline", help="print a run's recorded timing: per-stage totals and an ASCII waterfall")
+    timeline.add_argument("manifest", type=Path)
+    timeline.add_argument("--limit", type=int, default=40, help="most per-portfolio rows to draw before collapsing to one occupancy lane per worker")
     diff = commands.add_parser("diff-manifests", help="name the first stage at which two runs diverge")
     diff.add_argument("left", type=Path)
     diff.add_argument("right", type=Path)
@@ -197,6 +203,21 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
     )
     stdout.write(f"{'VERIFIED' if report.passed else 'VERIFICATION FAILED'} {portfolio_id} (spec {spec.content_hash()[:12]})\n")
     return EXIT_OK if report.passed else EXIT_PORTFOLIO_FAILED
+
+
+def _timeline(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
+    """Render the manifest's recorded spans; the Chrome trace beside the manifest holds the same spans for a graphical viewer."""
+    try:
+        manifest = load_manifest(Path(args.manifest).read_text())
+    except OSError as error:
+        stderr.write(f"cannot read manifest: {error}\n")
+        return EXIT_INFRASTRUCTURE
+    except (ValidationError, ValueError) as error:
+        stderr.write(f"manifest rejected: {error}\n")
+        return EXIT_INPUT_REJECTED
+    stdout.write(f"run {manifest.run_id} ({manifest.run_name})\n")
+    stdout.write(render_timeline(manifest.timing, limit=int(args.limit)))
+    return EXIT_OK
 
 
 def _diff_manifests(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:

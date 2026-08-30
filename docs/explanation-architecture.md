@@ -238,6 +238,26 @@ with are checked before it shares any data with them: each resolves the config �
 step package must be present — and reports its fingerprint, and one that cannot stops the run before
 it has done any work. The manifest records the backend's lifetime and every environment that did work.
 
+## Timing is recorded, and observability is never identity
+
+A finished run can be drawn. Every task the engine submits times itself — `build` with its
+`build:slice`/`build:rules`/`build:spec` phases, `solve` with `solve:chain`/`solve:solve`/`solve:verify`/`solve:orders` —
+and the runner times the client-side stages: `load`, each `dataset:<name>` (derived from the load
+audits), `assembly`, `cluster` (provisioning to first worker), `sink`. A span is a wall-clock start, a duration, and the
+`host:pid` that ran it; spans ride each task's output back beside the environment stamp and land in
+the manifest's `timing` block. Two readers render them, and neither is a second source of truth:
+`trace.json`, written beside the manifest in the Chrome trace format, opens in `chrome://tracing` or
+Perfetto with a row per worker process and every build and solve where it actually ran; and
+`portfolio-optimizer timeline <manifest>` prints the same spans as per-stage totals and an ASCII
+waterfall, collapsing a large book into one occupancy lane per worker.
+
+Two rules shape it. **Observability is never identity**: spans live in the manifest but are not in the
+config hash and are never compared by `diff-manifests` — two runs of one config are identical where it
+matters and differ here by definition. And **it is timing, not profiling**: a `perf_counter` pair
+around work the engine already delimits, a few dozen spans per portfolio, nothing to switch on. What
+it answers is what the manifest alone could not: whether the workers were busy or idle, whether the
+schedule's critical path is where the wall clock went, and which stage a regression landed in.
+
 ## Failure semantics
 
 Every portfolio ends as a `PortfolioResult` or a `PortfolioFailure` naming the stage that failed. A

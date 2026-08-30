@@ -20,6 +20,7 @@ stage, scaled and waited on only after assembly, and closed in a ``finally``.
 """
 
 import logging
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -41,6 +42,7 @@ from portfolio_optimizer.engine.load import DatasetAudit, assemble, load_dataset
 from portfolio_optimizer.engine.manifest import ClusterRecord, ConfigInfo, RunManifest, WorkerRecord, created_at, failed_record, finalize, solved_record, versions, write_manifest
 from portfolio_optimizer.engine.schedule import Coupling, OverlapIndex, Schedule, dependency_graph, order_portfolios
 from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, contribution, probe_task, skipped, solve_task, step_refs, summarize
+from portfolio_optimizer.engine.timing import Span, SpanRecorder, sort_spans, write_trace
 from portfolio_optimizer.settings import ExecutionSettings
 
 log = logging.getLogger(__name__)
@@ -112,11 +114,17 @@ class _Session:
     closed_at: datetime | None = None
     ready: WorkersReady | None = None
     sightings: dict[WorkerEnvironment, dict[str, int]] = field(default_factory=dict)
+    provision_started_s: float | None = None
+    """Wall-clock twin of ``provision_started_at`` for the timing spans, which must share one axis with the workers' ``time.time`` readings rather than the injected clock's."""
+
+    ready_s: float | None = None
+    spans: list[Span] = field(default_factory=list)
 
     def start(self) -> None:
         """Ask for the backend now; the cluster then warms up while data loads."""
         self.backend = self.backend_factory(self.context.execution, run_id=self.context.io.run_id)
         self.provision_started_at = self.context.io.clock.now()
+        self.provision_started_s = time.time()
         self.backend.start()
         log.info("backend %s starting", self.backend.kind, extra={"run_id": self.context.io.run_id, "stage": "cluster"})
 
@@ -129,6 +137,7 @@ class _Session:
         self.backend.scale(execution.max_workers)
         self.ready = self.backend.ready(1, execution.cluster_timeout_s)
         self.first_worker_ready_at = self.context.io.clock.now()
+        self.ready_s = time.time()
         log.info("backend %s ready with %d worker(s)", self.backend.kind, self.ready.workers, extra={"run_id": self.context.io.run_id, "stage": "cluster"})
         return self.backend
 
@@ -142,6 +151,10 @@ class _Session:
         """Record that ``host``, running ``environment``, did work; only solves count toward its portfolio total."""
         hosts = self.sightings.setdefault(environment, {})
         hosts[host] = hosts.get(host, 0) + (1 if solved else 0)
+
+    def absorb(self, spans: Sequence[Span]) -> None:
+        """Keep the spans a task reported, for the manifest's timing block."""
+        self.spans.extend(spans)
 
     def cluster_record(self) -> ClusterRecord | None:
         """The manifest's view of the backend, or ``None`` when the run had none."""
@@ -172,6 +185,7 @@ def run(resolved: ResolvedConfig, context: RunContext, *, backend_factory: Backe
     io = context.io
     log.info("run starting", extra={"run_id": io.run_id, "stage": "load"})
     session = _Session(context, backend_factory)
+    recorder = SpanRecorder()
     order: tuple[PortfolioId, ...] = ()
     dataset_audits: tuple[DatasetAudit, ...] = ()
     assembly_audits: tuple[AssemblyAuditRecord, ...] = ()
@@ -180,13 +194,18 @@ def run(resolved: ResolvedConfig, context: RunContext, *, backend_factory: Backe
     cluster_error: PortfolioFailure | None = None
     try:
         session.start()
+        load_started_s = time.time()
         try:
-            loaded = load_datasets(resolved, data_root=io.data_root, run_id=io.run_id)
-            assembled = assemble(loaded, resolved, run_id=io.run_id)
+            with recorder.span("load"):
+                loaded = load_datasets(resolved, data_root=io.data_root, run_id=io.run_id)
+            with recorder.span("assembly"):
+                assembled = assemble(loaded, resolved, run_id=io.run_id)
         except (ValueError, KeyError) as error:
             msg = f"inputs rejected: {error}"
             raise InputRejectedError(msg) from error
         dataset_audits, assembly_audits, order = loaded.audits, assembled.audits, assembled.portfolio_ids
+        for audit in dataset_audits:
+            recorder.add(f"dataset:{audit.name}", started_at_s=load_started_s + audit.started_s, duration_s=audit.load_time_s)
         executed = _execute(SharedRunData(assembled=assembled, config=config, config_sha256=resolved.config_sha256, run_id=io.run_id), resolved, session, run_dir=io.output_dir / io.run_id)
         outcomes, order = executed.outcomes, executed.schedule.order
     except ClusterError as error:
@@ -198,11 +217,16 @@ def run(resolved: ResolvedConfig, context: RunContext, *, backend_factory: Backe
         session.close()
     ordered = tuple(outcomes[portfolio_id] for portfolio_id in order)
     persisted = executed.artifacts if executed is not None else ()
-    published, publish_error = _publish(ordered, resolved, io)
-    artifacts = (*persisted, *published)
+    with recorder.span("sink"):
+        published, publish_error = _publish(ordered, resolved, io)
+    if session.provision_started_s is not None and session.ready_s is not None:
+        recorder.add("cluster", started_at_s=session.provision_started_s, duration_s=session.ready_s - session.provision_started_s)
+    spans = sort_spans((*recorder.spans, *session.spans))
+    trace_path = write_trace(spans, io.output_dir / io.run_id)
+    artifacts = (*persisted, *published, Artifact(path=str(trace_path), sha256=file_sha256(trace_path), size_bytes=trace_path.stat().st_size))
     infrastructure_error = publish_error if publish_error is not None else cluster_error
     exit_code = _exit_code(ordered, infrastructure_error)
-    manifest = _manifest(resolved, session, dataset_audits, assembly_audits, ordered, executed, artifacts, exit_code, infrastructure_error)
+    manifest = _manifest(resolved, session, dataset_audits, assembly_audits, ordered, executed, artifacts, exit_code, infrastructure_error, spans)
     manifest_path = write_manifest(manifest, io.output_dir / io.run_id)
     log.info("run finished", extra={"run_id": io.run_id, "stage": "manifest", "exit_code": exit_code})
     return RunReport(run_id=io.run_id, outcomes=ordered, manifest=manifest, manifest_path=manifest_path, artifacts=artifacts, exit_code=exit_code)
@@ -522,6 +546,7 @@ def _accept[T](raw: TaskOutput[T] | Exception, portfolio_id: PortfolioId, sessio
     if isinstance(raw, Exception):
         return PortfolioFailure(portfolio_id, "worker", type(raw).__name__, _stable_message(raw))
     session.saw(raw.environment, raw.host, solved=solved)
+    session.absorb(raw.spans)
     differences = expected.differences(raw.environment)
     if differences:
         return PortfolioFailure(portfolio_id, "worker", "EnvironmentMismatch", f"worker {raw.host} runs a different environment: {'; '.join(differences)}")
@@ -597,6 +622,7 @@ def _manifest(
     artifacts: Sequence[Artifact],
     exit_code: int,
     infrastructure_error: PortfolioFailure | None,
+    spans: Sequence[Span],
 ) -> RunManifest:
     config = resolved.config
     context = session.context
@@ -631,6 +657,7 @@ def _manifest(
         assembly=tuple(assembly_audits),
         portfolios=tuple(records),
         artifacts=tuple(artifacts),
+        timing=tuple(spans),
         exit_code=exit_code,
     )
     return finalize(manifest)

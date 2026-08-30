@@ -71,6 +71,18 @@ def test_rerun_diffs_clean_and_verify_passes_without_cvxpy_objects(tmp_path: Pat
     assert "was not solved" in err
 
 
+def test_timeline_renders_the_recorded_spans(tmp_path: Path, env: dict[str, str], config: Path) -> None:
+    assert cli(["run", str(config)], env)[0] == 0
+    run_dir = tmp_path / "out" / "run-smoke"
+    assert (run_dir / "trace.json").exists(), "the same spans are written beside the manifest in the Chrome trace format"
+    code, out, err = cli(["timeline", str(run_dir / "manifest.json")])
+    assert code == 0, err
+    assert "run run-smoke" in out
+    assert "wall clock" in out
+    assert "solve P1" in out
+    assert cli(["timeline", str(tmp_path / "missing.json")])[0] == 3
+
+
 def test_validate_config_lists_every_resolved_step() -> None:
     code, out, _ = cli(["validate-config", str(EXAMPLE_CONFIG)])
     assert code == 0

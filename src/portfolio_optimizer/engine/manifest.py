@@ -19,6 +19,7 @@ from portfolio_optimizer.engine.environment import WorkerEnvironment, distributi
 from portfolio_optimizer.engine.hashing import frame_sha256, json_sha256
 from portfolio_optimizer.engine.load import DatasetAudit
 from portfolio_optimizer.engine.schedule import ScheduleSummary
+from portfolio_optimizer.engine.timing import Span
 
 MANIFEST_FILENAME = "manifest.json"
 
@@ -162,6 +163,13 @@ class RunManifest(StrictModel):
     assembly: tuple[AssemblyAuditRecord, ...] = ()
     portfolios: tuple[PortfolioRecord, ...]
     artifacts: tuple[Artifact, ...]
+    timing: tuple[Span, ...] = ()
+    """Wall-clock spans over the run's stages, per portfolio and run-wide; ``trace.json`` and the ``timeline`` command render them.
+
+    Observability, never identity: ``diff_manifests`` does not compare them, and two runs of one
+    config differ here by definition.
+    """
+
     exit_code: int
     manifest_sha256: str = Field(default="")
 

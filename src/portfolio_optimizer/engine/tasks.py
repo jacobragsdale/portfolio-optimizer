@@ -50,6 +50,7 @@ from portfolio_optimizer.engine.load import slice_portfolio
 from portfolio_optimizer.engine.orders import rounding_drift, solution_to_orders
 from portfolio_optimizer.engine.pipeline import apply_rules
 from portfolio_optimizer.engine.solve import solve
+from portfolio_optimizer.engine.timing import SpanRecorder
 
 log = logging.getLogger(__name__)
 
@@ -117,11 +118,13 @@ class BuildSummary:
 # --- the pipeline ---
 
 
-def build_portfolio(data: PortfolioData, resolved: ResolvedConfig, fallback_solve_order: Decimal) -> BuildResult:
-    """Apply rules, compute the solve-order key, and build the spec."""
-    ruled, audit = apply_rules(data, resolved.rules)
+def build_portfolio(data: PortfolioData, resolved: ResolvedConfig, fallback_solve_order: Decimal, recorder: SpanRecorder) -> BuildResult:
+    """Apply rules, compute the solve-order key, and build the spec, timing each phase onto ``recorder``."""
+    with recorder.span("build:rules"):
+        ruled, audit = apply_rules(data, resolved.rules)
     key = fallback_solve_order if resolved.solve_order is None else solve_order_key(resolved.solve_order, ruled)
-    output = build_problem_spec(ruled)
+    with recorder.span("build:spec"):
+        output = build_problem_spec(ruled)
     return BuildResult(
         portfolio_id=data.portfolio_id,
         spec=output.spec,
@@ -147,32 +150,35 @@ def solve_order_key(step: ResolvedStep, data: PortfolioData) -> Decimal:
     return key
 
 
-def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainState, run_id: str) -> PortfolioResult:
-    """Solve, verify independently, round to orders, and bound the rounding drift."""
-    solution = solve(built.spec, chain, resolved, built.constraints, built.extras)
+def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainState, run_id: str, recorder: SpanRecorder) -> PortfolioResult:
+    """Solve, verify independently, round to orders, and bound the rounding drift, timing each phase onto ``recorder``."""
+    with recorder.span("solve:solve"):
+        solution = solve(built.spec, chain, resolved, built.constraints, built.extras)
     post = resolved.config.post_solve
-    report = verify(
-        built.spec,
-        solution,
-        chain,
-        step_refs(resolved.terms),
-        solution.constraints,
-        profile=resolved.profile,
-        tolerances=Tolerances(violation=post.violation_tol, obj_rel=post.objective_rel_tol, obj_abs=post.objective_abs_tol),
-    )
+    with recorder.span("solve:verify"):
+        report = verify(
+            built.spec,
+            solution,
+            chain,
+            step_refs(resolved.terms),
+            solution.constraints,
+            profile=resolved.profile,
+            tolerances=Tolerances(violation=post.violation_tol, obj_rel=post.objective_rel_tol, obj_abs=post.objective_abs_tol),
+        )
     if not report.passed:
         raise VerificationError(report)
-    orders = solution_to_orders(built.spec, solution, built.order_inputs, run_id=run_id)
-    foreign = sorted({str(side) for side in orders["side"]} - resolved.profile.order_sides)
-    if foreign:
-        msg = f"orders on a side a {resolved.profile.sides!r} run does not trade: {foreign}"
-        raise SideInvariantError(msg)
-    contribution = resolved.profile.contribution(built.portfolio_id, orders)
-    outside = sorted(set(contribution.security_ids) - set(built.tradable))
-    if outside:
-        msg = f"traded securities outside the tradable set: {outside}"
-        raise ChainInvariantError(msg)
-    drift = rounding_drift(built.spec, solution, orders, built.order_inputs, violation_tol=post.violation_tol)
+    with recorder.span("solve:orders"):
+        orders = solution_to_orders(built.spec, solution, built.order_inputs, run_id=run_id)
+        foreign = sorted({str(side) for side in orders["side"]} - resolved.profile.order_sides)
+        if foreign:
+            msg = f"orders on a side a {resolved.profile.sides!r} run does not trade: {foreign}"
+            raise SideInvariantError(msg)
+        contribution = resolved.profile.contribution(built.portfolio_id, orders)
+        outside = sorted(set(contribution.security_ids) - set(built.tradable))
+        if outside:
+            msg = f"traded securities outside the tradable set: {outside}"
+            raise ChainInvariantError(msg)
+        drift = rounding_drift(built.spec, solution, orders, built.order_inputs, violation_tol=post.violation_tol)
     if not drift.passed:
         raise DriftError(drift)
     return PortfolioResult(
@@ -200,22 +206,23 @@ def skipped(portfolio_id: str, message: str) -> PortfolioFailure:
     return PortfolioFailure(portfolio_id=portfolio_id, stage="skipped", error_type=SKIPPED_ERROR, message=message)
 
 
-def slice_and_build(shared: SharedRunData, resolved: ResolvedConfig, portfolio_id: PortfolioId) -> BuildResult | PortfolioFailure:
+def slice_and_build(shared: SharedRunData, resolved: ResolvedConfig, portfolio_id: PortfolioId, recorder: SpanRecorder) -> BuildResult | PortfolioFailure:
     """Slice the portfolio's bundle from the shared data, apply rules, and build its spec; a failure names its stage."""
     try:
-        data = slice_portfolio(shared.assembled, portfolio_id)
+        with recorder.span("build:slice"):
+            data = slice_portfolio(shared.assembled, portfolio_id)
     except (PortfolioDataError, ValueError) as error:
         return failure(portfolio_id, "slice", error)
     try:
-        return build_portfolio(data, resolved, Decimal(shared.assembled.solve_orders[portfolio_id]))
+        return build_portfolio(data, resolved, Decimal(shared.assembled.solve_orders[portfolio_id]), recorder)
     except Exception as error:  # noqa: BLE001  # recorded per portfolio; on_error decides what happens next
         return failure(portfolio_id, "build", error)
 
 
-def finish_or_fail(built: BuildResult, resolved: ResolvedConfig, chain: ChainState, run_id: str) -> Outcome:
+def finish_or_fail(built: BuildResult, resolved: ResolvedConfig, chain: ChainState, run_id: str, recorder: SpanRecorder) -> Outcome:
     """Solve and finish, recording any failure at stage ``solve``."""
     try:
-        result = finish_portfolio(built, resolved, chain, run_id)
+        result = finish_portfolio(built, resolved, chain, run_id, recorder)
     except Exception as error:  # noqa: BLE001  # recorded per portfolio; on_error decides what happens next
         log.error("portfolio failed", extra={"run_id": run_id, "portfolio_id": built.portfolio_id, "stage": "solve", "error": type(error).__name__})
         return failure(built.portfolio_id, "solve", error)
@@ -264,34 +271,39 @@ def probe_task(config: RunConfig) -> TaskOutput[None]:
 
 def build_task(shared: SharedRunData, portfolio_id: PortfolioId) -> TaskOutput[BuildResult]:
     """Slice, rules, solve-order key, and build; chain-free, so every portfolio's build runs at once."""
-    return _task(shared, portfolio_id, lambda data, resolved: slice_and_build(data, resolved, portfolio_id))
+    return _task(shared, portfolio_id, "build", lambda data, resolved, recorder: slice_and_build(data, resolved, portfolio_id, recorder))
 
 
 def summarize(build: TaskOutput[BuildResult]) -> TaskOutput[BuildSummary]:
-    """Reduce a build to what the main process needs, keeping the build's environment stamp so a stale worker is caught before it solves."""
+    """Reduce a build to what the main process needs, keeping the build's environment stamp so a stale worker is caught before it solves.
+
+    The build's spans travel on the summary — the result itself never leaves its worker, and this is
+    the one message from that build the main process is guaranteed to read.
+    """
     outcome = build.outcome
     if isinstance(outcome, PortfolioFailure):
-        passed_on: TaskOutput[BuildSummary] = TaskOutput(outcome=outcome, environment=build.environment, host=build.host)
+        passed_on: TaskOutput[BuildSummary] = TaskOutput(outcome=outcome, environment=build.environment, host=build.host, spans=build.spans)
         return passed_on
     summary = BuildSummary(portfolio_id=outcome.portfolio_id, solve_order=outcome.solve_order, tradable=outcome.tradable, spec_sha256=outcome.spec.content_hash(), rule_audit=outcome.rule_audit)
-    return TaskOutput(outcome=summary, environment=build.environment, host=build.host)
+    return TaskOutput(outcome=summary, environment=build.environment, host=build.host, spans=build.spans)
 
 
 def solve_task(shared: SharedRunData, build: TaskOutput[BuildResult], *contributions: Contribution | PortfolioFailure) -> TaskOutput[PortfolioResult]:
     """Fold the predecessors' contributions and finish the portfolio; a failed build or predecessor is passed on, never solved around."""
     built = build.outcome
 
-    def pipeline(data: SharedRunData, resolved: ResolvedConfig) -> Outcome:
+    def pipeline(data: SharedRunData, resolved: ResolvedConfig, recorder: SpanRecorder) -> Outcome:
         if isinstance(built, PortfolioFailure):
             return built
         failed = next((contribution for contribution in contributions if isinstance(contribution, PortfolioFailure)), None)
         if failed is not None:
             return skipped(built.portfolio_id, f"not solved because predecessor {failed.portfolio_id!r} failed at stage {failed.stage!r}")
         folded = [contribution for contribution in contributions if isinstance(contribution, Contribution)]
-        chain = resolved.profile.chain_state(built.spec, folded)
-        return finish_or_fail(built, resolved, chain, data.run_id)
+        with recorder.span("solve:chain"):
+            chain = resolved.profile.chain_state(built.spec, folded)
+        return finish_or_fail(built, resolved, chain, data.run_id, recorder)
 
-    return _task(shared, built.portfolio_id, pipeline)
+    return _task(shared, built.portfolio_id, "solve", pipeline)
 
 
 def contribution(solved: TaskOutput[PortfolioResult]) -> Contribution | PortfolioFailure:
@@ -302,10 +314,13 @@ def contribution(solved: TaskOutput[PortfolioResult]) -> Contribution | Portfoli
     return outcome.contribution
 
 
-def _task[T](data: SharedRunData, portfolio_id: str, pipeline: Callable[[SharedRunData, ResolvedConfig], T | PortfolioFailure]) -> TaskOutput[T]:
+def _task[T](data: SharedRunData, portfolio_id: str, stage: str, pipeline: Callable[[SharedRunData, ResolvedConfig, SpanRecorder], T | PortfolioFailure]) -> TaskOutput[T]:
     environment = worker_environment(data)
     try:
         resolved = resolved_for(data)
     except Exception as error:  # noqa: BLE001  # a step package missing on this worker is a worker failure, not a crash
         return TaskOutput(outcome=failure(portfolio_id, "worker", error), environment=environment, host=host_name())
-    return TaskOutput(outcome=pipeline(data, resolved), environment=environment, host=host_name())
+    recorder = SpanRecorder(portfolio_id)
+    with recorder.span(stage):
+        outcome = pipeline(data, resolved, recorder)
+    return TaskOutput(outcome=outcome, environment=environment, host=host_name(), spans=recorder.spans)

@@ -48,7 +48,7 @@ class LazyPending:
             raise BrokenExecutor(msg)
         output = self.fn(*resolved)
         if isinstance(output, TaskOutput):
-            erased: TaskOutput[object] = TaskOutput(outcome=output.outcome, environment=output.environment, host=output.host)
+            erased: TaskOutput[object] = TaskOutput(outcome=output.outcome, environment=output.environment, host=output.host, spans=output.spans)
             return self.backend.tamper(erased)
         return output
 
@@ -89,7 +89,7 @@ class LazyBackend:
         self.probed += 1
         output = fn(*args)
         if isinstance(output, TaskOutput):
-            erased: TaskOutput[object] = TaskOutput(outcome=output.outcome, environment=output.environment, host=output.host)
+            erased: TaskOutput[object] = TaskOutput(outcome=output.outcome, environment=output.environment, host=output.host, spans=output.spans)
             return {"fake://worker-1": self.probe_tamper(erased)}  # ty: ignore[invalid-return-type]  # the fake erases T
         return {"fake://worker-1": output}
 

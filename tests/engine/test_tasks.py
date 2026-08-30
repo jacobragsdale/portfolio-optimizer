@@ -25,6 +25,8 @@ def test_build_task_slices_rules_and_builds_from_the_shared_data_and_reports_its
     assert output.outcome.solve_order == 0
     assert output.environment == environment_for(shared.config, cwd=Path.cwd(), image_digest=None)
     assert output.host
+    assert [span.name for span in output.spans] == ["build:slice", "build:rules", "build:spec", "build"], "phases end before the stage that contains them"
+    assert all(span.portfolio_id == "P1" for span in output.spans)
     missing = build_task(shared, PortfolioId("P9"))
     assert isinstance(missing.outcome, PortfolioFailure) and missing.outcome.stage == "slice"
 

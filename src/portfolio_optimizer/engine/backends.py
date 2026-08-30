@@ -26,6 +26,7 @@ from portfolio_optimizer.domain.results import PortfolioFailure
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.environment import WorkerEnvironment
 from portfolio_optimizer.engine.load import AssembledDatasets
+from portfolio_optimizer.engine.timing import Span
 from portfolio_optimizer.settings import ExecutionSettings
 
 
@@ -49,11 +50,16 @@ class SharedRunData:
 
 @dataclass(frozen=True, slots=True)
 class TaskOutput[T]:
-    """What every task returns: the portfolio's outcome and the fingerprint and host of the process that produced it."""
+    """What every task returns: the portfolio's outcome, the fingerprint and host of the process that produced it, and the spans it timed.
+
+    ``spans`` is observability, never identity: the runner folds them into the manifest's ``timing``
+    block, which ``diff-manifests`` does not compare.
+    """
 
     outcome: T | PortfolioFailure
     environment: WorkerEnvironment
     host: str
+    spans: tuple[Span, ...] = ()
 
 
 class Pending[T](Protocol):
