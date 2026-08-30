@@ -12,17 +12,17 @@ fits the same contract.
 import numpy as np
 
 from portfolio_optimizer.config.steps import ResolvedStep
-from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm, solve_problem, variables
-from portfolio_optimizer.cvx.sides import identity_constraints
+from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm, solve_problem
+from portfolio_optimizer.cvx.sides import decision_variables, identity_constraints
 from portfolio_optimizer.domain.results import F64, ChainState, ProblemSpec
 from portfolio_optimizer.solving import SolveRequest, SolveResult, SolveSetupError
 from portfolio_optimizer.terms import adv_remaining
 
 
 def cvxpy(request: SolveRequest) -> SolveResult:
-    """Build the cvxpy problem from the terms, the constraints, and the profile's identity, and solve it with the configured solver."""
+    """Build the cvxpy problem from the terms, the constraints, and the profile's variables and identity, and solve it with the configured solver."""
     spec, chain, solver = request.spec, request.chain, request.solver
-    x = variables(spec.n)
+    x = decision_variables(request.profile.sides, spec.w0)
     terms = [_term(step, x, spec, chain) for step in request.terms]
     constraints = [identity_constraints(request.profile.sides, x, spec.w0), *(_constraint_set(constraint.step, x, spec, chain) for constraint in request.constraints)]
     raw = solve_problem(x, terms, constraints, solver=solver.name, options=solver.options, time_limit_s=solver.time_limit_s, verbose=solver.verbose)

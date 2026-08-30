@@ -15,7 +15,7 @@ from portfolio_optimizer.engine.load import assemble, load_datasets
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, RunReport, run
 from portfolio_optimizer.engine.tasks import BuildResult, build_task
 from portfolio_optimizer.settings import ExecutionSettings
-from tests.conftest import EXAMPLE_DATA, NO_CHAIN_CONSTRAINTS, example_config, example_config_real, execution_on, io_context, resolved_example_real
+from tests.conftest import BUY_ONLY_OBJECTIVE, EXAMPLE_DATA, NO_CHAIN_CONSTRAINTS, example_config, example_config_real, execution_on, half_cash_book, io_context, resolved_example_real
 
 GIT = GitInfo(sha="0123456789abcdef", dirty=False)
 
@@ -181,6 +181,25 @@ def test_a_pure_function_solve_step_runs_the_whole_pipeline_and_is_verified(tmp_
     record = report.manifest.portfolios[0]
     assert record.solve is not None and record.solve.solver == "tests.conftest:hold_still" and record.solve.objective_value is None
     assert record.check is not None and record.check.objective_passed
+
+
+def test_a_buy_only_run_reproduces_the_hand_checked_buys_and_couples_through_them(tmp_path: Path) -> None:
+    report = execute(tmp_path, LazyBackend(), data_root=half_cash_book(tmp_path), sides="buy", objective=BUY_ONLY_OBJECTIVE)
+    assert report.exit_code == EXIT_OK, [outcome for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)]
+    p1, p2 = report.outcomes
+    assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
+    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == [
+        {"security_id": "A", "side": "BUY", "quantity": 1250},
+        {"security_id": "B", "side": "BUY", "quantity": 2500},
+        {"security_id": "C", "side": "BUY", "quantity": 25000},
+    ]
+    assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == [{"security_id": "A", "side": "BUY", "quantity": 2500}, {"security_id": "B", "side": "BUY", "quantity": 5000}]
+    assert p2.chain_state.traded_shares.tolist() == [1250.0, 2500.0, 25000.0] and p2.chain_state.predecessors == ("P1",), (
+        "every buy P1 made reaches P2: under buy-only the chain carries the whole trade"
+    )
+    for outcome in (p1, p2):
+        assert outcome.report.passed and (outcome.solution.w >= outcome.spec.w0 - 1e-9).all() and outcome.solution.sell.tolist() == [0.0, 0.0, 0.0]
+    assert report.manifest.config.resolved["sides"] == "buy"
 
 
 def test_nothing_reading_the_chain_means_no_portfolio_waits(tmp_path: Path) -> None:

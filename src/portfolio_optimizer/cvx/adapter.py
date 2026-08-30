@@ -8,7 +8,7 @@ cvxpy objects and the post-solve verifier never needs cvxpy at all.
 import importlib.metadata
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cvxpy as cp
 import numpy as np
@@ -57,14 +57,48 @@ _STATUS: Mapping[str, SolveStatus] = {
 }
 
 
+class SideUnavailableError(LookupError):
+    """A term or constraint reached for a decision vector the run's side does not have."""
+
+    def __init__(self, side: str, sides: str) -> None:
+        self.side = side
+        self.sides = sides
+        super().__init__(f"a {sides!r} run has no {side!r} vector; this term or constraint reads x.{side}, so it cannot run under sides={sides!r}")
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class DecisionVars:
-    """Portfolio weights and the non-negative buy/sell split, all as fractions of NAV."""
+    """The decision variables of one solve, as fractions of NAV; what each is depends on the run's side.
+
+    ``w`` is always a variable, the target weight. ``buy`` and ``sell`` are what the side profile
+    made them — a variable each under ``both``, an affine expression of ``w`` on the side a one-sided
+    run has, and absent on the side it lacks, where reading them raises :class:`SideUnavailableError`
+    (dry construction at ``validate-config`` is where that surfaces). A term that means "the amount
+    traded" reads ``trade`` — ``buy + sell``, ``buy``, or ``sell`` — and one that means "the amount
+    traded on the side the run couples through" reads ``coupled``; both exist under every side.
+    """
 
     w: cp.Variable
-    buy: cp.Variable
-    sell: cp.Variable
     n: int
+    sides: str
+    trade: Expr
+    coupled: Expr
+    _buy: Expr | None = field(default=None, repr=False)
+    _sell: Expr | None = field(default=None, repr=False)
+
+    @property
+    def buy(self) -> Expr:
+        """The non-negative buy, as a fraction of NAV; absent in a sell-only run."""
+        if self._buy is None:
+            raise SideUnavailableError(side="buy", sides=self.sides)
+        return self._buy
+
+    @property
+    def sell(self) -> Expr:
+        """The non-negative sell, as a fraction of NAV; absent in a buy-only run."""
+        if self._sell is None:
+            raise SideUnavailableError(side="sell", sides=self.sides)
+        return self._sell
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -98,9 +132,9 @@ def _constraint(value: object) -> Constraint:
     return value
 
 
-def variables(n: int) -> DecisionVars:
-    """Create the decision variables for ``n`` securities."""
-    return DecisionVars(w=cp.Variable(n, name="w"), buy=cp.Variable(n, name="buy"), sell=cp.Variable(n, name="sell"), n=n)
+def variable(n: int, name: str) -> cp.Variable:
+    """A fresh vector variable of length ``n``; the side profile decides which ones a solve has."""
+    return cp.Variable(n, name=name)
 
 
 def sum_squares(expr: Expr) -> Expr:
@@ -170,8 +204,6 @@ class RawSolve:
     status: SolveStatus
     objective: float | None
     w: F64 | None
-    buy: F64 | None
-    sell: F64 | None
     iterations: int | None
     solve_time_s: float
     solver: str
@@ -253,8 +285,6 @@ def solve_problem(
         status=status,
         objective=None if value is None or not np.isfinite(float(value)) else float(value),
         w=_value(x.w),
-        buy=_value(x.buy),
-        sell=_value(x.sell),
         iterations=iterations,
         solve_time_s=elapsed,
         solver=solver,

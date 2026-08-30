@@ -1,14 +1,16 @@
 """Turn a solution into whole-share orders: the one place float64 becomes Decimal again.
 
-Weight deltas become whole shares by rounding to the **nearest** share (half-even), then down to a
-lot multiple, then clamped so a sell never exceeds what is held and a buy never exceeds the room
-under the security's upper bound. Nearest rounding matters because solver noise of 1e-8 in weight
-space is a fraction of a share: rounding toward zero would turn an exact 1250-share answer into
-1249. The buy clamp makes ``spec.buyable`` structural: the verifier tolerates a bound violation of
-``violation_tol``, which at a large NAV is whole shares, and a BUY in a security the portfolio
-cannot buy would be invisible to the dependency graph. The drift this introduces is measured
-against the solved weights and bounded by :func:`rounding_drift`; verification of every constraint
-happens on the solved weights before rounding.
+The trade is the split the side profile reported, ``buy - sell`` — which is ``w - w0`` exactly for a
+two-sided run and, for a one-sided one, ``w - w0`` clipped to the side the run has, so solver noise
+on the other side never becomes an order. Weight deltas become whole shares by rounding to the
+**nearest** share (half-even), then down to a lot multiple, then clamped so a sell never exceeds
+what is held and a buy never exceeds the room under the security's upper bound. Nearest rounding
+matters because solver noise of 1e-8 in weight space is a fraction of a share: rounding toward zero
+would turn an exact 1250-share answer into 1249. The buy clamp makes ``spec.buyable`` structural:
+the verifier tolerates a bound violation of ``violation_tol``, which at a large NAV is whole shares,
+and a BUY in a security the portfolio cannot buy would be invisible to the dependency graph. The
+drift this introduces is measured against the solved weights and bounded by :func:`rounding_drift`;
+verification of every constraint happens on the solved weights before rounding.
 """
 
 from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
@@ -55,7 +57,8 @@ def solution_to_orders(spec: ProblemSpec, solution: Solution, inputs: OrderInput
 
 def _shares(index: int, spec: ProblemSpec, solution: Solution, inputs: OrderInputs) -> tuple[int, float]:
     """Signed whole shares for one name after nearest-share, lot, held-quantity, and bound rounding."""
-    delta = Decimal(float(solution.w[index] - spec.w0[index])) * inputs.nav / inputs.price[index]
+    del spec
+    delta = Decimal(float(solution.buy[index] - solution.sell[index])) * inputs.nav / inputs.price[index]
     unrounded = float(delta)
     lot = inputs.lot_size[index]
     magnitude = int(abs(delta).to_integral_value(rounding=ROUND_HALF_EVEN))

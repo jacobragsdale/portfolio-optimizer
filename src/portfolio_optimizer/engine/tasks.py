@@ -7,9 +7,9 @@ for every portfolio, chain-free and in parallel: slice, rules, the
 solve-order key, and the spec. Its result stays on the worker; :func:`summarize` sends the main
 process only what it needs to derive the schedule — the key, the tradable securities, the spec hash,
 the rule audit — stamped with the build's environment. :func:`solve_task` then runs where the build
-lives, once the portfolio's predecessors have contributed: it folds their buys into a
-:class:`ChainState`, solves, verifies, and rounds. :func:`contribution` reduces a result to the BUY
-rows a dependent needs. Each task receives the run's shared data (the backend resolves its handle on
+lives, once the portfolio's predecessors have contributed: it folds their trades on the side the run
+couples through into a :class:`ChainState`, solves, verifies, and rounds. :func:`contribution`
+reduces a result to the order rows on that side a dependent needs. Each task receives the run's shared data (the backend resolves its handle on
 the worker) and resolves the config by name once per process. A task never raises for a portfolio's
 own failure: it returns a :class:`PortfolioFailure` naming the stage, so ``on_error`` can be applied.
 """
@@ -76,7 +76,11 @@ class SolveOrderError(ValueError):
 
 
 class ChainInvariantError(RuntimeError):
-    """A portfolio bought a security outside its buyable set, which the dependency graph could not have seen."""
+    """A portfolio traded a security outside its tradable set, which the dependency graph could not have seen."""
+
+
+class SideInvariantError(RuntimeError):
+    """A portfolio produced an order on a side the run does not trade."""
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -142,6 +146,10 @@ def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainS
     if not report.passed:
         raise VerificationError(report)
     orders = solution_to_orders(built.spec, solution, built.order_inputs, run_id=run_id)
+    foreign = sorted({str(side) for side in orders["side"]} - resolved.profile.order_sides)
+    if foreign:
+        msg = f"orders on a side a {resolved.profile.sides!r} run does not trade: {foreign}"
+        raise SideInvariantError(msg)
     contribution = resolved.profile.contribution(built.portfolio_id, orders)
     outside = sorted(set(contribution.security_ids) - set(built.tradable))
     if outside:
@@ -261,7 +269,7 @@ def summarize(build: TaskOutput[BuildResult]) -> TaskOutput[BuildSummary]:
 
 
 def solve_task(shared: SharedRunData, build: TaskOutput[BuildResult], *contributions: Contribution | PortfolioFailure) -> TaskOutput[PortfolioResult]:
-    """Fold the predecessors' buys and finish the portfolio; a failed build or predecessor is passed on, never solved around."""
+    """Fold the predecessors' contributions and finish the portfolio; a failed build or predecessor is passed on, never solved around."""
     built = build.outcome
 
     def pipeline(data: SharedRunData, resolved: ResolvedConfig) -> Outcome:
@@ -278,7 +286,7 @@ def solve_task(shared: SharedRunData, build: TaskOutput[BuildResult], *contribut
 
 
 def contribution(solved: TaskOutput[PortfolioResult]) -> Contribution | PortfolioFailure:
-    """What a dependent solve receives: the portfolio's buys, or the failure that stops the dependent."""
+    """What a dependent solve receives: the portfolio's trades on the side the run couples through, or the failure that stops the dependent."""
     outcome = solved.outcome
     if isinstance(outcome, PortfolioFailure):
         return outcome

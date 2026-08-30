@@ -13,7 +13,7 @@ from portfolio_optimizer.engine.backends import Backend
 from portfolio_optimizer.engine.environment import GitInfo
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunReport, run
 from portfolio_optimizer.settings import ExecutionSettings
-from tests.conftest import EXAMPLE_DATA, NO_CHAIN_CONSTRAINTS, execution_on, io_context, resolved_example_real
+from tests.conftest import BUY_ONLY_OBJECTIVE, EXAMPLE_DATA, NO_CHAIN_CONSTRAINTS, execution_on, half_cash_book, io_context, resolved_example_real
 from tests.engine.test_backends import LazyBackend
 
 GIT = GitInfo(sha="0123456789abcdef", dirty=False)
@@ -50,7 +50,7 @@ def test_the_run_reproduces_the_hand_checked_orders(tmp_path: Path, scheduler_ad
         {"security_id": "C", "side": "BUY", "quantity": 25000},
     ]
     assert len(p2.orders) == 0, "P2 wants C too, but P1 spent C's ADV budget, and A and B already sit symmetrically against the target"
-    assert p2.chain_state.bought_shares.tolist() == [0.0, 0.0, 25000.0], "only P1's buys reach P2; its sells of A and B do not"
+    assert p2.chain_state.traded_shares.tolist() == [0.0, 0.0, 25000.0], "only P1's buys reach P2; its sells of A and B do not"
     assert p2.chain_state.predecessors == ("P1",)
     run_dir = tmp_path / "run-test" / "run-test"
     assert (run_dir / "manifest.json").exists()
@@ -72,6 +72,21 @@ def test_every_earlier_portfolio_as_a_predecessor_matches_the_overlap_schedule(t
         assert left.chain_state.content_hash() == right.chain_state.content_hash()
         assert_frame_equal(left.orders.drop(columns=["run_id"]), right.orders.drop(columns=["run_id"]))
     assert [p.orders for p in line.manifest.portfolios] == [p.orders for p in overlap.manifest.portfolios]
+
+
+def test_a_buy_only_run_on_the_cluster_reproduces_the_hand_checked_buys(tmp_path: Path, scheduler_address: str) -> None:
+    report = execute(tmp_path, scheduler_address, data_root=half_cash_book(tmp_path), sides="buy", objective=BUY_ONLY_OBJECTIVE)
+    assert report.exit_code == EXIT_OK
+    p1, p2 = report.outcomes
+    assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
+    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == [
+        {"security_id": "A", "side": "BUY", "quantity": 1250},
+        {"security_id": "B", "side": "BUY", "quantity": 2500},
+        {"security_id": "C", "side": "BUY", "quantity": 25000},
+    ]
+    assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == [{"security_id": "A", "side": "BUY", "quantity": 2500}, {"security_id": "B", "side": "BUY", "quantity": 5000}]
+    assert p2.chain_state.traded_shares.tolist() == [1250.0, 2500.0, 25000.0]
+    assert [p.status for p in report.manifest.portfolios] == ["solved", "solved"]
 
 
 def test_nothing_reading_the_chain_frees_every_portfolio(tmp_path: Path, scheduler_address: str) -> None:

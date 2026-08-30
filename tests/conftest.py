@@ -9,6 +9,7 @@ Builders are exposed as fixtures because ``--import-mode=importlib`` keeps ``tes
 import asyncio
 import json
 import logging
+import shutil
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -236,6 +237,29 @@ def make() -> Factories:
 
 
 NO_CHAIN_CONSTRAINTS = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "sector_bounds"]
+BUY_ONLY_OBJECTIVE: dict[str, object] = {"terms": [{"name": "tracking_error", "params": {"weight": "1.0"}}, {"name": "transaction_cost", "params": {"weight": "1.0"}}]}
+"""The example's objective without ``tax_cost``, which reads ``sell`` and so cannot run in a buy-only run."""
+
+
+def half_cash_book(tmp_path: Path) -> Path:
+    """The example data with each portfolio holding A 2500 @100 and B 5000 @50 and half its NAV in cash: what a buy-only run invests.
+
+    Targets are a third each and C's ADV budget is 25,000 shares, so the hand answer for P1 is buy
+    1,250 A, 2,500 B, and 25,000 C (C is capped at 0.25, the rest splits evenly), and P2 — C's budget
+    spent by P1 — buys 2,500 A and 5,000 B.
+    """
+    root = tmp_path / "half-cash"
+    shutil.copytree(EXAMPLE_DATA, root)
+    (root / "details.csv").write_text(
+        "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id\nP1,Alpha Growth,NY,0.40,0.20,500000,1000000,B1\nP2,Beta Income,CA,0.37,0.20,500000,1000000,B1\n"
+    )
+    (root / "holdings.csv").write_text(
+        "portfolio_id,security_id,quantity,avg_cost,acquired_on\n"
+        "P1,A,2500,100,2024-01-15T00:00:00Z\nP1,B,5000,50,2024-01-15T00:00:00Z\nP2,A,2500,100,2025-11-01T00:00:00Z\nP2,B,5000,50,2025-11-01T00:00:00Z\n"
+    )
+    return root
+
+
 """The example's constraints without the chain-aware ADV cap: nothing reads the chain, so no portfolio waits for another."""
 
 

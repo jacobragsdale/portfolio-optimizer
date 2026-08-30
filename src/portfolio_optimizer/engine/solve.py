@@ -12,6 +12,7 @@ import numpy as np
 from portfolio_optimizer.config.resolve import ResolvedConfig
 from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus
+from portfolio_optimizer.domain.sides import TWO_SIDED, SideProfile
 from portfolio_optimizer.engine.environment import package_versions
 from portfolio_optimizer.solving import SolveRequest, SolveResult, SolveSetupError
 
@@ -97,7 +98,7 @@ def _classify(result: SolveResult, spec: ProblemSpec, chain: ChainState, spec_ha
             spec_hash=spec_hash,
         )
     if result.status is SolveStatus.INFEASIBLE:
-        raise InfeasibleError(spec_hash, diagnose_infeasibility(spec, chain))
+        raise InfeasibleError(spec_hash, diagnose_infeasibility(spec, chain, profile=resolved.profile))
     if result.status is SolveStatus.UNBOUNDED:
         msg = f"unbounded problem (spec {spec_hash[:12]}): a custom term or constraint removed a bound"
         raise UnboundedError(msg)
@@ -110,9 +111,9 @@ def _step_version(step: ResolvedStep) -> str:
     return next(iter(package_versions([step.qualname.partition(":")[0]]).values()), "unknown")
 
 
-def diagnose_infeasibility(spec: ProblemSpec, chain: ChainState) -> InfeasibilityReport:
-    """Arithmetic checks that explain the common infeasibilities without another solve."""
-    findings: list[str] = []
+def diagnose_infeasibility(spec: ProblemSpec, chain: ChainState, *, profile: SideProfile = TWO_SIDED) -> InfeasibilityReport:
+    """Arithmetic checks that explain the common infeasibilities without another solve; the profile adds the ones its side creates."""
+    findings: list[str] = profile.infeasible_starts(spec)
     invested_lb = 1.0 - spec.cash_ub
     invested_ub = 1.0 - spec.cash_lb
     if spec.ub.sum() < invested_lb - 1e-12:
@@ -130,7 +131,7 @@ def diagnose_infeasibility(spec: ProblemSpec, chain: ChainState) -> Infeasibilit
     needed = float(np.abs(clamped - spec.w0).sum())
     if needed > spec.max_turnover + 1e-12:
         findings.append(f"moving w0 inside its bounds needs turnover {needed:.6f} > max_turnover {spec.max_turnover:.6f}")
-    consumed = chain.bought_shares * spec.price / spec.nav if chain.security_ids == spec.security_ids else np.zeros(spec.n)
+    consumed = chain.traded_shares * spec.price / spec.nav if chain.security_ids == spec.security_ids else np.zeros(spec.n)
     remaining = np.maximum(0.0, spec.adv_capacity - consumed)
     required = clamped - spec.w0
     blocked = [spec.security_ids[i] for i in range(spec.n) if abs(required[i]) > spec.adv_capacity[i] + 1e-12 or required[i] > remaining[i] + 1e-12]

@@ -4,7 +4,7 @@ The convention: a step is an ordinary function whose signature carries engine-pr
 arguments by fixed names (``request``, ``frames``, ``data``, ``x``, ``spec``, ``orders``, ``io``), an optional
 ``params`` argument annotated with a :class:`~portfolio_optimizer.domain.types.Params` subclass,
 and — for terms and constraints only — an optional ``chain`` argument that reads what higher-priority
-portfolios bought. The engine calls steps with keyword arguments, so the order does not matter.
+portfolios traded on the side the run couples through. The engine calls steps with keyword arguments, so the order does not matter.
 Loaders may be ``async def``; every other kind runs synchronously.
 
 The solver is checked here too — known to the adapter, installed, able to honor ``time_limit_s`` —
@@ -29,7 +29,8 @@ from scipy.sparse import csr_array
 
 from portfolio_optimizer.config.models import RunConfig, StepSpec
 from portfolio_optimizer.config.steps import ResolvedConstraint, ResolvedStep, StepKind
-from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, installed_solvers, solver_failures, variables
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, installed_solvers, solver_failures
+from portfolio_optimizer.cvx.sides import decision_variables
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ChainState, MissingSpecColumnError, ProblemSpec
 from portfolio_optimizer.domain.sides import SideProfile, profile_for
@@ -198,7 +199,7 @@ def construction_failures(resolved: ResolvedConfig) -> list[str]:
         *((f"constraints[{i}]", c.step, ConstraintSet) for i, c in enumerate(resolved.constraints)),
     ):
         try:
-            result = step.invoke(x=variables(spec.n), spec=spec, context=chain if step.needs_context else None)
+            result = step.invoke(x=decision_variables(resolved.profile.sides, spec.w0), spec=spec, context=chain if step.needs_context else None)
         except MissingSpecColumnError:
             continue
         except Exception as error:  # noqa: BLE001  # any construction failure is what this check exists to report

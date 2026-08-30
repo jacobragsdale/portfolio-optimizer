@@ -19,7 +19,7 @@ from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, Port
 from portfolio_optimizer.domain.results import Artifact, ChainState, ProblemSpec
 from portfolio_optimizer.domain.types import Params
 from portfolio_optimizer.solving import SolveRequest, SolveResult
-from tests.conftest import AS_OF
+from tests.conftest import AS_OF, BUY_ONLY_OBJECTIVE, resolved_example_real
 
 # --- functions that follow the convention (and ones that break it), registered as module "fake_steps" ---
 
@@ -332,6 +332,14 @@ def test_resolve_config_checks_the_solver_against_what_this_process_has_installe
     with pytest.raises(ConfigResolutionError) as info:
         resolve_config(config, config_sha256="abc", installed=lambda: installed)
     assert info.value.failures == (failure,)
+
+
+def test_a_term_reading_a_side_the_run_lacks_fails_dry_construction_naming_the_side() -> None:
+    resolved = resolved_example_real(sides="buy")
+    assert construction_failures(resolved) == [
+        "objective.terms[1]: portfolio_optimizer.terms:tax_cost: construction failed: SideUnavailableError: a 'buy' run has no 'sell' vector; this term or constraint reads x.sell, so it cannot run under sides='buy'"
+    ]
+    assert construction_failures(resolved_example_real(sides="buy", objective=BUY_ONLY_OBJECTIVE)) == [], "every shipped constraint constructs on one side: they read trade and coupled, not sell"
 
 
 def test_construction_failures_surface_a_step_that_raises_and_skip_one_that_needs_data(fake_steps: str) -> None:

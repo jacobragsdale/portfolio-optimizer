@@ -2,13 +2,16 @@
 
 An objective term is ``(x: DecisionVars, spec: ProblemSpec, params: P) -> ObjectiveTerm``; a
 constraint is the same signature returning ``ConstraintSet``. Add ``chain: ChainState`` to read
-what higher-priority portfolios in the run have already *bought* among the names this portfolio
-may buy; declaring it is what makes this portfolio wait for those with overlapping buy universes.
-Everything is expressed through the typed atoms in :mod:`portfolio_optimizer.cvx.adapter`, so the
-post-solve verifier can recompute each shipped term and constraint without cvxpy.
+what higher-priority portfolios in the run have already *traded*, on the side the run couples
+through, among the names this portfolio can trade there; declaring it is what makes this portfolio
+wait for those with overlapping tradable sets. Everything is expressed through the typed atoms in
+:mod:`portfolio_optimizer.cvx.adapter`, so the post-solve verifier can recompute each shipped term
+and constraint without cvxpy.
 
-Decision variables are fractions of NAV: ``w`` is the target weight, ``buy`` and ``sell`` its
-non-negative split against the current weight ``spec.w0``.
+Decision variables are fractions of NAV: ``w`` is the target weight; ``buy`` and ``sell`` its
+non-negative split against the current weight ``spec.w0``, each present only on a side the run
+has; ``trade`` the amount traded on the sides it has, and ``coupled`` the amount traded on the side
+it couples through. A term that reads a side the run lacks fails at ``validate-config``.
 """
 
 from decimal import Decimal
@@ -16,7 +19,7 @@ from decimal import Decimal
 import numpy as np
 from pydantic import Field
 
-from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, at_least, at_most, dot, matvec, plus, scale, shifted, sum_squares, total
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, at_least, at_most, dot, matvec, scale, shifted, sum_squares, total
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec
 from portfolio_optimizer.domain.types import Params
 
@@ -44,7 +47,7 @@ def alpha(x: DecisionVars, spec: ProblemSpec, params: AlphaParams) -> ObjectiveT
 
 
 def tax_cost(x: DecisionVars, spec: ProblemSpec, params: WeightedParams) -> ObjectiveTerm:
-    """``weight · tau^T sell`` — tax owed on realized gains; losses reduce the objective.
+    """``weight · tau^T sell`` — tax owed on realized gains; losses reduce the objective. Reads ``sell``, so a buy-only run refuses it.
 
     A loss-harvest incentive with zero transaction cost would let the solver sell and rebuy a
     name for free, so that combination is refused here rather than caught after the fact.
@@ -62,9 +65,9 @@ class TransactionCostParams(WeightedParams):
 
 
 def transaction_cost(x: DecisionVars, spec: ProblemSpec, params: TransactionCostParams) -> ObjectiveTerm:
-    """``weight · c^T(buy + sell)`` with ``c = tcost_per_dollar + cost_bps / 10^4``."""
+    """``weight · c^T trade`` with ``c = tcost_per_dollar + cost_bps / 10^4``; ``trade`` is ``buy + sell``, or the one side the run has."""
     cost = spec.tcost_per_dollar + float(params.cost_bps) / 10_000.0
-    return ObjectiveTerm("transaction_cost", scale(float(params.weight), dot(cost, plus(x.buy, x.sell))))
+    return ObjectiveTerm("transaction_cost", scale(float(params.weight), dot(cost, x.trade)))
 
 
 def long_only(x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
@@ -99,22 +102,22 @@ def sector_bounds(x: DecisionVars, spec: ProblemSpec, params: SectorBoundsParams
 
 
 def turnover_cap(x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
-    """``sum(buy + sell) ≤ max_turnover`` — two-way turnover as a fraction of NAV."""
-    return ConstraintSet("turnover_cap", (at_most(total(plus(x.buy, x.sell)), spec.max_turnover),))
+    """``sum(trade) ≤ max_turnover`` — turnover as a fraction of NAV, two-way where the run has two sides."""
+    return ConstraintSet("turnover_cap", (at_most(total(x.trade), spec.max_turnover),))
 
 
 def cumulative_adv_participation(x: DecisionVars, spec: ProblemSpec, chain: ChainState) -> ConstraintSet:
-    """``buy + sell ≤ adv_capacity`` for this portfolio's own participation, and ``buy ≤ remaining`` where higher-priority portfolios' buys have already consumed part of each name's budget.
+    """``trade ≤ adv_capacity`` for this portfolio's own participation, and ``coupled ≤ remaining`` where higher-priority portfolios' trades on the side the run couples through have already consumed part of each name's budget.
 
-    Sells are the portfolio's own business: what others bought never limits them.
+    The other side, where the run has one, is the portfolio's own business: what others traded never limits it.
     """
-    return ConstraintSet("cumulative_adv_participation", (at_most(plus(x.buy, x.sell), spec.adv_capacity), at_most(x.buy, adv_remaining(spec, chain))))
+    return ConstraintSet("cumulative_adv_participation", (at_most(x.trade, spec.adv_capacity), at_most(x.coupled, adv_remaining(spec, chain))))
 
 
 def adv_remaining(spec: ProblemSpec, chain: ChainState) -> np.ndarray:
-    """The per-name buy budget left for this portfolio after predecessors' buys, as a fraction of its NAV; shared with the verifier."""
+    """The per-name budget left for this portfolio on the side the run couples through, after predecessors' trades there, as a fraction of its NAV; shared with the verifier."""
     if chain.security_ids != spec.security_ids:
         msg = "chain state is not aligned to this spec's securities"
         raise ValueError(msg)
-    consumed = chain.bought_shares * spec.price / spec.nav
+    consumed = chain.traded_shares * spec.price / spec.nav
     return np.maximum(0.0, spec.adv_capacity - consumed)

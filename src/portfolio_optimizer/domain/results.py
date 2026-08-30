@@ -74,7 +74,7 @@ class ProblemSpec:
     independent of prior portfolios; chain-aware constraints combine it with a
     :class:`ChainState` at solve time. ``columns`` are the numeric per-security columns the build
     exported from the universe, ``flags`` the boolean ones; the two namespaces do not overlap.
-    :attr:`buyable` is the set the chain couples this portfolio through.
+    :attr:`buyable` and :attr:`sellable` are the sets a side profile couples this portfolio through.
 
     ``sector_matrix`` is the *K*-by-*N* membership matrix, one nonzero per security, held sparse: a
     megabyte at 100,000 names, where the dense form is 128 MB at 160 groups and dominates every
@@ -192,10 +192,19 @@ class ProblemSpec:
     def buyable(self) -> Flags:
         """Securities a strictly positive net buy is allowed in: ``ub > w0``.
 
-        Portfolios couple across a run through buys only, so this is the set the dependency graph and
-        the chain state are built from; a security frozen or capped at its current weight is outside it.
+        The set a run that couples through buys builds its dependency graph and chain state from; a
+        security frozen or capped at its current weight is outside it.
         """
         return self.ub > self.w0
+
+    @property
+    def sellable(self) -> Flags:
+        """Securities a strictly positive net sell is allowed in: held, and ``lb < w0``.
+
+        The mirror of :attr:`buyable` for a run that couples through sells; a security frozen or
+        floored at its current weight, or not held at all, is outside it.
+        """
+        return (self.w0 > 0.0) & (self.lb < self.w0)
 
     def column(self, name: str) -> F64:
         """Return a numeric per-security column exported from the universe frame."""
@@ -472,75 +481,76 @@ class RuleAuditRecord:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class ChainState:
-    """What higher-priority portfolios bought among the securities this one may buy, aligned to one spec.
+    """What higher-priority portfolios traded, on the side the run couples through, among the securities this one can trade there; aligned to one spec.
 
-    ``bought_shares[i]`` is the whole shares predecessors bought of ``security_ids[i]``, and zero
-    wherever this portfolio cannot buy (``ub == w0``): portfolios couple through buys only, so a
-    security this portfolio cannot buy carries no chain state. That mask is what makes the state a
-    function of the *overlapping* predecessors alone — the same array whether the run folded every
-    earlier portfolio or only those sharing a buyable name. ``predecessors`` names what was folded,
-    in solve order; it is provenance, not an input, so :meth:`content_hash` covers the ids and the
-    shares only.
+    ``traded_shares[i]`` is the whole shares predecessors traded of ``security_ids[i]`` on that side —
+    bought in a run that couples through buys, sold in one that couples through sells — always
+    positive, and zero wherever this portfolio cannot trade the security on that side: a run couples
+    through one side only, so a security outside this portfolio's tradable set carries no chain
+    state. That mask is what makes the state a function of the *overlapping* predecessors alone — the
+    same array whether the run folded every earlier portfolio or only those sharing a tradable name.
+    ``predecessors`` names what was folded, in solve order; it is provenance, not an input, so
+    :meth:`content_hash` covers the ids and the shares only.
     """
 
     security_ids: tuple[str, ...]
-    bought_shares: F64
+    traded_shares: F64
     predecessors: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "bought_shares", _readonly(self.bought_shares))
-        if self.bought_shares.shape != (len(self.security_ids),):
-            msg = f"bought_shares has shape {self.bought_shares.shape}, expected {(len(self.security_ids),)}"
+        object.__setattr__(self, "traded_shares", _readonly(self.traded_shares))
+        if self.traded_shares.shape != (len(self.security_ids),):
+            msg = f"traded_shares has shape {self.traded_shares.shape}, expected {(len(self.security_ids),)}"
             raise ValueError(msg)
 
     def content_hash(self) -> str:
-        """Deterministic sha256 of the chain inputs a solve depended on; independent of which predecessors produced them."""
+        """Deterministic sha256 of the chain inputs a solve depended on; independent of which predecessors produced them, and of what the shares are called."""
         digest = hashlib.sha256()
         digest.update(json.dumps({"security_ids": list(self.security_ids)}).encode())
-        digest.update(np.ascontiguousarray(self.bought_shares + 0.0).tobytes())
+        digest.update(np.ascontiguousarray(self.traded_shares + 0.0).tobytes())
         return digest.hexdigest()
 
     @classmethod
     def empty(cls, security_ids: tuple[str, ...]) -> Self:
         """The state of a portfolio with no predecessors."""
-        return cls(security_ids=security_ids, bought_shares=np.zeros(len(security_ids)))
+        return cls(security_ids=security_ids, traded_shares=np.zeros(len(security_ids)))
 
     def to_npz(self, path: Path) -> None:
         """Persist the chain inputs a solve depended on."""
         meta = {"security_ids": list(self.security_ids), "predecessors": list(self.predecessors)}
-        np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(meta, sort_keys=True)), bought_shares=self.bought_shares)
+        np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(meta, sort_keys=True)), traded_shares=self.traded_shares)
 
     @classmethod
     def from_npz(cls, path: Path) -> Self:
         """Load a chain state written by :meth:`to_npz`."""
         with np.load(path, allow_pickle=False) as data:
             meta = json.loads(str(data["__meta__"]))
-            shares = np.asarray(data["bought_shares"], dtype=np.float64)
-        return cls(security_ids=tuple(str(s) for s in meta["security_ids"]), bought_shares=shares, predecessors=tuple(str(p) for p in meta["predecessors"]))
+            shares = np.asarray(data["traded_shares"], dtype=np.float64)
+        return cls(security_ids=tuple(str(s) for s in meta["security_ids"]), traded_shares=shares, predecessors=tuple(str(p) for p in meta["predecessors"]))
 
 
 @dataclass(frozen=True, slots=True, eq=False)
 class Contribution:
-    """One solved portfolio's buys, as the slim object a dependent solve receives: whole shares bought, by security."""
+    """One solved portfolio's trades on the side the run couples through, as the slim object a dependent solve receives: whole shares traded, by security."""
 
     portfolio_id: str
     security_ids: tuple[str, ...]
-    bought_shares: F64
+    traded_shares: F64
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "bought_shares", _readonly(self.bought_shares))
-        if self.bought_shares.shape != (len(self.security_ids),):
-            msg = f"bought_shares has shape {self.bought_shares.shape}, expected {(len(self.security_ids),)}"
+        object.__setattr__(self, "traded_shares", _readonly(self.traded_shares))
+        if self.traded_shares.shape != (len(self.security_ids),):
+            msg = f"traded_shares has shape {self.traded_shares.shape}, expected {(len(self.security_ids),)}"
             raise ValueError(msg)
 
     @classmethod
-    def from_orders(cls, portfolio_id: str, orders: pd.DataFrame) -> Self:
-        """The BUY rows of an orders frame; sells never reach a later portfolio."""
-        buys = orders[orders["side"] == "BUY"]
+    def from_orders(cls, portfolio_id: str, orders: pd.DataFrame, side: str) -> Self:
+        """The rows of an orders frame on ``side`` (``BUY`` or ``SELL``); the other side never reaches a later portfolio."""
+        rows = orders[orders["side"] == side]
         return cls(
             portfolio_id=portfolio_id,
-            security_ids=tuple(str(security) for security in buys["security_id"]),
-            bought_shares=np.array([float(int(quantity)) for quantity in buys["quantity"]], dtype=np.float64),
+            security_ids=tuple(str(security) for security in rows["security_id"]),
+            traded_shares=np.array([float(int(quantity)) for quantity in rows["quantity"]], dtype=np.float64),
         )
 
 
@@ -569,17 +579,17 @@ class PortfolioFailure:
     message: str
 
 
-def derive_chain_state(security_ids: tuple[str, ...], buyable: Flags, contributions: Sequence[Contribution]) -> ChainState:
-    """Fold predecessors' buys onto ``security_ids`` and zero every security this portfolio cannot buy.
+def derive_chain_state(security_ids: tuple[str, ...], tradable: Flags, contributions: Sequence[Contribution]) -> ChainState:
+    """Fold predecessors' trades onto ``security_ids`` and zero every security outside ``tradable``, this portfolio's set on the side the run couples through.
 
-    ``contributions`` must already be in solve order; a security no predecessor bought is zero.
+    ``contributions`` must already be in solve order; a security no predecessor traded is zero.
     """
-    if buyable.shape != (len(security_ids),):
-        msg = f"buyable has shape {buyable.shape}, expected {(len(security_ids),)}"
+    if tradable.shape != (len(security_ids),):
+        msg = f"tradable has shape {tradable.shape}, expected {(len(security_ids),)}"
         raise ValueError(msg)
     totals: dict[str, float] = {}
     for contribution in contributions:
-        for security, shares in zip(contribution.security_ids, contribution.bought_shares, strict=True):
+        for security, shares in zip(contribution.security_ids, contribution.traded_shares, strict=True):
             totals[security] = totals.get(security, 0.0) + float(shares)
     projected = np.array([totals.get(security, 0.0) for security in security_ids], dtype=np.float64)
-    return ChainState(security_ids=security_ids, bought_shares=np.where(buyable, projected, 0.0), predecessors=tuple(contribution.portfolio_id for contribution in contributions))
+    return ChainState(security_ids=security_ids, traded_shares=np.where(tradable, projected, 0.0), predecessors=tuple(contribution.portfolio_id for contribution in contributions))

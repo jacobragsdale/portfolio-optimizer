@@ -8,8 +8,11 @@ is what decides whether the build path or the solver needs work; scheduling is m
 
     uv run python benchmarks/profile_portfolio.py --securities 100000 --sectors 11
     uv run python benchmarks/profile_portfolio.py --securities 100000 --sectors 160 --solver OSQP
+    uv run python benchmarks/profile_portfolio.py --securities 100000 --sides buy
 
-The book is generated from a seed, so two runs of one command time the same problem.
+The book is generated from a seed, so two runs of one command time the same problem. ``--sides``
+selects the side profile; a one-sided run drops the example's terms that read the side it lacks
+(``tax_cost`` under ``buy``), which the table's first row says.
 """
 
 import argparse
@@ -31,11 +34,12 @@ import numpy as np
 import pandas as pd
 from scipy.sparse import issparse
 
-from portfolio_optimizer.config.models import load_run_config
+from portfolio_optimizer.config.models import StepSpec, load_run_config
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
-from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm, variables
+from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm
+from portfolio_optimizer.cvx.sides import decision_variables
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails, StyleConstraints
-from portfolio_optimizer.domain.results import ChainState, Contribution, PortfolioResult, ProblemSpec
+from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.check import verify
@@ -154,11 +158,23 @@ def _peak_rss_mb() -> float:
     return peak / MB if sys.platform == "darwin" else peak * 1024 / MB
 
 
-def _config(solver: str, *, verbose: bool) -> ResolvedConfig:
-    """The shipped example's rules, terms, and constraints with the solver replaced; its loaders and sink are never invoked."""
+SIDE_BLIND_TERMS: dict[str, frozenset[str]] = {"both": frozenset(), "buy": frozenset({"tax_cost"})}
+"""The example's terms that read a side each profile lacks, dropped so the problem constructs."""
+
+
+def _config(solver: str, sides: str, *, verbose: bool) -> ResolvedConfig:
+    """The shipped example's rules, terms, and constraints with the solver and side replaced; its loaders and sink are never invoked."""
     body = json.loads(EXAMPLE_CONFIG.read_text())
     body["solver"] = {"name": solver, "options": {}, "verbose": verbose}
+    body["sides"] = sides
+    objective = dict(body["objective"])
+    objective["terms"] = [term for term in objective["terms"] if _term_name(term) not in SIDE_BLIND_TERMS[sides]]
+    body["objective"] = objective
     return resolve_config(load_run_config(json.dumps(body)), config_sha256="benchmark")
+
+
+def _term_name(term: object) -> str:
+    return StepSpec.model_validate(term).name
 
 
 def _sector_matrix_mb(spec: ProblemSpec) -> float:
@@ -185,22 +201,25 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     """Run every stage once over a synthetic book and return the timings."""
     rng = np.random.default_rng(int(args.seed))
     securities, sectors, held = int(args.securities), int(args.sectors), int(args.held)
-    resolved = _config(str(args.solver), verbose=bool(args.verbose))
+    sides = str(args.sides)
+    resolved = _config(str(args.solver), sides, verbose=bool(args.verbose))
     book = synthetic_book(rng, securities=securities, sectors=sectors, held=held)
     report = Report()
-    with report.stage("validate bundle", f"{securities:,} securities in {sectors} sectors, {held:,} held") as row:
+    with report.stage("validate bundle", f"{securities:,} securities in {sectors} sectors, {held:,} held; sides {sides}, terms {', '.join(step.name for step in resolved.terms)}") as row:
         data = PortfolioData(details=book.details, holdings=book.holdings, universe=book.universe, targets=book.targets, style=book.style, as_of=AS_OF)
     with report.stage("rules", ", ".join(step.name for step in resolved.rules)):
         ruled, _ = apply_rules(data, resolved.rules)
     with report.stage("spec build") as row:
         output = build_problem_spec(ruled)
     spec = output.spec
-    row.note = f"spec arrays {_spec_mb(spec):.1f} MB, of which sector matrix {_sector_matrix_mb(spec):.1f} MB ({spec.sector_matrix.nnz:,} nonzeros); {int(spec.buyable.sum()):,} buyable"
+    row.note = (
+        f"spec arrays {_spec_mb(spec):.1f} MB, of which sector matrix {_sector_matrix_mb(spec):.1f} MB ({spec.sector_matrix.nnz:,} nonzeros); {int(resolved.profile.tradable(spec).sum()):,} tradable"
+    )
     with report.stage("content hash"):
         spec.content_hash()
     chain = ChainState.empty(spec.security_ids)
     with report.stage("expression tree") as row:
-        x = variables(spec.n)
+        x = decision_variables(sides, spec.w0)
         terms = [step.invoke(x=x, spec=spec, context=chain if step.needs_context else None) for step in resolved.terms]
         sets = [constraint.step.invoke(x=x, spec=spec, context=chain if constraint.reads_chain else None) for constraint in resolved.constraints]
     constraint_sets = [item for item in sets if isinstance(item, ConstraintSet)]
@@ -230,7 +249,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     with report.stage("engine solve() end to end", "tree + canonicalization + solve + classify, the way solve_task does it"):
         solution = solve(spec, chain, resolved)
     with report.stage("verify") as row:
-        checked = verify(spec, solution, chain, step_refs(resolved.terms), constraint_refs(resolved.constraints))
+        checked = verify(spec, solution, chain, step_refs(resolved.terms), constraint_refs(resolved.constraints), profile=resolved.profile)
     row.note = f"passed {checked.passed}, max violation {checked.max_violation:.2e}, objective gap {checked.objective_gap:.2e}"
     with report.stage("orders") as row:
         orders = solution_to_orders(spec, solution, output.order_inputs, run_id="benchmark")
@@ -253,7 +272,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
             rule_audit=(),
             chain_state=chain,
             drift=rounding_drift(spec, solution, orders, output.order_inputs),
-            contribution=Contribution.from_orders(spec.portfolio_id, orders),
+            contribution=resolved.profile.contribution(spec.portfolio_id, orders),
         )
         row.note = f"BuildResult {len(pickle.dumps(built)) / MB:.1f} MB (stays on the worker), PortfolioResult {len(pickle.dumps(result)) / MB:.1f} MB (returns to the client)"
     return report
@@ -265,6 +284,7 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--sectors", type=int, default=11)
     parser.add_argument("--held", type=int, default=25_000)
     parser.add_argument("--solver", default="CLARABEL")
+    parser.add_argument("--sides", default="both", choices=sorted(SIDE_BLIND_TERMS), help="the side profile to solve under")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--verbose", action="store_true", help="let the solver print its iteration log")
     return parser.parse_args(argv)
@@ -275,7 +295,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse(argv)
     report = profile(args)
     total = sum(row.seconds for row in report.rows)
-    sys.stdout.write(f"{report.render()}\n\nsum of stages {total:.1f}s; solver {args.solver}, seed {args.seed}\n")
+    sys.stdout.write(f"{report.render()}\n\nsum of stages {total:.1f}s; solver {args.solver}, sides {args.sides}, seed {args.seed}\n")
     return 0
 
 

@@ -22,7 +22,8 @@ SOLUTION_LABEL = "solution"
 IDENTITY_LABEL = "identity"
 """Label of the side profile's trade-identity checks."""
 
-type ConstraintTwin = Callable[[ProblemSpec, Solution, ChainState, Mapping[str, object]], list[tuple[str, F64]]]
+type ConstraintTwin = Callable[[ProblemSpec, Solution, ChainState, Mapping[str, object], SideProfile], list[tuple[str, F64]]]
+"""A shipped constraint's numpy twin: the spec, the solution in place of ``x``, the chain, the params, and the profile that made ``x``."""
 type TermTwin = Callable[[ProblemSpec, Solution, Mapping[str, object]], float]
 
 
@@ -40,24 +41,24 @@ def param(params: Mapping[str, object], name: str, default: float) -> float:
     raise TypeError(msg)
 
 
-def _long_only(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object]) -> list[tuple[str, F64]]:
-    del chain, params
+def _long_only(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object], profile: SideProfile) -> list[tuple[str, F64]]:
+    del chain, params, profile
     return [("long_only", spec.lb - sol.w)]
 
 
-def _max_weight(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object]) -> list[tuple[str, F64]]:
-    del chain, params
+def _max_weight(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object], profile: SideProfile) -> list[tuple[str, F64]]:
+    del chain, params, profile
     return [("max_weight", sol.w - spec.ub)]
 
 
-def _cash_bounds(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object]) -> list[tuple[str, F64]]:
-    del chain, params
+def _cash_bounds(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object], profile: SideProfile) -> list[tuple[str, F64]]:
+    del chain, params, profile
     cash = 1.0 - float(sol.w.sum())
     return [("cash_lb", np.array([spec.cash_lb - cash])), ("cash_ub", np.array([cash - spec.cash_ub]))]
 
 
-def _sector_bounds(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object]) -> list[tuple[str, F64]]:
-    del chain
+def _sector_bounds(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object], profile: SideProfile) -> list[tuple[str, F64]]:
+    del chain, profile
     if len(spec.sector_names) == 0:
         return []
     tolerance = param(params, "tolerance", 0.0)
@@ -65,16 +66,16 @@ def _sector_bounds(spec: ProblemSpec, sol: Solution, chain: ChainState, params: 
     return [("sector_lb", spec.sector_lb - tolerance - exposure), ("sector_ub", exposure - spec.sector_ub - tolerance)]
 
 
-def _turnover_cap(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object]) -> list[tuple[str, F64]]:
-    del chain, params
+def _turnover_cap(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object], profile: SideProfile) -> list[tuple[str, F64]]:
+    del chain, params, profile
     return [("turnover_cap", np.array([float((sol.buy + sol.sell).sum()) - spec.max_turnover]))]
 
 
-def _adv_participation(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object]) -> list[tuple[str, F64]]:
+def _adv_participation(spec: ProblemSpec, sol: Solution, chain: ChainState, params: Mapping[str, object], profile: SideProfile) -> list[tuple[str, F64]]:
     del params
-    consumed = chain.bought_shares * spec.price / spec.nav
+    consumed = chain.traded_shares * spec.price / spec.nav
     remaining = np.maximum(0.0, spec.adv_capacity - consumed)
-    return [("adv_participation", sol.buy + sol.sell - spec.adv_capacity), ("cumulative_adv_participation", sol.buy - remaining)]
+    return [("adv_participation", sol.buy + sol.sell - spec.adv_capacity), ("cumulative_adv_participation", profile.coupled(sol) - remaining)]
 
 
 def _tracking_error(spec: ProblemSpec, sol: Solution, params: Mapping[str, object]) -> float:
@@ -128,7 +129,7 @@ def verify(
         if twin is None:
             unverified.append(ref.qualname)
             continue
-        checks.extend(_residual_check(name, residual, spec, tolerances, ref.label) for name, residual in twin(spec, solution, chain, ref.params))
+        checks.extend(_residual_check(name, residual, spec, tolerances, ref.label) for name, residual in twin(spec, solution, chain, ref.params, profile))
     objective_terms: list[tuple[str, float]] = []
     for ref in terms:
         twin_term = TERM_TWINS.get(ref.qualname)
