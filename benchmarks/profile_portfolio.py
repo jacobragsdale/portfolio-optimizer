@@ -12,7 +12,8 @@ is what decides whether the build path or the solver needs work; scheduling is m
 
 The book is generated from a seed, so two runs of one command time the same problem. ``--sides``
 selects the side profile; a one-sided run drops the example's terms that read the side it lacks
-(``tax_cost`` under ``buy``), which the table's first row says.
+(``tax_cost`` under ``buy``), which the table's first row says, and a sell-only run lets the book
+raise cash (``cash_bounds`` ``[0, 1]``), since it starts a tenth in cash and can only add to it.
 """
 
 import argparse
@@ -66,7 +67,7 @@ class Book:
     style: StyleConstraints
 
 
-def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, held: int) -> Book:
+def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, held: int, sides: str) -> Book:
     """``securities`` names across ``sectors``, ``held`` of them owned, a benchmark over every name, and populated sector bounds."""
     ids = [f"S{index:07d}" for index in range(securities)]
     prices = [Decimal(int(value)) / 100 for value in rng.integers(500, 50_000, size=securities)]
@@ -111,7 +112,7 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
         max_weight=Decimal("0.05"),
         max_turnover=Decimal(2),
         min_trade_notional=Decimal(0),
-        cash_bounds=(Decimal(0), Decimal(0)),
+        cash_bounds=(Decimal(0), Decimal(1)) if sides == "sell" else (Decimal(0), Decimal(0)),
         max_adv_participation=Decimal("0.25"),
         sector_bounds={name: (Decimal(0), Decimal("0.5")) for name in sector_names},
     )
@@ -158,7 +159,7 @@ def _peak_rss_mb() -> float:
     return peak / MB if sys.platform == "darwin" else peak * 1024 / MB
 
 
-SIDE_BLIND_TERMS: dict[str, frozenset[str]] = {"both": frozenset(), "buy": frozenset({"tax_cost"})}
+SIDE_BLIND_TERMS: dict[str, frozenset[str]] = {"both": frozenset(), "buy": frozenset({"tax_cost"}), "sell": frozenset()}
 """The example's terms that read a side each profile lacks, dropped so the problem constructs."""
 
 
@@ -203,7 +204,7 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     securities, sectors, held = int(args.securities), int(args.sectors), int(args.held)
     sides = str(args.sides)
     resolved = _config(str(args.solver), sides, verbose=bool(args.verbose))
-    book = synthetic_book(rng, securities=securities, sectors=sectors, held=held)
+    book = synthetic_book(rng, securities=securities, sectors=sectors, held=held, sides=sides)
     report = Report()
     with report.stage("validate bundle", f"{securities:,} securities in {sectors} sectors, {held:,} held; sides {sides}, terms {', '.join(step.name for step in resolved.terms)}") as row:
         data = PortfolioData(details=book.details, holdings=book.holdings, universe=book.universe, targets=book.targets, style=book.style, as_of=AS_OF)

@@ -10,7 +10,7 @@ the two-sided KKT system, and no wash trade possible by construction.
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, Expr, at_least, at_most, equals, minus, plus, shifted, variable
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, Expr, at_least, at_most, equals, minus, plus, shifted, shortfall, variable
 from portfolio_optimizer.domain.results import F64
 
 
@@ -47,7 +47,24 @@ def _buy_only_identity(x: DecisionVars, w0: F64) -> ConstraintSet:
     return ConstraintSet("no_sells", (at_least(x.w, w0),))
 
 
-SIDES: Mapping[str, CvxSide] = {"both": CvxSide(_two_sided_variables, _two_sided_identity), "buy": CvxSide(_buy_only_variables, _buy_only_identity)}
+def _sell_only_variables(w0: F64) -> DecisionVars:
+    """``w`` alone; ``sell = w0 - w`` is an expression, ``buy`` does not exist."""
+    n = len(w0)
+    w = variable(n, "w")
+    sell: Expr = shortfall(w0, w)
+    return DecisionVars(w=w, n=n, sides="sell", trade=sell, coupled=sell, _sell=sell)
+
+
+def _sell_only_identity(x: DecisionVars, w0: F64) -> ConstraintSet:
+    """``w ≤ w0`` — nothing is bought; the mirror of the buy-only identity."""
+    return ConstraintSet("no_buys", (at_most(x.w, w0),))
+
+
+SIDES: Mapping[str, CvxSide] = {
+    "both": CvxSide(_two_sided_variables, _two_sided_identity),
+    "buy": CvxSide(_buy_only_variables, _buy_only_identity),
+    "sell": CvxSide(_sell_only_variables, _sell_only_identity),
+}
 """The cvxpy half for every ``sides`` value; a test holds this in step with ``domain.sides.PROFILES``."""
 
 

@@ -13,7 +13,7 @@ from portfolio_optimizer.engine.backends import Backend
 from portfolio_optimizer.engine.environment import GitInfo
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunReport, run
 from portfolio_optimizer.settings import ExecutionSettings
-from tests.conftest import BUY_ONLY_OBJECTIVE, EXAMPLE_DATA, NO_CHAIN_CONSTRAINTS, execution_on, half_cash_book, io_context, resolved_example_real
+from tests.conftest import BUY_ONLY_OBJECTIVE, EXAMPLE_DATA, NO_CHAIN_CONSTRAINTS, execution_on, half_cash_book, io_context, resolved_example_real, sell_book
 from tests.engine.test_backends import LazyBackend
 
 GIT = GitInfo(sha="0123456789abcdef", dirty=False)
@@ -86,6 +86,17 @@ def test_a_buy_only_run_on_the_cluster_reproduces_the_hand_checked_buys(tmp_path
     ]
     assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == [{"security_id": "A", "side": "BUY", "quantity": 2500}, {"security_id": "B", "side": "BUY", "quantity": 5000}]
     assert p2.chain_state.traded_shares.tolist() == [1250.0, 2500.0, 25000.0]
+    assert [p.status for p in report.manifest.portfolios] == ["solved", "solved"]
+
+
+def test_a_sell_only_run_on_the_cluster_reproduces_the_hand_checked_sells(tmp_path: Path, scheduler_address: str) -> None:
+    report = execute(tmp_path, scheduler_address, data_root=sell_book(tmp_path), sides="sell")
+    assert report.exit_code == EXIT_OK
+    p1, p2 = report.outcomes
+    assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
+    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == [{"security_id": "A", "side": "SELL", "quantity": 1000}, {"security_id": "B", "side": "SELL", "quantity": 3333}]
+    assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == [{"security_id": "B", "side": "SELL", "quantity": 3333}]
+    assert p2.chain_state.traded_shares.tolist() == [1000.0, 3333.0, 0.0]
     assert [p.status for p in report.manifest.portfolios] == ["solved", "solved"]
 
 

@@ -212,9 +212,9 @@ class RunConfig(StrictModel):
         default=None,
         description="Optional solve-order step from `solve_order.py`: `(data: PortfolioData[, params]) -> Decimal`, evaluated on each portfolio's ruled bundle. Lower keys solve first; ties break on `portfolio_id`. Replaces the portfolios frame's `solve_order` column.",
     )
-    sides: Literal["both", "buy"] = Field(  # the values are domain.sides.PROFILES; a test holds the two in step
+    sides: Literal["both", "buy", "sell"] = Field(  # the values are domain.sides.PROFILES; a test holds the two in step
         default="both",
-        description="Which side the run trades. `both`: buys and sells in one problem, portfolios coupling through buys only. `buy`: buys alone — one variable per name, `w >= w0`, no sell vector, so a term that reads `sell` is refused at validate-config. The value selects the side profile that supplies the decision variables, the trade identity, the tradable set the dependency graph is built from, and the chain; `sell` is next.",
+        description="Which side the run trades. `both`: buys and sells in one problem, portfolios coupling through buys only. `buy`: buys alone — one variable per name, `w >= w0`, no sell vector, so a term that reads `sell` is refused at validate-config; portfolios couple through buys. `sell`: the mirror — `w <= w0`, no buy vector, portfolios couple through sells. The value selects the side profile that supplies the decision variables, the trade identity, the tradable set the dependency graph is built from, and the chain.",
     )
     objective: ObjectiveConfig = Field(description="What the optimizer minimizes.")
     constraints: tuple[ConstraintStep, ...] = Field(

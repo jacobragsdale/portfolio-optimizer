@@ -18,8 +18,8 @@ import pandas as pd
 
 from portfolio_optimizer.domain.results import F64, ChainState, Contribution, Flags, ProblemSpec, Solution, derive_chain_state
 
-type Sides = Literal["both", "buy"]
-"""The sides a run may trade. ``buy`` is buy-only; ``sell`` is decided and arrives next; ``both`` is the two-sided problem."""
+type Sides = Literal["both", "buy", "sell"]
+"""The sides a run may trade: buy-only, sell-only, or the two-sided problem."""
 
 TOLERANCE = 1e-12
 """Float noise, not policy: how far past a bound a starting weight may sit before the start is called infeasible."""
@@ -150,7 +150,7 @@ class BuyOnly:
 
     def infeasible_starts(self, spec: ProblemSpec) -> list[str]:
         """Cash already below its floor (buys only lower it), and names held above their cap (buys cannot lower them)."""
-        return [*_cash_start(spec, "buy-only", floor=True), *_bound_starts(spec, spec.w0 > spec.ub + TOLERANCE, "cap", "holding")]
+        return [*_cash_start(spec, "buy-only", floor=True), *_bound_starts(spec, spec.w0 > spec.ub + TOLERANCE, "cap is below their holding")]
 
     def contribution(self, portfolio_id: str, orders: pd.DataFrame) -> Contribution:
         """The BUY rows, which is every row."""
@@ -158,6 +158,52 @@ class BuyOnly:
 
     def chain_state(self, spec: ProblemSpec, contributions: Sequence[Contribution]) -> ChainState:
         """Predecessors' buys, masked to this portfolio's buyable set."""
+        return derive_chain_state(spec.security_ids, self.tradable(spec), contributions)
+
+
+@dataclass(frozen=True, slots=True)
+class SellOnly:
+    """Sells alone: ``w ≤ w0`` and ``sell = w0 - w``; there is no ``buy``. The mirror of :class:`BuyOnly`.
+
+    Portfolios couple through sells: the tradable set is the sellable set, a contribution is the SELL
+    rows, and the chain carries shares predecessors sold. A sell-only run can only raise cash, and a
+    name held below its floor cannot be traded out of.
+    """
+
+    sides: Sides = "sell"
+    order_sides: frozenset[str] = frozenset({"SELL"})
+
+    def tradable(self, spec: ProblemSpec) -> Flags:
+        """The sellable set: held, and ``lb < w0``."""
+        return spec.sellable
+
+    def split(self, w: F64, w0: F64) -> tuple[F64, F64]:
+        """``buy = 0``, ``sell = max(w0 - w, 0)``: the clip keeps solver noise above ``w0`` from becoming a buy of a few shares at a large NAV."""
+        return np.zeros_like(w), np.maximum(w0 - w, 0.0)
+
+    def coupled(self, solution: Solution) -> F64:
+        """The sells."""
+        return solution.sell
+
+    def identity_residuals(self, spec: ProblemSpec, solution: Solution) -> list[tuple[str, F64]]:
+        """``w ≤ w0``, the reported sell is ``w0 - w`` (an equality), it is non-negative, and the buy vector is zero."""
+        return [
+            ("no_buys", solution.w - spec.w0),
+            ("trade_balance", np.abs(solution.w - spec.w0 - solution.buy + solution.sell)),
+            ("nonneg_sell", -solution.sell),
+            ("buy_absent", np.abs(solution.buy)),
+        ]
+
+    def infeasible_starts(self, spec: ProblemSpec) -> list[str]:
+        """Cash already above its cap (sells only raise it), and names held below their floor (sells cannot raise them)."""
+        return [*_cash_start(spec, "sell-only", floor=False), *_bound_starts(spec, spec.w0 < spec.lb - TOLERANCE, "floor is above their holding")]
+
+    def contribution(self, portfolio_id: str, orders: pd.DataFrame) -> Contribution:
+        """The SELL rows, which is every row."""
+        return Contribution.from_orders(portfolio_id, orders, "SELL")
+
+    def chain_state(self, spec: ProblemSpec, contributions: Sequence[Contribution]) -> ChainState:
+        """Predecessors' sells, masked to this portfolio's sellable set."""
         return derive_chain_state(spec.security_ids, self.tradable(spec), contributions)
 
 
@@ -171,18 +217,19 @@ def _cash_start(spec: ProblemSpec, run: str, *, floor: bool) -> list[str]:
     return []
 
 
-def _bound_starts(spec: ProblemSpec, violated: Flags, bound: str, holding: str) -> list[str]:
-    """Names whose starting weight already sits past a bound the side cannot move it back inside."""
+def _bound_starts(spec: ProblemSpec, violated: Flags, how: str) -> list[str]:
+    """Names whose starting weight already sits past a bound the side cannot move it back inside; ``how`` says which bound."""
     names = [security for security, flag in zip(spec.security_ids, violated, strict=True) if flag]
     if not names:
         return []
-    return [f"names whose {bound} is below their {holding}, which this side cannot trade out of: {names}"]
+    return [f"names whose {how}, which this side cannot trade out of: {names}"]
 
 
 TWO_SIDED: SideProfile = TwoSided()
 BUY_ONLY: SideProfile = BuyOnly()
+SELL_ONLY: SideProfile = SellOnly()
 
-PROFILES: Mapping[str, SideProfile] = {profile.sides: profile for profile in (TWO_SIDED, BUY_ONLY)}
+PROFILES: Mapping[str, SideProfile] = {profile.sides: profile for profile in (TWO_SIDED, BUY_ONLY, SELL_ONLY)}
 """Every profile a config may select, by its ``sides`` value; ``cvx/sides.py`` carries the matching variables and identities."""
 
 

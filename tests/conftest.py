@@ -260,6 +260,23 @@ def half_cash_book(tmp_path: Path) -> Path:
     return root
 
 
+def sell_book(tmp_path: Path) -> Path:
+    """The example data allowed to raise cash (``cash_bounds`` ``[0, 1]``) with A's ADV budget cut to 1,000 shares: what a sell-only run trims.
+
+    Each portfolio holds A 0.5 and B 0.5 against a target of a third each, so the hand answer for P1 is
+    sell 1,000 A (its whole ADV budget, a 0.1 weight) and 3,333 B (to a third); P2, with A's budget spent
+    by P1, sells 3,333 B alone.
+    """
+    root = tmp_path / "sell-book"
+    shutil.copytree(EXAMPLE_DATA, root)
+    constraints = json.loads((root / "constraints.json").read_text())
+    for style in constraints.values():
+        style["cash_bounds"] = ["0", "1"]
+    (root / "constraints.json").write_text(json.dumps(constraints))
+    (root / "universe.csv").write_text("security_id,sector,adv_shares,lot_size,restricted\nA,TECH,4000,1,false\nB,TECH,1000000,1,false\nC,TECH,100000,1,false\n")
+    return root
+
+
 """The example's constraints without the chain-aware ADV cap: nothing reads the chain, so no portfolio waits for another."""
 
 

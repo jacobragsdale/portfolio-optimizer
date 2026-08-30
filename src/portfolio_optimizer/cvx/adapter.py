@@ -177,6 +177,11 @@ def shifted(expr: Expr, offset: F64) -> Expr:
     return _expr(expr - offset)
 
 
+def shortfall(offset: F64, expr: Expr) -> Expr:
+    """``offset - expr`` for a constant vector: how far ``expr`` sits below ``offset``."""
+    return _expr(offset - expr)
+
+
 def plus(left: Expr, right: Expr) -> Expr:
     """``left + right``."""
     return _expr(left + right)

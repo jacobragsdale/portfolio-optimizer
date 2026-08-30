@@ -10,7 +10,7 @@ from portfolio_optimizer.config.models import RunConfig
 from portfolio_optimizer.cvx.adapter import SideUnavailableError
 from portfolio_optimizer.cvx.sides import SIDES, decision_variables
 from portfolio_optimizer.domain.results import ChainState, Contribution, Solution, SolveStatus
-from portfolio_optimizer.domain.sides import BUY_ONLY, PROFILES, TWO_SIDED, profile_for
+from portfolio_optimizer.domain.sides import BUY_ONLY, PROFILES, SELL_ONLY, TWO_SIDED, profile_for
 from tests.conftest import Factories, Frames
 
 
@@ -19,9 +19,10 @@ def _solution(w: np.ndarray, buy: np.ndarray, sell: np.ndarray) -> Solution:
 
 
 def test_every_profile_has_its_cvxpy_half_and_the_config_can_select_it() -> None:
-    assert set(PROFILES) == set(SIDES) == set(get_args(RunConfig.model_fields["sides"].annotation)) == {"both", "buy"}
+    assert set(PROFILES) == set(SIDES) == set(get_args(RunConfig.model_fields["sides"].annotation)) == {"both", "buy", "sell"}
     assert profile_for("both") is TWO_SIDED
     assert profile_for("buy") is BUY_ONLY
+    assert profile_for("sell") is SELL_ONLY
     with pytest.raises(ValueError, match="sides 'short' is not one the engine knows"):
         profile_for("short")
 
@@ -131,3 +132,63 @@ def test_buy_only_variables_are_one_vector_and_sell_is_unavailable() -> None:
     with pytest.raises(SideUnavailableError, match="a 'buy' run has no 'sell' vector"):
         _ = x.sell
     assert x.trade.variables() == [x.w], "no second variable: buy is an expression of w"
+
+
+# --- sell ---
+
+
+def test_sell_only_split_is_the_clipped_deficit_and_no_buy() -> None:
+    buy, sell = SELL_ONLY.split(np.array([0.3, 0.3 + 1e-12, 0.3]), np.array([0.4, 0.3, 0.3]))
+    np.testing.assert_allclose(sell, [0.1, 0.0, 0.0])
+    assert buy.tolist() == [0.0, 0.0, 0.0], "solver noise above w0 is not a buy"
+
+
+@pytest.mark.parametrize(
+    ("w", "buy", "sell", "violated"),
+    [
+        (np.array([0.3, 0.3, 0.3]), np.zeros(3), np.array([0.1, 0.0, 0.0]), set()),
+        (np.array([0.3, 0.4, 0.3]), np.zeros(3), np.array([0.1, 0.0, 0.0]), {"no_buys", "trade_balance"}),
+        (np.array([0.3, 0.3, 0.3]), np.zeros(3), np.array([0.2, 0.0, 0.0]), {"trade_balance"}),
+        (np.array([0.3, 0.3, 0.3]), np.zeros(3), np.array([0.1, 0.0, -0.01]), {"nonneg_sell", "trade_balance"}),
+        (np.array([0.3, 0.3, 0.3]), np.array([0.0, 0.1, 0.0]), np.array([0.1, 0.1, 0.0]), {"buy_absent"}),
+    ],
+    ids=["sell", "a-buy", "sell-off-w", "negative-sell", "hidden-round-trip"],
+)
+def test_sell_only_identity_residuals_name_what_is_violated(make: Factories, w: np.ndarray, buy: np.ndarray, sell: np.ndarray, violated: set[str]) -> None:
+    spec = make.spec(w0=np.array([0.4, 0.3, 0.3]))
+    residuals = dict(SELL_ONLY.identity_residuals(spec, _solution(w, buy, sell)))
+    assert set(residuals) == {"no_buys", "trade_balance", "nonneg_sell", "buy_absent"}
+    assert {name for name, residual in residuals.items() if residual.max() > 1e-9} == violated
+
+
+def test_sell_only_couples_through_sells_and_reports_only_sells(make: Factories, frames: Frames) -> None:
+    spec = make.spec(w0=np.array([0.5, 0.5, 0.0]), lb=np.array([0.5, 0.0, 0.0]))
+    assert SELL_ONLY.tradable(spec).tolist() == [False, True, False], "S0 is floored at its holding and S2 is not held"
+    orders = frames.orders({"security_id": "S0", "side": "SELL", "quantity": 10, "notional": Decimal(1000)}, {"security_id": "S1", "side": "SELL", "quantity": 7, "notional": Decimal(700)})
+    contribution = SELL_ONLY.contribution("P1", orders)
+    assert (contribution.security_ids, contribution.traded_shares.tolist()) == (("S0", "S1"), [10.0, 7.0])
+    state = SELL_ONLY.chain_state(spec, [Contribution("P0", ("S0", "S1"), np.array([5.0, 3.0]))])
+    assert state.traded_shares.tolist() == [0.0, 3.0, 0.0], "a predecessor's sell of a name this portfolio cannot sell is masked out"
+    assert SELL_ONLY.order_sides == {"SELL"}
+    assert SELL_ONLY.coupled(_solution(spec.w0, np.zeros(3), np.array([0.0, 0.1, 0.2]))).tolist() == [0.0, 0.1, 0.2]
+
+
+def test_sell_only_names_the_starts_it_cannot_trade_out_of(make: Factories) -> None:
+    fine = make.spec(w0=np.array([0.3, 0.3, 0.3]), cash_lb=0.0, cash_ub=0.1)
+    assert SELL_ONLY.infeasible_starts(fine) == []
+    high_cash = make.spec(w0=np.array([0.3, 0.3, 0.3]), cash_lb=0.0, cash_ub=0.05)
+    assert SELL_ONLY.infeasible_starts(high_cash) == ["the book starts with cash 0.100000 above cash_ub 0.050000, and a sell-only run can only raise cash"]
+    under_floor = make.spec(w0=np.array([0.1, 0.3, 0.6]), lb=np.array([0.2, 0.3, 0.0]))
+    assert SELL_ONLY.infeasible_starts(under_floor) == ["names whose floor is above their holding, which this side cannot trade out of: ['S0']"], "S1 sits exactly on its floor, which is allowed"
+
+
+def test_sell_only_variables_are_one_vector_and_buy_is_unavailable() -> None:
+    w0 = np.array([0.4, 0.3, 0.3])
+    x = decision_variables("sell", w0)
+    assert (x.sides, x.n) == ("sell", 3)
+    assert x.sell.is_affine() and x.trade is x.sell and x.coupled is x.sell
+    x.w.value = np.array([0.3, 0.3, 0.3])
+    np.testing.assert_allclose(np.asarray(x.sell.value), [0.1, 0.0, 0.0])
+    with pytest.raises(SideUnavailableError, match="a 'sell' run has no 'buy' vector"):
+        _ = x.buy
+    assert x.trade.variables() == [x.w]

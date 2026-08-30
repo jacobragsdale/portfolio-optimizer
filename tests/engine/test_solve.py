@@ -4,10 +4,11 @@ from collections.abc import Sequence
 from decimal import Decimal
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedConfig
-from portfolio_optimizer.domain.results import ChainState, ProblemSpec, SolveStatus, derive_chain_state
+from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus, derive_chain_state
 from portfolio_optimizer.engine.build import build_problem_spec
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.solve import InfeasibleError, SolveSetupError, solve
@@ -90,6 +91,103 @@ def test_a_buy_only_run_cannot_sell_its_way_back_inside_a_cap_and_says_so(make: 
     ).spec
     with pytest.raises(InfeasibleError, match=r"the book starts with cash 0\.000000 below cash_lb 0\.100000, and a buy-only run can only lower cash"):
         solve(fully_invested, ChainState.empty(fully_invested.security_ids), resolved)
+
+
+def test_a_sell_only_solve_only_sells_and_couples_through_sells(make: Factories, frames: Frames) -> None:
+    holdings = frames.holdings({"security_id": "A", "quantity": 5000, "avg_cost": Decimal(100)}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(50)})
+    universe = frames.three_security_universe().assign(adv_shares=pd.Series([4000, 1_000_000, 100_000], dtype="Int64"))
+    spec = build_problem_spec(make.portfolio_data(holdings=holdings, universe=universe, style=make.style(max_adv_participation=Decimal("0.25"), cash_bounds=(Decimal(0), Decimal(1))))).spec
+    resolved = resolved_with(["tracking_error"], CORE_CONSTRAINTS, sides="sell")
+    solution = solve(spec, ChainState.empty(spec.security_ids), resolved)
+    np.testing.assert_allclose(solution.w, [0.4, 1 / 3, 0.0], atol=1e-6, err_msg="A sells its whole ADV budget (0.1), B to target, C is not held")
+    assert (solution.w <= spec.w0 + 1e-9).all() and solution.buy.tolist() == [0.0, 0.0, 0.0]
+    report = verify(spec, solution, ChainState.empty(spec.security_ids), step_refs(resolved.terms), constraint_refs(resolved.constraints), profile=resolved.profile)
+    assert report.passed, report.violated
+    assert {check.name for check in report.checks if check.label == "identity"} == {"no_buys", "trade_balance", "nonneg_sell", "buy_absent"}
+    spent = ChainState(security_ids=spec.security_ids, traded_shares=np.array([1000.0, 0.0, 0.0]), predecessors=("P0",))
+    np.testing.assert_allclose(solve(spec, spent, resolved).w, [0.5, 1 / 3, 0.0], atol=1e-6, err_msg="a predecessor's sells of A consumed the budget this portfolio would have sold into")
+    report = verify(spec, _with_sell(solve(spec, spent, resolved), spec, np.array([0.05, 0.0, 0.0])), spent, step_refs(resolved.terms), constraint_refs(resolved.constraints), profile=resolved.profile)
+    assert report.violated == ("cumulative_adv_participation",), "a sell past what the chain left of A's budget is caught: the verifier checks the chain against the sells, not the absent buys"
+
+
+def _with_sell(solution: Solution, spec: ProblemSpec, sell: np.ndarray) -> Solution:
+    """The same solution with ``sell`` replaced and ``w`` moved to match, which the chain check must catch."""
+    return Solution(
+        w=spec.w0 - sell,
+        buy=solution.buy,
+        sell=sell,
+        objective=solution.objective,
+        status=solution.status,
+        solver=solution.solver,
+        solver_version=solution.solver_version,
+        cvxpy_version=solution.cvxpy_version,
+        solve_time_s=solution.solve_time_s,
+        iterations=solution.iterations,
+        spec_hash=solution.spec_hash,
+    )
+
+
+def test_a_sell_only_run_cannot_buy_its_way_back_above_a_floor_and_says_so(make: Factories) -> None:
+    resolved = resolved_with(["tracking_error"], CORE_CONSTRAINTS, sides="sell")
+    too_much_cash = make.spec(cash_lb=-0.2, cash_ub=-0.1)
+    with pytest.raises(InfeasibleError, match=r"the book starts with cash 0\.000000 above cash_ub -0\.100000, and a sell-only run can only raise cash"):
+        solve(too_much_cash, ChainState.empty(too_much_cash.security_ids), resolved)
+    under_floor = make.spec(lb=np.array([0.0, 0.0, 0.5]), cash_ub=1.0)
+    with pytest.raises(InfeasibleError, match=r"names whose floor is above their holding, which this side cannot trade out of: \['S2'\]"):
+        solve(under_floor, ChainState.empty(under_floor.security_ids), resolved)
+
+
+def reflect(spec: ProblemSpec) -> ProblemSpec:
+    """The book seen in a mirror, ``w' = 1 - w``: a buy in the original is a sell of the same size here, and every constraint maps across."""
+    ones = np.ones(spec.n)
+    rowsum = np.asarray(spec.sector_matrix @ ones, dtype=np.float64)
+    return ProblemSpec(
+        portfolio_id=spec.portfolio_id,
+        as_of=spec.as_of,
+        security_ids=spec.security_ids,
+        sector_names=spec.sector_names,
+        nav=spec.nav,
+        w0=ones - spec.w0,
+        price=spec.price,
+        shares_held=spec.shares_held,
+        lot_size=spec.lot_size,
+        w_target=ones - spec.w_target,
+        tax_per_dollar=spec.tax_per_dollar,
+        tcost_per_dollar=spec.tcost_per_dollar,
+        lb=ones - spec.ub,
+        ub=ones - spec.lb,
+        adv_capacity=spec.adv_capacity,
+        sector_matrix=spec.sector_matrix,
+        sector_lb=rowsum - spec.sector_ub,
+        sector_ub=rowsum - spec.sector_lb,
+        max_turnover=spec.max_turnover,
+        cash_lb=2.0 - spec.n - spec.cash_ub,
+        cash_ub=2.0 - spec.n - spec.cash_lb,
+        min_trade_notional=spec.min_trade_notional,
+        columns=spec.columns,
+        flags=spec.flags,
+    )
+
+
+def test_a_sell_only_run_over_the_reflected_book_is_the_buy_only_run_over_the_original(make: Factories) -> None:
+    spec = make.spec(
+        w0=np.array([0.3, 0.2, 0.1]),
+        w_target=np.array([0.45, 0.4, 0.1]),
+        ub=np.array([0.5, 0.35, 0.5]),
+        adv_capacity=np.array([0.05, 1.0, 1.0]),
+        tcost_per_dollar=np.array([0.001, 0.002, 0.0]),
+        cash_lb=0.0,
+        cash_ub=0.2,
+        sector_ub=np.array([0.95]),
+    )
+    mirrored = reflect(spec)
+    chain = ChainState(spec.security_ids, np.array([200.0, 0.0, 0.0]), predecessors=("P0",))  # 200 shares at 100 on 1,000,000 is 0.02 of ADV's 0.05
+    buying = solve(spec, chain, resolved_with(["tracking_error", {"name": "transaction_cost", "params": {"cost_bps": "5"}}], CORE_CONSTRAINTS, sides="buy"))
+    selling = solve(mirrored, chain, resolved_with(["tracking_error", {"name": "transaction_cost", "params": {"cost_bps": "5"}}], CORE_CONSTRAINTS, sides="sell"))
+    assert buying.buy[0] == pytest.approx(0.03, abs=1e-6), "A is bound by what the chain left of its ADV budget, so the reflection exercises the coupling too"
+    np.testing.assert_allclose(selling.w, 1.0 - buying.w, atol=1e-6)
+    np.testing.assert_allclose(selling.sell, buying.buy, atol=1e-6)
+    assert selling.objective == pytest.approx(buying.objective, rel=1e-6)
 
 
 def test_infeasible_problem_raises_with_an_arithmetic_diagnosis(make: Factories) -> None:
