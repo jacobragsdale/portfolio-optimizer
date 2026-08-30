@@ -87,7 +87,7 @@ def test_a_violation_exactly_at_tolerance_passes(make: Factories) -> None:
     report = verify(spec, solution, ChainState.empty(spec.security_ids), [], [CONSTRAINTS[0]], Tolerances(eq=1e-6))
     trade_balance = next(check for check in report.checks if check.name == "trade_balance")
     assert trade_balance.label == "identity"
-    assert {check.label for check in report.checks if check.name.startswith("sector")} == {"sector_bounds"}
+    assert next(check for check in report.checks if check.name == "long_only").label == "long_only"
     assert trade_balance.violation == pytest.approx(1e-6)
     assert trade_balance.passed
     assert trade_balance.worst_security == "S0"
