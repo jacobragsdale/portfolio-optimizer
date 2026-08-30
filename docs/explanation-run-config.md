@@ -181,10 +181,16 @@ sees such a dataset; attach its columns in a rule instead.
 
 The example is deliberately mixed, because a real book is. `details` — the account master: NAV, cash,
 tax rates, benchmark — is `per_portfolio` with `batch_size: 1`, which is one call per account, the
-shape an account master or a custodian actually has. The other five are global: `universe`, `targets`,
-and `prices` are book-wide by nature, `constraints` arrives as one document, and `holdings` stays
-global because it is one of the two tables assembly attaches security analytics to. Watch the split in
-the run's log —
+shape an account master or a custodian actually has. `universe`, `targets`, and `prices` are
+book-wide by nature and `constraints` arrives as one document, so those four are global.
+
+`holdings` is the interesting one, and the choice is yours rather than the engine's. A custodian
+answers one account at a time, so on a real book it is usually a per-portfolio dataset — that is
+exactly the shape [the loader guide](how-to-add-a-loader-or-sink.md#let-the-engine-do-the-fan-out-instead)
+configures. The example keeps it global because `holdings` is also one of the two tables assembly
+attaches security analytics to, and assembly never sees a per-portfolio dataset. The trade decides it:
+fetch holdings per account and the analytics join moves out of `assembly` and into a rule, which runs
+per portfolio anyway. Watch the split in the run's log —
 
 ```text
 dataset 'universe' loaded: 3 row(s) in 1 batch(es), 0.01s
