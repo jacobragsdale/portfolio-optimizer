@@ -3,7 +3,7 @@
   "run": {"name": "example_rebalance", "as_of": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}},
   "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}},
   "datasets": {
-    "holdings": {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}},
+    "holdings": {"loader": {"name": "csv_per_portfolio", "params": {"directory": "holdings"}}, "scope": "per_portfolio", "batch_size": 1},
     "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
     "details": {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}}, "scope": "per_portfolio", "batch_size": 1},
     "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
@@ -14,7 +14,7 @@
     {"name": "join", "params": {"into": "universe", "source": "prices", "on": ["security_id"], "cardinality": "one_to_one", "require_all_matched": true}},
     {"name": "drop", "params": {"datasets": ["prices"]}}
   ],
-  "rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}, "add_zero_alpha"],
+  "rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}, "add_zero_alpha", "attach_universe_columns"],
   "objective": {
     "sense": "minimize",
     "terms": [

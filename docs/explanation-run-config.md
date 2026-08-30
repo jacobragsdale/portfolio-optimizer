@@ -126,7 +126,8 @@ of reading this column.
 
 ```json
 "datasets": {
-  "holdings":    {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}},
+  "holdings":    {"loader": {"name": "csv_per_portfolio", "params": {"directory": "holdings"}},
+                  "scope": "per_portfolio", "batch_size": 1},
   "universe":    {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
   "details":     {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
                   "scope": "per_portfolio", "batch_size": 1},
@@ -181,21 +182,24 @@ fans out privately cannot give you — the batches are visible in the manifest, 
 loaders, and a failure is isolated. The cost is that assembly, which runs over whole datasets, never
 sees such a dataset; attach its columns in a rule instead.
 
-The example is deliberately mixed, because a real book is. `details` — the account master: NAV, cash,
-tax rates, benchmark — is `per_portfolio` with `batch_size: 1`, which is one call per account, the
-shape an account master or a custodian actually has. `universe`, `targets`, and `prices` are
-book-wide by nature and `constraints` arrives as one document, so those four are global.
+The example is deliberately mixed, because a real book is. `holdings` and `details` are the two
+account-shaped inputs — a custodian says what an account owns, an account master says its NAV, cash,
+tax rates, and benchmark, and both answer one account at a time — so both are `per_portfolio` with
+`batch_size: 1`, one call per account. `universe`, `targets`, and `prices` are book-wide by nature and
+`constraints` arrives as one document, so those four are global.
 
-`holdings` is the interesting one, and the choice is yours rather than the engine's. A custodian
-answers one account at a time, so on a real book it is usually a per-portfolio dataset — that is
-exactly the shape [the loader guide](how-to-add-a-loader-or-sink.md#let-the-engine-do-the-fan-out-instead)
-configures. The example keeps it global because `holdings` is also one of the two tables assembly
-attaches security analytics to, and assembly never sees a per-portfolio dataset. The trade decides it:
-fetch holdings per account and the analytics join moves out of `assembly` and into a rule, which runs
-per portfolio anyway. Watch the split in the run's log —
+Making `holdings` per-account has a consequence worth understanding before you copy it, because
+`holdings` is also one of the two tables security analytics are attached to, and assembly never sees a
+per-portfolio dataset. The attachment moves rather than disappears: an assembly `join` puts the
+analytics on the `universe`, and the shipped `attach_universe_columns` rule copies them onto
+`holdings` per portfolio, which is where the example's third rule comes from. Keep `holdings` global
+instead and one `join` does both tables at once — that is the trade, and
+[how to add security analytics](how-to-add-security-analytics.md) walks both ways through it. Watch
+the split in the run's log —
 
 ```text
 dataset 'universe' loaded: 3 row(s) in 1 batch(es), 0.01s
+dataset 'holdings' loaded: 4 row(s) in 2 batch(es), 0.02s
 dataset 'details' loaded: 2 row(s) in 2 batch(es), 0.02s
 ```
 
@@ -207,7 +211,7 @@ missing, a schema violated, a global loader that raised, or a per-portfolio data
 came back — the run stops, because nothing can be built. One batch that raised, or a portfolio with no
 `details` row or no `constraints` entry — that portfolio alone is recorded as failed at stage `load`
 and the rest of the book runs. In the example that is the difference between deleting
-`examples/data/universe.csv`, which stops the run, and deleting `examples/data/details/P2.csv`, after
+`examples/data/universe.csv`, which stops the run, and deleting `examples/data/holdings/P2.csv`, after
 which P1 still solves and P2 alone is reported as failed at `load`. A portfolio rejected here never
 entered the run, so it traded nothing and couples to nobody in the schedule. Loading failures are
 otherwise collected rather than raced: one failing dataset does not cancel the others, and all of them
@@ -217,7 +221,8 @@ The shipped loaders show the two shapes a source can take. `csv` and `parquet` r
 whole dataset — `examples/data/universe.csv` and its neighbours. `csv_per_portfolio` reads
 `<directory>/<portfolio_id>.csv` for every id in the request, concurrently, under the dataset's rate
 limiter — the shape of a loader for an API that answers one portfolio per call, with a file read
-standing in for the HTTP request, and what `examples/data/details/P1.csv` and `P2.csv` are for. It
+standing in for the HTTP request, and what `examples/data/holdings/` and `examples/data/details/` are
+for — one file per account in each. It
 works under either scope: as a `global` dataset it owns its fan-out, and — as the example configures
 it — with `"scope": "per_portfolio", "batch_size": 1` the engine owns it and each call reads one file.
 
@@ -279,7 +284,8 @@ manifest records every step's source hash, parameters, row counts, and the colum
 ## `rules`
 
 ```json
-"rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}, "add_zero_alpha"]
+"rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}, "add_zero_alpha",
+          "attach_universe_columns"]
 ```
 
 Rules are the business-logic layer: functions that take one portfolio's assembled data bundle and
@@ -288,11 +294,15 @@ build. The bundle they receive is already validated, and the only way to return 
 `with_changes(...)`, which re-runs every cross-frame check — so a rule can tighten a cap, freeze a
 name, or add a column, but cannot hand the optimizer something inconsistent.
 
-The example's two rules show the spectrum. `restrict_low_liquidity` reads its threshold from `params`
-and marks names below it restricted, which the build then freezes at their current weight.
+The example's three rules show the spectrum. `restrict_low_liquidity` reads its threshold from
+`params` and marks names below it restricted, which the build then freezes at their current weight.
 `add_zero_alpha` takes no parameters and adds an `alpha` column of zeros when the universe has none, so
-the `alpha` term could be enabled without changing the data. The shipped `cap_single_name` tightens the
-style's `max_weight` when the style's own is looser.
+the `alpha` term could be enabled without changing the data. `attach_universe_columns` copies that
+column — and any other analytic the universe carries beyond its schema — onto `holdings`, so the two
+tables stack into one optimizer frame with the same columns and dtypes; it is the per-portfolio
+counterpart of an assembly `join` into `holdings`, and it is in this config because the example loads
+holdings per account. The shipped `cap_single_name` tightens the style's `max_weight` when the style's
+own is looser.
 
 Ordering is meaningful: a rule sees the output of the one before it. A rule never sees other
 portfolios — it runs in a worker, on one bundle, before anything is solved — and that is what lets

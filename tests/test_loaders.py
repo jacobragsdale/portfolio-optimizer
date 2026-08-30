@@ -21,7 +21,7 @@ def request(dataset: str, root: Path = EXAMPLE_DATA) -> LoadRequest:
 
 
 def test_csv_loads_an_engine_dataset_with_schema_dtypes() -> None:
-    holdings = csv(request("holdings"), CsvParams(path="holdings.csv"))
+    holdings = csv(request("holdings"), CsvParams(path="holdings/P1.csv"))
     validate_frame(holdings, HOLDINGS)
     assert holdings["avg_cost"].iloc[0] == Decimal(100)
     assert str(holdings["acquired_on"].dtype) == "datetime64[ns, UTC]"

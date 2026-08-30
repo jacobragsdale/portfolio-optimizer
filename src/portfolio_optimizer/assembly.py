@@ -7,9 +7,11 @@ schemas, and it sees every loaded dataset by name. Steps are pure: same frames i
 no I/O. Each is recorded in the manifest with its source hash, its params hash, row counts per dataset
 before and after, and the columns it added.
 
-Most assembly work is attaching security analytics to ``holdings`` and ``universe``: both frames accept
-any columns beyond their schemas, and the two are later stacked into one optimizer frame, so a column
-attached to both must have the same dtype on both. The shipped steps cover the common shapes:
+Most assembly work is attaching security analytics to ``universe`` — and to ``holdings`` when it is a
+global dataset, since a ``per_portfolio`` one is never passed to assembly and takes its columns from
+the ``attach_universe_columns`` rule instead. Both frames accept any columns beyond their schemas, and
+the two are later stacked into one optimizer frame, so a column attached to both must have the same
+dtype on both. The shipped steps cover the common shapes:
 ``join`` brings columns from one dataset into another under a declared cardinality; ``union`` stacks
 datasets with the same meaning (holdings from two custodians) into one; ``select`` trims and renames
 columns; ``drop`` discards a dataset that has served its purpose. Anything else — a computed column, a

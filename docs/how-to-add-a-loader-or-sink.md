@@ -95,9 +95,9 @@ whole stage overlaps the global loaders:
 "holdings": {"loader": "holdings_from_api", "scope": "per_portfolio", "batch_size": 1, "rate_limit": "vendor_api"}
 ```
 
-The shipped example is this arrangement in miniature: `examples/data/details/` holds one CSV per
-account and `configs/example_run.json` loads that dataset with `csv_per_portfolio`, `per_portfolio`,
-and `batch_size: 1`, while its five other datasets stay global.
+The shipped example is this arrangement in miniature: `examples/data/holdings/` and
+`examples/data/details/` hold one CSV per account, and `configs/example_run.json` loads both with
+`csv_per_portfolio`, `per_portfolio`, and `batch_size: 1`, while its four other datasets stay global.
 
 `scope: "per_portfolio"` says the ids are the engine's to cut up; `batch_size` says how finely. `1` is
 a call per portfolio, a larger number suits a source that takes an id list, and omitting it puts the

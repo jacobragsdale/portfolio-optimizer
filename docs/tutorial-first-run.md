@@ -84,14 +84,15 @@ worth reading side by side:
 
 ```text
 dataset 'universe' loaded: 3 row(s) in 1 batch(es), 0.01s
-dataset 'details' loaded: 2 row(s) in 2 batch(es), 0.02s
+dataset 'holdings' loaded: 4 row(s) in 2 batch(es), 0.02s
 ```
 
-The universe is book-wide, so its loader was called once. `details` is not: `examples/data/details/`
+The universe is book-wide, so its loader was called once. `holdings` is not: `examples/data/holdings/`
 holds one file per account — `P1.csv` and `P2.csv` — and the config asks for that dataset with
-`"scope": "per_portfolio", "batch_size": 1`, so the engine called its loader once per portfolio. That
-is how a source that answers one account at a time — an account master, a custodian — is wired up, and
-it is why a single account whose data is missing fails on its own instead of stopping the book.
+`"scope": "per_portfolio", "batch_size": 1`, so the engine called its loader once per portfolio.
+`details` is loaded the same way. That is how a source that answers one account at a time — a
+custodian, an account master — is wired up, and it is why a single account whose data is missing fails
+on its own instead of stopping the book.
 
 P1 and P2 each hold $500,000 of A and $500,000 of B against an equal-weight target and may trade at
 most a quarter of each name's daily volume. C's daily volume is 100,000 shares at 10, so a portfolio can

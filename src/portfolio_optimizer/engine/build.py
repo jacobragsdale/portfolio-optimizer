@@ -209,7 +209,9 @@ def _extra_columns(universe: pd.DataFrame) -> tuple[dict[str, F64], dict[str, Fl
 
     Holdings' extra columns are not exported: this build is aligned to the universe, and a
     per-position analytic has no value for names not held. A term that needs one reads it from the
-    universe after a rule copies it across, or consumes the optimizer frame in a custom build.
+    universe after a rule copies it across — the mirror of the shipped ``attach_universe_columns``, and
+    yours to write, since only the desk knows what the analytic means for a name nobody holds — or
+    consumes the optimizer frame in a custom build.
     """
     declared = {column.name for column in UNIVERSE.columns}
     columns: dict[str, F64] = {}

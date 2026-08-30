@@ -13,7 +13,7 @@ import pandas as pd
 from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, scale, total
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.results import Artifact, ProblemSpec
-from portfolio_optimizer.loaders import CsvParams, csv
+from portfolio_optimizer.loaders import CsvPerPortfolioParams, csv_per_portfolio
 from portfolio_optimizer.solving import SolveRequest, SolveResult
 
 # --- steps that satisfy the resolver's contracts, for tests that need a resolvable config ---
@@ -148,18 +148,17 @@ BATCHES: list[tuple[str, ...]] = []
 """Every batch of ids the engine handed :func:`recording_csv`, in call order; a test clears it first."""
 
 
-class RecordingCsvParams(CsvParams):
-    """:class:`CsvParams` plus the portfolios this source has no data for."""
+class RecordingCsvParams(CsvPerPortfolioParams):
+    """:class:`CsvPerPortfolioParams` plus the portfolios this source has no data for."""
 
     fails_for: tuple[str, ...] = ()
 
 
-def recording_csv(request: LoadRequest, params: RecordingCsvParams) -> pd.DataFrame:
-    """A per-portfolio loader that records the batch it was given, keeps that batch's rows, and refuses a batch holding a portfolio it has no data for."""
+async def recording_csv(request: LoadRequest, params: RecordingCsvParams) -> pd.DataFrame:
+    """A per-portfolio loader that records the batch it was given, reads that batch's rows, and refuses a batch holding a portfolio it has no data for."""
     BATCHES.append(tuple(request.portfolio_ids))
     refused = sorted(set(request.portfolio_ids) & set(params.fails_for))
     if refused:
         msg = f"{request.dataset}: no data for {refused}"
         raise ValueError(msg)
-    frame = csv(request, params)
-    return frame[frame["portfolio_id"].isin(request.portfolio_ids)].reset_index(drop=True)
+    return await csv_per_portfolio(request, params)

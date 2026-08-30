@@ -19,7 +19,7 @@ The quickest way to see what the engine does is to read the run it ships with,
   "run": {"name": "example_rebalance", "as_of": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}},
   "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}},
   "datasets": {
-    "holdings": {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}},
+    "holdings": {"loader": {"name": "csv_per_portfolio", "params": {"directory": "holdings"}}, "scope": "per_portfolio", "batch_size": 1},
     "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
     "details": {"loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}}, "scope": "per_portfolio", "batch_size": 1},
     "constraints": {"loader": {"name": "json_constraints", "params": {"path": "constraints.json"}}},
@@ -30,7 +30,7 @@ The quickest way to see what the engine does is to read the run it ships with,
     {"name": "join", "params": {"into": "universe", "source": "prices", "on": ["security_id"], "cardinality": "one_to_one", "require_all_matched": true}},
     {"name": "drop", "params": {"datasets": ["prices"]}}
   ],
-  "rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}, "add_zero_alpha"],
+  "rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": 1000}}, "add_zero_alpha", "attach_universe_columns"],
   "objective": {
     "sense": "minimize",
     "terms": [
@@ -62,18 +62,19 @@ that kind of step, or by `package.module:function`, with optional `params` (see
   validated against fixed schemas: `holdings`, `universe`, `details`, `targets`, and `constraints` (each
   portfolio's style limits). Any other name — `prices` here — is an extra dataset the engine does not
   interpret: assembly steps see it, and whatever survives assembly reaches each portfolio's rules as
-  `data.extras`. Each entry also says how its loader is called. Five of them say nothing and are
-  `global`: one call for the whole book, and the only datasets assembly sees. `details` is
-  `per_portfolio` with `batch_size: 1`, so the engine calls its loader once per account — the shape of
-  an account master, a custodian, or any source that answers one portfolio at a time, and the reason a
-  portfolio whose own inputs are missing fails alone instead of stopping the run. An input from a
-  throttled source adds a `rate_limit`.
+  `data.extras`. Each entry also says how its loader is called. `universe`, `targets`, `prices`, and
+  `constraints` say nothing and are `global`: one call for the whole book, and the only datasets
+  assembly sees. `holdings` and `details` are `per_portfolio` with `batch_size: 1`, so the engine calls
+  their loaders once per account — a custodian and an account master answer one portfolio at a time —
+  which is also why a portfolio whose own inputs are missing fails alone instead of stopping the run.
+  An input from a throttled source adds a `rate_limit`.
 - **`assembly`** — steps that run once over all loaded datasets to make the tables the build expects.
   Here: join prices into the universe, checking every security matched exactly once, then drop the price
   file. This is where per-security analytics get attached to `holdings` and `universe`.
 - **`rules`** — business logic, run per portfolio in order: each takes one portfolio's validated bundle
-  and returns a modified one, and never sees other portfolios. The example restricts illiquid names and
-  adds a zero `alpha` column.
+  and returns a modified one, and never sees other portfolios. The example restricts illiquid names,
+  adds a zero `alpha` column, and copies the universe's analytics columns onto holdings — the
+  attachment an assembly `join` would do if holdings were global.
 - **`objective`** — the sum of the listed terms, always minimized; a reward is a negative term. Each term
   is a function returning a convex expression, and its `weight` is a string so the manifest records an
   exact `Decimal`.

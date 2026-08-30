@@ -42,21 +42,28 @@ def _datasets(**overrides: object) -> dict[str, object]:
     return {str(name): spec for name, spec in datasets.items()} | overrides
 
 
-GLOBAL_DETAILS: dict[str, object] = {"loader": {"name": "csv", "params": {"path": "details/P1.csv"}}}
-"""The example's per-account details read as one global file: for a test whose fabricated portfolio ids have no file of their own."""
+ONE_FILE: dict[str, dict[str, object]] = {"details": {"loader": {"name": "csv", "params": {"path": "details/P1.csv"}}}, "holdings": {"loader": {"name": "csv", "params": {"path": "holdings/P1.csv"}}}}
+"""The example's two per-account datasets read as one global file each: for a test whose fabricated portfolio ids have no file of their own."""
+
+GLOBAL_HOLDINGS: dict[str, object] = {"loader": {"name": "csv_per_portfolio", "params": {"directory": "holdings"}}}
+"""The same fan-out loader at `global` scope — one call for every id, the loader owning its partition: for a test about assembly, which per-account datasets never reach."""
 
 
 def _loaded_with(example_loaded: LoadedDatasets, **frames: object) -> LoadedDatasets:
-    return replace(example_loaded, frames={**example_loaded.frames, **frames})  # frames are DataFrames by construction in every caller
+    """The loaded datasets with each named frame replaced in the mapping it came from, global or per-account."""
+    sharded = {name: frame for name, frame in frames.items() if name in example_loaded.per_portfolio}
+    return replace(  # frames are DataFrames by construction in every caller
+        example_loaded, frames={**example_loaded.frames, **{name: frame for name, frame in frames.items() if name not in sharded}}, per_portfolio={**example_loaded.per_portfolio, **sharded}
+    )
 
 
 def test_example_data_loads_in_solve_order_with_audit_records(example_loaded: LoadedDatasets) -> None:
     assert example_loaded.portfolio_ids == ("P1", "P2")
     assert example_loaded.solve_orders == {"P1": 0, "P2": 1}
-    assert set(example_loaded.frames) == {"holdings", "universe", "targets", "prices"}
-    assert set(example_loaded.per_portfolio) == {"details"}, "the example loads details per account, and assembly never sees it"
+    assert set(example_loaded.frames) == {"universe", "targets", "prices"}
+    assert set(example_loaded.per_portfolio) == {"details", "holdings"}, "the example loads both per account, and assembly never sees either"
     audit = {record.name: record for record in example_loaded.audits}
-    assert audit["holdings"].rows == 4
+    assert (audit["holdings"].rows, audit["holdings"].batches) == (4, 2)
     assert (audit["details"].rows, audit["details"].batches) == (2, 2), "batch_size 1 on a per-account dataset is one call per portfolio"
     assert audit["constraints"].rows == 2
     assert len(audit["prices"].content_sha256) == 64
@@ -70,8 +77,8 @@ def test_assembly_joins_prices_into_universe_drops_them_and_slices_each_portfoli
     assert [audit.qualname for audit in assembled.audits] == ["portfolio_optimizer.assembly:join", "portfolio_optimizer.assembly:drop"]
     assert assembled.audits[0].columns_added == {"universe": ("price",)}
     assert assembled.audits[1].rows_in["prices"] == 3
-    assert assembled.audits[1].rows_out == {"holdings": 4, "universe": 3, "targets": 3}, "the per-account details are merged back in after the steps have run"
-    assert len(assembled.details) == 2
+    assert assembled.audits[1].rows_out == {"universe": 3, "targets": 3}, "the per-account holdings and details are merged back in after the steps have run"
+    assert (len(assembled.holdings), len(assembled.details)) == (4, 2)
     p1 = slice_portfolio(assembled, PortfolioId("P1"))
     p2 = slice_portfolio(assembled, PortfolioId("P2"))
     assert isinstance(p1, PortfolioData)
@@ -84,8 +91,10 @@ def test_assembly_joins_prices_into_universe_drops_them_and_slices_each_portfoli
     assert p1.as_of == AS_OF
 
 
-def test_a_custom_step_attaches_analytics_to_holdings_and_universe_and_is_audited(example_loaded: LoadedDatasets) -> None:
-    assembled = assemble(example_loaded, _with_assembly(JOIN_PRICES, "tests.steps:score_by_price", {"name": "drop", "params": {"datasets": ["prices"]}}), run_id="test")
+def test_a_custom_step_attaches_analytics_to_holdings_and_universe_and_is_audited() -> None:
+    resolved = resolved_example(datasets=_datasets(holdings=GLOBAL_HOLDINGS), assembly=[JOIN_PRICES, "tests.steps:score_by_price", {"name": "drop", "params": {"datasets": ["prices"]}}])
+    loaded = load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test")
+    assembled = assemble(loaded, resolved, run_id="test")
     assert assembled.audits[1].columns_added == {"holdings": ("score",), "universe": ("score",)}
     assert len(assembled.audits[1].source_sha256) == 64
     frame = slice_portfolio(assembled, PortfolioId("P1")).optimizer_frame()
@@ -129,7 +138,7 @@ def test_join_refuses_to_overwrite_existing_columns_unless_told_to(example_loade
 
 def test_a_step_naming_an_unknown_dataset_is_told_what_exists(example_loaded: LoadedDatasets) -> None:
     resolved = _with_assembly({"name": "join", "params": {**JOIN_PRICES_PARAMS, "source": "sectors"}})
-    with pytest.raises(AssemblyError, match=r"assembly\[0\] portfolio_optimizer.assembly:join: no dataset 'sectors'; available: \['holdings', 'prices', 'targets', 'universe'\]"):
+    with pytest.raises(AssemblyError, match=r"assembly\[0\] portfolio_optimizer.assembly:join: no dataset 'sectors'; available: \['prices', 'targets', 'universe'\]"):
         assemble(example_loaded, resolved, run_id="test")
 
 
@@ -149,13 +158,13 @@ def test_dropping_an_engine_frame_is_caught_after_the_last_step(example_loaded: 
 
 
 def test_schema_failures_after_assembly_name_the_dataset(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
-    holdings = example_loaded.frames["holdings"].assign(quantity=example_loaded.frames["holdings"]["quantity"] * -1)
+    holdings = example_loaded.per_portfolio["holdings"].assign(quantity=example_loaded.per_portfolio["holdings"]["quantity"] * -1)
     with pytest.raises(LoadError, match="holdings: column 'quantity'"):
         assemble(_loaded_with(example_loaded, holdings=holdings), example_resolved, run_id="test")
 
 
 def test_analytics_dtype_conflicts_between_holdings_and_universe_fail_at_slice(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
-    holdings = example_loaded.frames["holdings"].assign(score=pd.Series([1.0, 2.0, 3.0], dtype="Float64"))
+    holdings = example_loaded.per_portfolio["holdings"].assign(score=pd.Series([1.0, 2.0, 3.0], dtype="Float64"))
     universe = example_loaded.frames["universe"].assign(score=pd.Series([1.0, 2.0, 3.0], dtype="float64"))
     assembled = assemble(_loaded_with(example_loaded, holdings=holdings, universe=universe), example_resolved, run_id="test")
     with pytest.raises(PortfolioDataError, match="holdings and universe disagree on column 'score'"):
@@ -256,10 +265,10 @@ def test_an_inline_bound_is_private_to_its_input_while_a_named_pool_is_shared() 
 
 
 def test_the_portfolio_list_input_can_be_bounded_too() -> None:
-    resolved = resolved_example(portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": {"max_in_flight": 1}}, datasets=_datasets(details=GLOBAL_DETAILS))
+    resolved = resolved_example(portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": {"max_in_flight": 1}}, datasets=_datasets(**ONE_FILE))
     assert load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test").portfolio_ids == ("portfolios",)
     resolved = resolved_example(
-        portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": "shared"}, datasets=_datasets(details=GLOBAL_DETAILS), rate_limits={"shared": {"max_in_flight": 1}}
+        portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": "shared"}, datasets=_datasets(**ONE_FILE), rate_limits={"shared": {"max_in_flight": 1}}
     )
     assert load_datasets(resolved, data_root=EXAMPLE_DATA, run_id="test").portfolio_ids == ("shared",)
 
@@ -269,7 +278,7 @@ def test_the_portfolio_list_input_can_be_bounded_too() -> None:
 
 def _sharded(batch_size: int | None, **overrides: object) -> dict[str, object]:
     """The example datasets with ``holdings`` loaded per portfolio by the recording loader."""
-    holdings: dict[str, object] = {"loader": {"name": "tests.steps:recording_csv", "params": {"path": "holdings.csv", **overrides}}, "scope": "per_portfolio"}
+    holdings: dict[str, object] = {"loader": {"name": "tests.steps:recording_csv", "params": {"directory": "holdings", **overrides}}, "scope": "per_portfolio"}
     if batch_size is not None:
         holdings["batch_size"] = batch_size
     return _datasets(holdings=holdings)

@@ -160,7 +160,8 @@ constructs a new `PortfolioData` and therefore **re-runs every check from stage 
 the optimizer a broken bundle. Each rule gets an audit record of row counts before and after.
 
 The shipped rules (`rules.py`) show the patterns: `restrict_low_liquidity` freezes names below an ADV
-threshold, `add_zero_alpha` adds a column, `cap_single_name` tightens the style. A rule never sees other
+threshold, `add_zero_alpha` adds a column, `attach_universe_columns` copies the universe's analytics
+onto holdings for a book that loads holdings per account, `cap_single_name` tightens the style. A rule never sees other
 portfolios. What it *can* do is shrink the portfolio's tradable set — freeze a name, or cap it at its
 current weight in a run that couples through buys — and that is what lets portfolios solve
 concurrently (§9): two portfolios wait on each other only when they can both trade the same security on
@@ -387,11 +388,11 @@ solve → orders. "Did the data change, or did the solver?" is a one-command que
 
 ## The example, stage by stage
 
-`configs/example_run.json` declares two portfolios over three securities, five global datasets and one
-loaded per account (`details`, one call and one file per portfolio), a `prices` dataset joined into
-the universe by an assembly step and dropped by the next, two rules, three terms (tracking error, tax
-cost, transaction cost), six constraints, the Clarabel solver, and `fail_fast`; how many workers the
-run has is the `PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting.
+`configs/example_run.json` declares two portfolios over three securities, four global datasets and two
+loaded per account (`holdings` and `details`, one call and one file per portfolio), a `prices` dataset
+joined into the universe by an assembly step and dropped by the next, three rules, three terms
+(tracking error, tax cost, transaction cost), six constraints, the Clarabel solver, and `fail_fast`;
+how many workers the run has is the `PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting.
 
 P1 and P2 each hold $500,000 of A and $500,000 of B (5,000 A at 100, 10,000 B at 50) against an
 equal-weight target. A and B are `TECH`, C is `HEALTH`, and the style's sector bands — `TECH` in

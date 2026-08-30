@@ -90,11 +90,12 @@ def half_cash_book(tmp_path: Path) -> Path:
     """
     header = "portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,benchmark_id\n"
     details = {"details/P1.csv": header + "P1,Alpha Growth,NY,0.40,0.20,500000,1000000,B1\n", "details/P2.csv": header + "P2,Beta Income,CA,0.37,0.20,500000,1000000,B1\n"}
-    holdings = (
-        "portfolio_id,security_id,quantity,avg_cost,acquired_on\n"
-        "P1,A,2500,100,2024-01-15T00:00:00Z\nP1,B,5000,50,2024-01-15T00:00:00Z\nP2,A,2500,100,2025-11-01T00:00:00Z\nP2,B,5000,50,2025-11-01T00:00:00Z\n"
-    )
-    return example_book(tmp_path, **details, **{"holdings.csv": holdings})
+    header = "portfolio_id,security_id,quantity,avg_cost,acquired_on\n"
+    holdings = {
+        "holdings/P1.csv": header + "P1,A,2500,100,2024-01-15T00:00:00Z\nP1,B,5000,50,2024-01-15T00:00:00Z\n",
+        "holdings/P2.csv": header + "P2,A,2500,100,2025-11-01T00:00:00Z\nP2,B,5000,50,2025-11-01T00:00:00Z\n",
+    }
+    return example_book(tmp_path, **details, **holdings)
 
 
 SELL_BOOK_ORDERS_P1: Orders = [{"security_id": "A", "side": "SELL", "quantity": 1000}, {"security_id": "B", "side": "SELL", "quantity": 3333}]

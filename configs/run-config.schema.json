@@ -1041,7 +1041,7 @@
       "type": "object"
     },
     "RuleStep": {
-      "$comment": "Shipped steps: ['add_zero_alpha', 'cap_single_name', 'restrict_low_liquidity']",
+      "$comment": "Shipped steps: ['add_zero_alpha', 'attach_universe_columns', 'cap_single_name', 'restrict_low_liquidity']",
       "anyOf": [
         {
           "$comment": "These shipped steps have required parameters and must use the object form: ['cap_single_name', 'restrict_low_liquidity']",
@@ -1075,6 +1075,38 @@
                     "additionalProperties": false,
                     "description": "`add_zero_alpha` takes no parameters.",
                     "maxProperties": 0,
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "const": "attach_universe_columns"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "Parameters for :func:`attach_universe_columns`.",
+                    "properties": {
+                      "columns": {
+                        "default": [],
+                        "description": "Universe columns to copy onto holdings, matched on `security_id`. Default: every column the universe carries beyond its schema — the analytics columns.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "title": "Columns",
+                        "type": "array"
+                      }
+                    },
                     "type": "object"
                   }
                 }

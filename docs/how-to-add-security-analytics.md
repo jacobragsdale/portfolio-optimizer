@@ -11,10 +11,11 @@ into one optimizer frame cleanly.
 - The environment is installed (`uv sync --locked`) and the example runs.
 - You know the analytics source: its columns, which column identifies a security, and whether it has
   one row per security (global) or one row per portfolio and security (per-portfolio).
-- The analytics dataset is loaded at the default `"scope": "global"`. Assembly steps run over whole
-  datasets, so a dataset declared `"scope": "per_portfolio"` — like the example's `details` — is not
-  there to join; if yours has to be fetched one account at a time, attach its columns in a
-  [rule](how-to-add-a-rule.md) instead.
+- The analytics dataset itself is loaded at the default `"scope": "global"` — assembly steps run over
+  whole datasets, so a `"scope": "per_portfolio"` dataset is not there to join.
+- Whether your **`holdings`** is global or per-account, because it decides where the holdings-side
+  attachment happens. Step 2 below covers both; the shipped example loads holdings per account, so it
+  takes the second route.
 - Two facts about the tables, from [the bundle reference](reference-portfolio-data.md): both `holdings`
   and `universe` accept any columns beyond their schemas, and a column present on both must have the
   same dtype on both, because `PortfolioData.optimizer_frame()` stacks the two tables and refuses a
@@ -45,30 +46,58 @@ the key as `string`, money and rates as `decimal`, statistical values as `Float6
 From a database or an API, [write a loader](how-to-add-a-loader-or-sink.md) that returns the frame
 already typed. Whatever dtypes leave the loader are the dtypes that land on `holdings` and `universe`.
 
-## 2. Attach the columns with `join` steps
+## 2. Attach the columns to the universe
 
 ```json
 "assembly": [
   {"name": "join", "params": {"into": "universe", "source": "analytics", "on": ["security_id"],
                               "cardinality": "one_to_one", "require_all_matched": true}},
-  {"name": "join", "params": {"into": "holdings", "source": "analytics", "on": ["security_id"],
-                              "cardinality": "many_to_one"}},
   {"name": "drop", "params": {"datasets": ["analytics"]}}
 ]
 ```
 
-Read each join as a claim the engine checks:
+Read the join as a claim the engine checks: `one_to_one` with `require_all_matched` says every universe
+name has exactly one analytics row, or the run is rejected naming the unmatched securities. Use
+`"columns": ["score"]` to bring a subset and `"rename": {"score": "vendor_score"}` to rename it. `drop`
+discards the source once it has been used; otherwise it is carried into every portfolio's bundle as
+`data.extras["analytics"]`, which costs memory in every worker process for nothing.
 
-- `universe` gets `one_to_one` with `require_all_matched`: every universe name has exactly one analytics
-  row, or the run is rejected naming the unmatched securities.
-- `holdings` gets `many_to_one` without `require_all_matched`: one analytics row serves every portfolio
-  that holds the name, and a held name outside coverage keeps its row with nulls in the new columns.
-  Add `"require_all_matched": true` here too if a held name without analytics should stop the run.
-- Both joins bring the same source columns, so the dtypes agree on both tables by construction. Use
-  `"columns": ["score"]` to bring a subset and `"rename": {"score": "vendor_score"}` to rename it, the
-  same way on both joins.
-- `drop` discards the source once it has been used; otherwise it is carried into every portfolio's
-  bundle as `data.extras["analytics"]`, which costs memory in every worker process for nothing.
+The universe is the table the build reads analytics from, so this join alone is what a term needs. The
+next step is about the *other* table.
+
+## 3. Attach the same columns to holdings
+
+Holdings and universe are stacked into one optimizer frame, and a column on only one of them is null
+on the other half — so whatever a custom solve step or a later rule reads there needs the analytic on
+both. Where the columns come from depends on how `holdings` is loaded.
+
+**Holdings loaded per account** — the shipped example, and the usual arrangement when a custodian
+answers one portfolio at a time. Assembly never sees a `per_portfolio` dataset, so the attachment
+happens per portfolio, in a rule:
+
+```json
+"rules": ["attach_universe_columns"]
+```
+
+`attach_universe_columns` copies every column the universe carries beyond its schema onto `holdings`,
+matched on `security_id`, keeping the dtype. Name `"params": {"columns": ["score"]}` to copy a subset.
+A held name the universe does not carry takes a null — which the build refuses later, by name — and a
+`bool` column, which cannot hold one, is refused by the rule instead. It must run after any rule that
+*creates* an analytic on the universe, since rules run in order.
+
+**Holdings loaded globally** — one file or one query for the whole book. Add a second `join` and the
+one assembly list does both tables:
+
+```json
+{"name": "join", "params": {"into": "holdings", "source": "analytics", "on": ["security_id"],
+                            "cardinality": "many_to_one"}}
+```
+
+`many_to_one` without `require_all_matched`: one analytics row serves every portfolio that holds the
+name, and a held name outside coverage keeps its row with nulls in the new columns. Add
+`"require_all_matched": true` if a held name without analytics should stop the run. Both joins bring
+the same source columns, so the dtypes agree by construction — use the same `columns` and `rename` on
+both.
 
 Check the config resolves, then run and read the manifest:
 
@@ -80,12 +109,11 @@ uv run --env-file .env portfolio-optimizer run configs/my_run.json
 Each assembly step's record in `manifest.json` lists `columns_added` per dataset and row counts before
 and after; the first join should show `{"universe": ["score", "liquidity_bucket", "fair_value"]}`.
 
-## 3. Compute a derived column in a custom step
+## 4. Compute a derived column in a custom step
 
 When the analytic is computed rather than loaded, write an assembly step. It sees every dataset by
 name and returns a new `Frames`; the engine records its source hash and what it added. This one
-standardizes a column against the universe's distribution and writes the result to both tables,
-so a held name outside the universe gets a z-score on the same scale:
+standardizes a column against the universe's distribution:
 
 ```python
 # src/portfolio_optimizer/assembly.py — or my_firm.assembly:zscore_against_universe
@@ -95,7 +123,7 @@ class ZScoreParams(Params):
 
 
 def zscore_against_universe(frames: Frames, params: ZScoreParams) -> Frames:
-    """Standardize ``column`` on holdings and universe with the universe's mean and standard deviation."""
+    """Standardize ``column`` on the universe against its own mean and standard deviation."""
     reference = frames["universe"][params.column].astype("Float64")
     mean, std = float(reference.mean()), float(reference.std())
     if not std > 0.0:
@@ -105,7 +133,7 @@ def zscore_against_universe(frames: Frames, params: ZScoreParams) -> Frames:
     def standardized(frame: pd.DataFrame) -> pd.DataFrame:
         return frame.assign(**{params.output: ((frame[params.column].astype("Float64") - mean) / std).astype("Float64")})
 
-    return frames.with_frame("universe", standardized(frames["universe"])).with_frame("holdings", standardized(frames["holdings"]))
+    return frames.with_frame("universe", standardized(frames["universe"]))
 ```
 
 ```json
@@ -121,9 +149,13 @@ Three habits keep custom steps safe:
   is solved.
 - Read datasets with `frames["name"]`; a missing name raises with the list of what exists.
 
-Place the step after the joins that supply its inputs; steps run in list order.
+Place the step after the joins that supply its inputs; steps run in list order. The computed column
+is an analytic like any other, so `attach_universe_columns` carries it onto holdings — or, with a
+global `holdings`, write both tables in the step itself:
+`frames.with_frame("holdings", standardized(frames["holdings"]))`, which keeps a held name outside the
+universe on the same scale.
 
-## 4. Attach per-portfolio analytics with an extra dataset and a rule
+## 5. Attach per-portfolio analytics with an extra dataset and a rule
 
 A dataset with one row per portfolio and security — a mandate's exclusion list, per-portfolio lot
 data — cannot be joined into `universe`, which has no portfolio dimension. Leave it as an extra
@@ -148,7 +180,7 @@ def apply_mandate_exclusions(data: PortfolioData) -> PortfolioData:
 `with_changes` re-validates the bundle, so a rule that produced a conflicting dtype fails at that
 portfolio with the column named, not later in the optimizer.
 
-## 5. Check the optimizer frame
+## 6. Check the optimizer frame
 
 The proof that the two tables are compatible is the frame itself. From a rule, a test, or a notebook:
 
@@ -169,7 +201,7 @@ portfolio 'P1': holdings and universe disagree on column 'score': holdings has d
 Fix it where the column was created — the loader's `dtypes`, or the `.astype` in the step — not by
 casting in the consumer.
 
-## 6. Feed the shipped optimizer, if you use it
+## 7. Feed the shipped optimizer, if you use it
 
 The shipped build (`engine/build.py`) is aligned to the universe: it exports every numeric universe
 column the schema does not declare into `spec.columns`, where a term reads it with

@@ -83,8 +83,8 @@ def test_continue_skips_the_portfolios_that_depended_on_the_failure_and_names_it
 
 
 def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_path: Path, scheduler_address: str) -> None:
-    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P2,B,10000,50", "P2,Z,10000,50")
-    data_root = example_book(tmp_path, **{"holdings.csv": holdings})
+    holdings = (EXAMPLE_DATA / "holdings" / "P2.csv").read_text().replace("P2,B,10000,50", "P2,Z,10000,50")
+    data_root = example_book(tmp_path, **{"holdings/P2.csv": holdings})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, constraints=NO_CHAIN_CONSTRAINTS)
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioResult)
@@ -94,8 +94,8 @@ def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_pa
 
 
 def test_a_failed_build_is_treated_as_overlapping_everything_after_it(tmp_path: Path, scheduler_address: str) -> None:
-    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P1,B,10000,50", "P1,Z,10000,50")
-    data_root = example_book(tmp_path, **{"holdings.csv": holdings})
+    holdings = (EXAMPLE_DATA / "holdings" / "P1.csv").read_text().replace("P1,B,10000,50", "P1,Z,10000,50")
+    data_root = example_book(tmp_path, **{"holdings/P1.csv": holdings})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioFailure) and p1.stage == "build"
@@ -138,7 +138,7 @@ def test_a_portfolio_the_inputs_do_not_cover_fails_alone_and_the_rest_of_the_boo
 
 
 def test_a_required_dataset_that_does_not_load_at_all_still_rejects_the_run(tmp_path: Path, scheduler_address: str) -> None:
-    data_root = example_book(tmp_path, **{"holdings.csv": "portfolio_id,security_id,quantity\n"})
+    data_root = example_book(tmp_path, **dict.fromkeys(("holdings/P1.csv", "holdings/P2.csv"), "portfolio_id,security_id,quantity\n"))
     with pytest.raises(InputRejectedError, match="holdings"):
         execute(tmp_path, scheduler_address=scheduler_address, data_root=data_root)
 
@@ -149,7 +149,7 @@ def test_manifest_records_provenance_for_every_stage(tmp_path: Path, scheduler_a
     assert manifest.config.sha256 == resolved_example_real(sink="orders_to_parquet").config_sha256
     assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "constraints", "targets", "prices"}
     p1 = manifest.portfolios[0]
-    assert [r.qualname for r in p1.rules] == ["portfolio_optimizer.rules:restrict_low_liquidity", "portfolio_optimizer.rules:add_zero_alpha"]
+    assert [r.qualname for r in p1.rules] == ["portfolio_optimizer.rules:restrict_low_liquidity", "portfolio_optimizer.rules:add_zero_alpha", "portfolio_optimizer.rules:attach_universe_columns"]
     assert p1.solve is not None
     assert p1.solve.status == "optimal"
     assert p1.check is not None
