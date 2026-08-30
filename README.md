@@ -14,73 +14,76 @@ The quickest way to see what the engine does is to read the run it ships with,
 [`configs/example_run.json`](configs/example_run.json), annotated here:
 
 ```jsonc
-// The run that ships with the template, annotated. The real file is strict JSON with no comments —
-// these lines are stripped and the rest is compared against it by a test, so this copy cannot drift.
+// The run that ships with the template, annotated. The real file is strict JSON with no
+// comments — these lines are stripped and the rest compared against it by a test, so this
+// copy cannot drift.
 {
-  // Identity. `name` and `tags` are recorded in the manifest and used for nothing else. `as_of_date`
-  // is the one field here that changes results: every loader receives it, and it decides whether each
-  // tax lot is long- or short-term. It must carry a zone.
-  "run": {"name": "example_rebalance", "as_of_date": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}},
+  // `as_of_date` is the only field here that changes results: every loader gets it, and it
+  // decides whether a tax lot is long- or short-term. It must carry a zone.
+  "run": {
+    "name": "example_rebalance",
+    "as_of_date": "2026-08-28T00:00:00Z",
+    "tags": {"desk": "template"}
+  },
 
-  // The one loader that runs first and alone: it returns the portfolio ids every other loader is told
-  // to fetch, and optionally a `solve_order` priority (lower solves first).
+  // Runs first and alone: it returns the portfolio ids every other loader is told to fetch.
   "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}},
 
-  // Everything else to load; all of these start at once, as soon as the portfolio list is known.
+  // Everything else, all loaded at once as soon as the portfolio list is known.
   "datasets": {
-    // `scope: per_portfolio` is the engine's fan-out: it calls the loader once per batch of accounts
-    // rather than once for the book. `batch_size: 1` is a call per account — a custodian that answers
-    // one at a time. A per-portfolio dataset is never passed to assembly.
+    // `per_portfolio` is the engine's fan-out: one call per batch of accounts, `batch_size: 1`
+    // being a call each — the shape of a custodian that answers one at a time.
     "holdings": {
       "loader": {"name": "csv_per_portfolio", "params": {"directory": "holdings"}},
       "scope": "per_portfolio",
       "batch_size": 1
     },
 
-    // No `scope` means `global`: one call for the whole book, and the only datasets assembly sees.
+    // No `scope` means `global`: one call for the book, and the only datasets assembly sees.
     "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}},
 
-    // The account master: NAV, cash, tax rates, and the account's style limits (`max_weight`,
-    // `max_turnover`, `max_adv_participation`, `min_trade_notional`, `cash_lb`, `cash_ub`).
-    // `batch_size: 2` hands the loader two ids per call — a source that takes a list.
+    // The account master: NAV, cash, tax rates, style limits. `batch_size: 2` hands the loader
+    // two ids per call — the shape of a source that takes a list.
     "details": {
       "loader": {"name": "csv_per_portfolio", "params": {"directory": "details"}},
       "scope": "per_portfolio",
       "batch_size": 2
     },
 
-    // Which constraints bind each account and how tight they are, as data. The engine knows only
-    // which portfolio a row belongs to — every other column is yours, and only the solve step
-    // interprets them. The shipped `cvxpy` step reads this convention: a `name` naming a step in
-    // terms.py, an optional `label`, and optional `params` as JSON text — which is where a sector
-    // band's numbers live. Optional, like any dataset: omit it and nothing is constrained beyond
-    // the trade identity.
+    // Which constraints bind each account and how tight they are. The engine reads only
+    // `portfolio_id`; the solve step interprets every other column.
     "constraints": {"loader": {"name": "csv", "params": {"path": "constraints.csv"}}},
 
-    // Any name the engine does not know is an extra dataset: loaded, content-hashed, and recorded in
-    // the manifest like every other input, then carried untouched to the rules and on to the solve
-    // step. That is where runtime parameters belong — numbers that change daily without changing the
-    // config. It cannot be typed from a schema, so `dtypes` declares each column's kind: `value` as
-    // `decimal` arrives as an exact `Decimal`. Nothing shipped reads `global_parameters`; the cvxpy
-    // step has no business interpreting a desk's settings, and a desk's own step reads it off
-    // `request.extras`.
+    // A name the engine does not know is an extra: carried untouched to the rules and on to
+    // the solve step, which is where runtime parameters belong. `dtypes` types what no
+    // schema can.
     "global_parameters": {
-      "loader": {"name": "csv", "params": {"path": "global_parameters.csv", "dtypes": {"name": "string", "value": "decimal"}}}
+      "loader": {
+        "name": "csv",
+        "params": {
+          "path": "global_parameters.csv",
+          "dtypes": {"name": "string", "value": "decimal"}
+        }
+      }
     },
 
-    // The same shape, read earlier: `restrict_low_liquidity` takes its `min_adv_shares` from here.
+    // The same shape, read earlier: `restrict_low_liquidity` takes its `min_adv_shares` here.
     "buy_universe_parameters": {
-      "loader": {"name": "csv", "params": {"path": "buy_universe_parameters.csv", "dtypes": {"name": "string", "value": "decimal"}}}
+      "loader": {
+        "name": "csv",
+        "params": {
+          "path": "buy_universe_parameters.csv",
+          "dtypes": {"name": "string", "value": "decimal"}
+        }
+      }
     }
   },
 
-  // Business logic, applied in order to each portfolio's bundle. A rule never sees another portfolio.
-  // Freezing a name shrinks the tradable set, which is what lets portfolios solve concurrently.
+  // Applied in order to each portfolio's bundle; a rule never sees another portfolio.
   "rules": ["restrict_low_liquidity"],
 
-  // The sum of these terms is minimized; express a reward as a negative term — `alpha` is one, so
-  // the run buys expected return and pays for it in tax and trading cost. Weights are strings so the
-  // manifest records an exact Decimal.
+  // The sum is minimized, so a reward is a negative term — `alpha` is one. Weights are
+  // strings so the manifest records an exact Decimal.
   "objective": {
     "sense": "minimize",
     "terms": [
@@ -90,19 +93,21 @@ The quickest way to see what the engine does is to read the run it ships with,
     ]
   },
 
-  // Checked when the config resolves and on every worker; there is no silent fallback to another solver.
-  "solver": {"name": "CLARABEL", "options": {"max_iter": 200}, "time_limit_s": 60.0, "verbose": false},
+  // Checked when the config resolves and on every worker; no fallback to another solver.
+  "solver": {
+    "name": "CLARABEL",
+    "options": {"max_iter": 200},
+    "time_limit_s": 60.0,
+    "verbose": false
+  },
 
   // Tolerances for the independent, cvxpy-free re-verification of every solution.
   "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9},
 
   "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},
 
-  // `fail_fast` stops at the first failed portfolio; `continue` isolates it. `dependencies` says
-  // whether portfolios wait for each other — `none` when no constraint reads what others traded,
-  // which the engine cannot infer now that constraints are opaque data. *Where* the work runs and how
-  // many workers there are are environment settings, not config, so the same config hashes the same
-  // on a laptop and on a cluster.
+  // `fail_fast` stops at the first failure; `continue` isolates it. `dependencies` says
+  // whether portfolios wait for each other — declared, since constraints are opaque data.
   "execution": {"on_error": "fail_fast", "dependencies": "overlap"}
 }
 ```
@@ -242,7 +247,7 @@ an editor; the engine accepts the key and ignores it.
 
 ```bash
 uv sync --locked
-uv run pre-commit run --all-files   # ruff format, ruff check --fix, ty, uv lock, prettier for JSON
+uv run pre-commit run --all-files   # ruff format and check, ty, uv lock, prettier for JSON
 uv run pytest                       # unit, property, and smoke tests; warnings are errors
 ```
 

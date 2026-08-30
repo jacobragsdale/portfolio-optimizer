@@ -1,5 +1,9 @@
 {
-  "run": {"name": "example_rebalance", "as_of_date": "2026-08-28T00:00:00Z", "tags": {"desk": "template"}},
+  "run": {
+    "name": "example_rebalance",
+    "as_of_date": "2026-08-28T00:00:00Z",
+    "tags": {"desk": "template"}
+  },
   "portfolios": {"name": "csv", "params": {"path": "portfolios.csv"}},
   "datasets": {
     "holdings": {
@@ -17,13 +21,19 @@
     "global_parameters": {
       "loader": {
         "name": "csv",
-        "params": {"path": "global_parameters.csv", "dtypes": {"name": "string", "value": "decimal"}}
+        "params": {
+          "path": "global_parameters.csv",
+          "dtypes": {"name": "string", "value": "decimal"}
+        }
       }
     },
     "buy_universe_parameters": {
       "loader": {
         "name": "csv",
-        "params": {"path": "buy_universe_parameters.csv", "dtypes": {"name": "string", "value": "decimal"}}
+        "params": {
+          "path": "buy_universe_parameters.csv",
+          "dtypes": {"name": "string", "value": "decimal"}
+        }
       }
     }
   },
@@ -36,7 +46,12 @@
       {"name": "transaction_cost", "params": {"weight": "1.0"}}
     ]
   },
-  "solver": {"name": "CLARABEL", "options": {"max_iter": 200}, "time_limit_s": 60.0, "verbose": false},
+  "solver": {
+    "name": "CLARABEL",
+    "options": {"max_iter": 200},
+    "time_limit_s": 60.0,
+    "verbose": false
+  },
   "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9},
   "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},
   "execution": {"on_error": "fail_fast", "dependencies": "overlap"}

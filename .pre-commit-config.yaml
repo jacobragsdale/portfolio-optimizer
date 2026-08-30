@@ -36,5 +36,6 @@ repos:
         language: node
         additional_dependencies: ["prettier@3.9.6"]
         types: [json]
-        # Prettier 3.5+ `objectWrap: collapse` puts every object that fits in printWidth (120) on one line, so a small
+        # Prettier 3.5+ `objectWrap: collapse` puts every object that fits in printWidth (95) on one line, so a small
         # step stays scannable on one and a dataset that declares a scope and a batch size breaks into named lines.
+        # 95 rather than 120 because GitHub's blob view starts scrolling horizontally past about that.
