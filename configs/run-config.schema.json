@@ -1318,7 +1318,7 @@
       "title": "SolveOrderStep"
     },
     "SolveStep": {
-      "$comment": "Shipped steps: ['cvxpy']",
+      "$comment": "Shipped steps: ['cvxpy', 'pro_rata_fill']",
       "anyOf": [
         {
           "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
@@ -1344,6 +1344,28 @@
                   "params": {
                     "additionalProperties": false,
                     "description": "`cvxpy` takes no parameters.",
+                    "maxProperties": 0,
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "const": "pro_rata_fill"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "`pro_rata_fill` takes no parameters.",
                     "maxProperties": 0,
                     "type": "object"
                   }
