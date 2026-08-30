@@ -9,7 +9,17 @@ from hypothesis import strategies as st
 from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.data import PortfolioData
-from portfolio_optimizer.rules import AttachUniverseColumnsParams, CapSingleNameParams, LiquidityParams, add_zero_alpha, attach_universe_columns, cap_single_name, restrict_low_liquidity
+from portfolio_optimizer.rules import (
+    AttachUniverseColumnsParams,
+    CapSingleNameParams,
+    LiquidityParams,
+    MandateParams,
+    add_zero_alpha,
+    attach_universe_columns,
+    cap_single_name,
+    restrict_low_liquidity,
+    restrict_to_mandate,
+)
 from tests.conftest import Factories, Frames, make_portfolio_data
 
 # --- cap_single_name ---
@@ -80,6 +90,42 @@ def test_restrict_low_liquidity_is_idempotent(threshold: int) -> None:
     once = restrict_low_liquidity(make_portfolio_data(extras=extras), params)  # hypothesis tests cannot take fixtures
     twice = restrict_low_liquidity(once, params)
     assert_frame_equal(once.universe, twice.universe)
+
+
+# --- restrict_to_mandate ---
+
+
+def _mixed_sectors(frames: Frames) -> pd.DataFrame:
+    """The three-security universe with C moved to HEALTH, so a mandate has something to exclude."""
+    return frames.three_security_universe().assign(sector=pd.Series(["TECH", "TECH", "HEALTH"], dtype="string"))
+
+
+def _with_mandate(make: Factories, frames: Frames, *sectors: str) -> PortfolioData:
+    mandate = pd.DataFrame({"portfolio_id": pd.Series(["P1"] * len(sectors), dtype="string"), "sector": pd.Series(list(sectors), dtype="string")})
+    return make.portfolio_data(universe=_mixed_sectors(frames), extras={"mandates": mandate})
+
+
+def test_restrict_to_mandate_freezes_sectors_outside_the_mandate(make: Factories, frames: Frames) -> None:
+    result = restrict_to_mandate(_with_mandate(make, frames, "TECH"), MandateParams())
+    assert result.universe["restricted"].tolist() == [False, False, True], "A and B are TECH; C's HEALTH is outside the mandate"
+    assert str(result.universe["restricted"].dtype) == "bool"
+    everything = restrict_to_mandate(_with_mandate(make, frames, "TECH", "HEALTH"), MandateParams())
+    assert everything.universe["restricted"].tolist() == [False, False, False]
+
+
+def test_restrict_to_mandate_keeps_names_already_restricted(make: Factories, frames: Frames) -> None:
+    universe = _mixed_sectors(frames)
+    universe.loc[0, "restricted"] = True
+    mandate = pd.DataFrame({"portfolio_id": pd.Series(["P1", "P1"], dtype="string"), "sector": pd.Series(["TECH", "HEALTH"], dtype="string")})
+    result = restrict_to_mandate(make.portfolio_data(universe=universe, extras={"mandates": mandate}), MandateParams())
+    assert result.universe["restricted"].tolist() == [True, False, False]
+
+
+def test_restrict_to_mandate_refuses_a_missing_dataset_and_an_empty_mandate(make: Factories, frames: Frames) -> None:
+    with pytest.raises(ValueError, match=r"no extra dataset 'mandates' to read the mandate from; the run carries \[\]"):
+        restrict_to_mandate(make.portfolio_data(), MandateParams())
+    with pytest.raises(ValueError, match=r"has no rows in 'mandates': an empty mandate would freeze every name"):
+        restrict_to_mandate(_with_mandate(make, frames), MandateParams())
 
 
 # --- attach_universe_columns ---

@@ -229,7 +229,7 @@ an editor; the engine accepts the key and ignores it.
 | `src/portfolio_optimizer/solving.py` | The solve step's contract: `SolveRequest` in, `SolveResult` out. |
 | `src/portfolio_optimizer/ratelimit.py` | Rate-limit pools loaders draw from, and `fan_out` for sources that answer one portfolio per call. |
 | `configs/example_run.json`, `configs/run-config.schema.json`, `examples/data/` | The shipped example — a hundred accounts over three securities, one CSV table per source — and the generated JSON Schema. |
-| `benchmarks/profile_portfolio.py` | Times one portfolio through the pipeline stage by stage at a chosen book size and side; the numbers in `IDEAS.md` come from it. |
+| `benchmarks/` | `profile_portfolio.py` times one portfolio through the pipeline stage by stage at a chosen book size and side; `run_book.py` runs a synthetic book of *N* portfolios on a local cluster and reports the derived schedule and the timing spans. The numbers in `IDEAS.md` come from them. |
 | `docs/` | Tutorial, how-to guides, reference, and explanation. |
 | `IDEAS.md` | Threads that are not yet decisions, and known defects waiting to be fixed. |
 

@@ -3,8 +3,7 @@
 Threads for expanding the template that are not yet decisions. Each one states the problem as the
 engine has it today, the options, and a leaning; none is a commitment. When a thread becomes a
 decision it moves into the code and [the architecture explanation](docs/explanation-architecture.md)
-and leaves this file. The last section is the exception: known defects and trailing work, decided
-already and waiting only to be done. Numbers below are for a book of *N* = 100,000 unique securities,
+and leaves this file. Numbers below are for a book of *N* = 100,000 unique securities,
 which a business unit can exceed — measured where the text says so, estimated otherwise.
 
 ## The derived solve graph is the headline feature, and nothing here says so
@@ -50,12 +49,12 @@ Three pieces of work, in order:
    coupled side), and the check (`all` gives the same answer). It wants the one diagram this repository
    does not have: a book of accounts, the edges overlap actually produces, and the critical path
    through it against the line beside it.
-2. **Measure it.** Nothing measures the schedule at scale — `benchmarks/profile_portfolio.py` times
-   *one* portfolio, and the schedule the shipped example derives is the degenerate one (below). The
-   number that carries the argument is a book-level benchmark: *N* accounts over a shared universe with
-   a realistic overlap structure, reporting edges, components, critical path, and wall clock against
-   `dependencies: all` on the same cluster. Until that exists the feature is a design claim, not a
-   result.
+2. **Measure it.** The harness exists now — `benchmarks/run_book.py` runs a synthetic book with a
+   parameterized mandate structure on a local cluster and reports edges, components, critical path,
+   and the timing spans; `--dependencies all` runs the same book as the line. What is still missing is
+   the *published* number: a book and overlap structure defensible as realistic, run at scale, with
+   the result written down here and in the README. Until then the feature is a design claim with a
+   measuring stick, not a result.
 3. **Say where it degenerates.** Overlap is on *any* shared tradable security, so a book whose accounts
    all buy from one universe is a complete DAG and the critical path is the line again. The shipped
    example is exactly that case and says so in its own manifest — 100 accounts over three securities:
@@ -670,55 +669,12 @@ post-processing step. Aggregation may report that the opportunity existed; it ma
 because it runs after every solve, on one process, over a small frame, it never touches the dependency
 graph — nothing an aggregator does can feed back into which portfolio waits for which.
 
-## Timing every stage, so a run can be drawn
-
-What a finished run says about its own time today: each dataset's `load_time_s` and `batches`, the
-cluster's `provision_started_at`, `first_worker_ready_at`, and `closed_at`, and per portfolio the
-`solve_time_s` the solver reports. Everything else has to be reconstructed from log lines, which carry
-a timestamp and a stage but no duration and no host. So the question a slow run actually raises — where
-did the wall clock go, and what was waiting on what — has no answer in the artifact: the sum of every
-`solve_time_s` is well under the run's elapsed time, and nothing accounts for the difference, which is
-some mix of queueing behind predecessors, builds, a worker that had not joined yet, and the sink.
-
-What it takes is small. A start and end instant on every task the engine already submits, the host it
-ran on, and the stage names the code already uses (`load`, `assembly`, `build`, `solve`, `verify`,
-`orders`, `sink`), recorded per portfolio the way `solve_time_s` is now. The build and solve tasks
-already measure their own phases when `benchmarks/profile_portfolio.py` drives them — validate, rules,
-spec build, content hash, canonicalization, solve, unpack, verify, orders — so recording the same
-breakdown from a real run would put the table at the top of this file within reach of any book, rather
-than of one synthetic one, and would say whether a per-portfolio dataset's batches really do overlap
-the global loaders on a book where it matters.
-
-Two constraints shape where it lands:
-
-1. **Timing must not touch identity.** Two runs of one config are byte-identical where it matters and
-   `diff-manifests` says so; a duration differs every run by definition. The manifest already carries
-   fields nobody diffs — the cluster's timestamps, the settings block — because `diff_manifests`
-   compares an explicit list of identity fields rather than the whole document. Timing joins them under
-   that rule: in the manifest, never in the config hash, never in the diff.
-2. **It is timing, not profiling.** Wall-clock spans around work the engine already delimits, a few
-   dozen per portfolio, a `perf_counter` call each. Not a sampling profiler, not per-function
-   attribution, nothing that changes how the work runs, nothing to switch on.
-
-The leaning on the visual: write the spans beside the manifest in the Chrome trace format
-(`{"name", "ph": "X", "ts", "dur", "pid", "tid"}`), because it is a list of flat objects to produce and
-it opens in `chrome://tracing` or Perfetto with a row per worker and every portfolio's build and solve
-where it happened — a picture of the run for the price of a JSON file, with no viewer to write. A
-`portfolio-optimizer timeline <manifest>` subcommand then prints the same spans as an ASCII waterfall
-with per-stage totals, which is what a terminal and a CI log can use. Both read the recorded spans;
-neither is a second source of truth.
-
-What it makes answerable, none of which the manifest can support today: whether the workers were busy
-or idle (so `PORTFOLIO_OPTIMIZER_MAX_WORKERS` can be set on evidence), whether the chain's critical
-path — which the `schedule` block already counts in edges and depth — is where the wall clock actually
-went, and which stage a regression landed in when a run that took nine minutes last week takes twenty
-today.
-
 ## A live dashboard: watching a run rather than reading about it afterwards
 
 Everything a run says about itself today it says when it is over. The manifest is written in the last
-stage, `diff-manifests` compares two finished runs, and the timeline above would be read from a file
-that only exists once the run has ended. While a run is going, the only channel is the log: one line
+stage, `diff-manifests` compares two finished runs, and the timing spans (the `timing` block,
+`trace.json`, and the `timeline` subcommand — see the architecture explanation) are read from a
+manifest that only exists once the run has ended. While a run is going, the only channel is the log: one line
 per stage transition, carrying a `run_id` and a `stage` but no notion of how much is left. On the
 example book that is fine. On a book of five hundred accounts where the chain's critical path is deep
 and one solve takes minutes, "is this progressing or is it wedged, and on what" is unanswerable
@@ -741,17 +697,17 @@ Three ways to serve it, in rising order of what they cost:
 2. **Structured events on a bus, rendered by a terminal UI.** The log already emits at exactly the
    right moments with `run_id` and `stage`; making those emissions structured events (a portfolio id, a
    stage, a transition, an instant) and giving the runner a pluggable sink is a small change to code
-   that exists. A `portfolio-optimizer watch <run_id>` then draws the grid live. The same event stream
-   is what the timeline section above wants to persist, so the two should be one mechanism with two
-   consumers — live and recorded — rather than two.
+   that exists. A `portfolio-optimizer watch <run_id>` then draws the grid live. The recorded half
+   already exists as the timing spans, so the live stream should be the same events with a second
+   consumer rather than a second mechanism.
 3. **A served web page.** The grid, the DAG with the critical path highlighted, per-stage durations
    filling in, failures in place. Genuinely the best artifact, and the one that needs a server, a
    transport, and a front end to maintain — none of which the template has today.
 
-The leaning is (2) built on the same spans (1) already implies: define the event, give the runner a
+The leaning is (2) built on the spans the engine already records: define the event, give the runner a
 sink for it, and let the recorded stream feed the timeline while a live stream feeds a terminal grid.
 That keeps one source of truth, keeps the web page as a later consumer of an interface that already
-exists rather than a rewrite, and holds to the rule the timing thread sets — **observability is never
+exists rather than a rewrite, and holds to the timing spans' rule — **observability is never
 identity**: no event, duration, or progress reading may reach the config hash or `diff-manifests`.
 
 Two things to settle before any of it. **What a stage means for a portfolio that is waiting.** A
@@ -785,41 +741,3 @@ in flight, which is exactly the case that matters most.
 - **Solver fallback stays out.** A silent second solver changes what the manifest says was solved. A
   visible retry — same solver, relaxed tolerances, recorded in the manifest as a second attempt — is the
   acceptable variant if one is ever needed.
-
-## Bugs and cleanup
-
-Not threads: known, decided, and only waiting for someone to do them.
-
-### The canonical split can move the objective, and the verifier then refuses the portfolio
-
-`_classify` in `engine/solve.py` replaces the solver's buy/sell pair with the minimal split
-`buy = max(w − w0, 0)`, `sell = max(w0 − w, 0)`, on the grounds that the minimal split cannot make any
-shipped term worse. That is false for `tax_cost` on a loss: `tax_per_dollar` is negative there, so
-selling *earns*, and a sell-and-rebuy of *x* dollars in such a name changes the objective by
-`(τ + 2c)·x` — profitable whenever the tax saving beats two transaction costs, which at 20–40% tax
-rates and single-digit-bps costs is every loss position in a book. The solver's optimum is then full of
-round trips (the guard in `tax_cost` only checks that *some* transaction cost is positive, not that a
-round trip is unprofitable), the canonical split strips them, the objective the twins recompute is
-higher than the one the solver reported, and `verify` fails the portfolio with an objective gap:
-`VerificationError`, "objective gap 2.8e-03", nothing about why. The orders would have been right
-regardless — they derive from `w` alone (`engine/orders.py`), and a round trip does not change `w`.
-
-Found on 2026-08-29 by the profile's synthetic book (`benchmarks/profile_portfolio.py`): 500 held
-names, half at a loss, 5 bps `tcost_bps`. The example data cannot show it, and not by accident — every
-lot in `examples/data/holdings.csv` is at a gain or flat, because an account holding a loss makes the
-shipped run fail this way.
-Only the two-sided profile can have this problem — a one-sided run has one vector and no round trip to
-strip — so it belongs to a deferred path, and the first fix below is the one still worth doing.
-
-Two fixes, both small:
-
-- **The refusal has to name the round trip.** In `_classify`, measure `min(raw.buy, raw.sell)` before
-  canonicalizing; where it exceeds the verifier's tolerance, fail the solve with an error that lists the
-  names the solver round-tripped and says a term rewards a wash trade — the same refusal, with its cause
-  in the message. Keep the canonical split for the other case, where it is a harmless tidy-up of
-  interior-point slack.
-- **The shipped tax term's guard should be the real condition.** Refuse per security when
-  `−tax_per_dollar > 2 · (tcost_per_dollar + cost_bps / 10⁴)` rather than when no cost is positive at
-  all. The honest modelling fix is a wash-sale-aware term or constraint, which belongs to the selling
-  thread above; until then the tighter guard turns a cryptic verification failure into an error that
-  says what to change.

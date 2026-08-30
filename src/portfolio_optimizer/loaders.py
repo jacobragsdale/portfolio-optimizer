@@ -173,6 +173,22 @@ async def load_constraints(request: LoadRequest, params: ServiceParams) -> pd.Da
     return _rows_for(_table(request, "constraints.csv", CONSTRAINTS), request.portfolio_ids)
 
 
+MANDATES = FrameSchema(name="mandates", columns=(ColumnSpec("portfolio_id", "string"), ColumnSpec("sector", "string")), key=("portfolio_id", "sector"))
+"""The shape of a mandate: which sectors each account may trade, one row per allowed sector — an extra dataset typed by the loader that fetches it."""
+
+
+async def load_mandates(request: LoadRequest, params: ServiceParams) -> pd.DataFrame:
+    """Which sectors each account may trade, from the same compliance service the constraints come from.
+
+    An extra dataset the engine does not interpret: it is carried to each portfolio's bundle, where
+    :func:`~portfolio_optimizer.rules.restrict_to_mandate` freezes every universe name outside the
+    account's sectors — the restriction-list shape that partitions a book into independent components
+    of the dependency graph. Declare ``depends_on: ["portfolios"]`` so the call receives the book's ids.
+    """
+    await _call(request, params.latency(COMPLIANCE))
+    return _rows_for(_table(request, "mandates.csv", MANDATES), request.portfolio_ids)
+
+
 async def load_parameters(request: LoadRequest, params: ParametersParams) -> pd.DataFrame:
     """One named set of runtime settings as ``name``/``value`` rows.
 

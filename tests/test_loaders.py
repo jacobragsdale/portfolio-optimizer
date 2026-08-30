@@ -21,6 +21,7 @@ from portfolio_optimizer.loaders import (
     load_constraints,
     load_details,
     load_holdings,
+    load_mandates,
     load_parameters,
     load_portfolios,
     load_universe,
@@ -79,6 +80,13 @@ def test_compliance_returns_the_desks_own_columns_untouched() -> None:
     assert set(constraints.columns) == {"portfolio_id", "name", "label", "params"}, "the schema declares only portfolio_id; the rest arrive as the desk wrote them"
     band = constraints.loc[constraints["label"] == "tech", "params"].iloc[0]
     assert json.loads(str(band)) == {"sector": "TECH", "lower": "0.5", "upper": "1"}
+
+
+def test_compliance_answers_the_mandate_for_the_accounts_asked_for(tmp_path: Path) -> None:
+    (tmp_path / "mandates.csv").write_text("portfolio_id,sector\nP1,TECH\nP1,HEALTH\nP2,TECH\n")
+    mandates = asyncio.run(load_mandates(request("mandates", "P1", root=tmp_path), INSTANT))
+    assert mandates["portfolio_id"].unique().tolist() == ["P1"]
+    assert mandates["sector"].tolist() == ["TECH", "HEALTH"]
 
 
 def test_the_parameter_store_fetches_the_set_the_dataset_names() -> None:

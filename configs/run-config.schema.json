@@ -453,7 +453,7 @@
       "type": "string"
     },
     "LoaderStep": {
-      "$comment": "Shipped steps: ['load_constraints', 'load_details', 'load_holdings', 'load_parameters', 'load_portfolios', 'load_universe']",
+      "$comment": "Shipped steps: ['load_constraints', 'load_details', 'load_holdings', 'load_mandates', 'load_parameters', 'load_portfolios', 'load_universe']",
       "anyOf": [
         {
           "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
@@ -570,6 +570,57 @@
                 "properties": {
                   "name": {
                     "const": "load_holdings"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "What every shipped loader accepts: how long its source is pretended to take.\n\nEach loader draws a wait from its own band — :data:`SECURITY_MASTER` is tens of seconds, a\nparameter store is under one — seeded on the run id, the dataset, and the ids in the call, so two\nruns of one config wait the same amounts. Setting both fields overrides that band; setting both to\nzero removes the wait, which is what a test does. A real loader has none of this: delete the field\nand the wait, and keep the rest.",
+                    "properties": {
+                      "max_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Longest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Max Latency S"
+                      },
+                      "min_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Shortest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Min Latency S"
+                      }
+                    },
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "const": "load_mandates"
                   }
                 },
                 "required": [
@@ -920,7 +971,7 @@
       "type": "object"
     },
     "RuleStep": {
-      "$comment": "Shipped steps: ['add_zero_alpha', 'attach_universe_columns', 'cap_single_name', 'parameter', 'restrict_low_liquidity']",
+      "$comment": "Shipped steps: ['add_zero_alpha', 'attach_universe_columns', 'cap_single_name', 'parameter', 'restrict_low_liquidity', 'restrict_to_mandate']",
       "anyOf": [
         {
           "$comment": "These shipped steps have required parameters and must use the object form: ['cap_single_name']",
@@ -1082,6 +1133,35 @@
                         "default": "min_adv_shares",
                         "minLength": 1,
                         "title": "Key",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "const": "restrict_to_mandate"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "Where :func:`restrict_to_mandate` reads the account's mandate: an extra dataset of ``portfolio_id``/``sector`` rows.",
+                    "properties": {
+                      "dataset": {
+                        "default": "mandates",
+                        "minLength": 1,
+                        "title": "Dataset",
                         "type": "string"
                       }
                     },

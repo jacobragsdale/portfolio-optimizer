@@ -72,6 +72,40 @@ def restrict_low_liquidity(data: PortfolioData, params: LiquidityParams) -> Port
     return data.with_changes(universe=universe)
 
 
+class MandateParams(Params):
+    """Where :func:`restrict_to_mandate` reads the account's mandate: an extra dataset of ``portfolio_id``/``sector`` rows."""
+
+    dataset: str = Field(default="mandates", min_length=1)
+
+
+def restrict_to_mandate(data: PortfolioData, params: MandateParams) -> PortfolioData:
+    """Freeze every universe name whose sector is outside the account's mandate; held names keep their current weight.
+
+    The mandate is loaded data — a compliance service's answer for this account, one row per allowed
+    sector (:func:`~portfolio_optimizer.loaders.load_mandates` is the shipped source) — so which names
+    an account may trade changes daily without changing the run's identity. Shrinking the tradable set
+    this way is also what gives the derived dependency graph real components: two accounts whose
+    mandates share no sector cannot affect each other, however large the shared universe is, so their
+    solves never wait on one another. An account with no mandate rows is refused rather than silently
+    frozen out of every name, which is more likely missing data than intent.
+    """
+    try:
+        frame = data.extras[params.dataset]
+    except KeyError:
+        msg = f"no extra dataset {params.dataset!r} to read the mandate from; the run carries {sorted(data.extras)}"
+        raise ValueError(msg) from None
+    if "sector" not in frame.columns:
+        msg = f"mandate dataset {params.dataset!r} needs a 'sector' column; it has {sorted(str(column) for column in frame.columns)}"
+        raise ValueError(msg)
+    allowed = {str(sector) for sector in frame["sector"]}
+    if not allowed:
+        msg = f"portfolio {data.portfolio_id!r} has no rows in {params.dataset!r}: an empty mandate would freeze every name"
+        raise ValueError(msg)
+    outside = ~data.universe["sector"].isin(sorted(allowed))
+    universe = data.universe.assign(restricted=(data.universe["restricted"] | outside).astype("bool"))
+    return data.with_changes(universe=universe)
+
+
 def parameter(frame: pd.DataFrame, key: str) -> Decimal:
     """Read one value out of a ``name``/``value`` parameter frame, the narrowest shape a runtime setting can take.
 
