@@ -13,15 +13,17 @@ from typing import Literal
 
 from pydantic import AwareDatetime, Field
 
-from portfolio_optimizer.domain.results import Artifact, AssemblyAuditRecord, PortfolioFailure, PortfolioResult, RuleAuditRecord, StepRef
+from portfolio_optimizer.domain.results import RUN_SCOPED, Artifact, AssemblyAuditRecord, PortfolioFailure, PortfolioResult, RuleAuditRecord, StepRef
 from portfolio_optimizer.domain.types import StrictModel
 from portfolio_optimizer.engine.environment import WorkerEnvironment, distribution_version
-from portfolio_optimizer.engine.hashing import frame_sha256, json_sha256
+from portfolio_optimizer.engine.files import write_atomically
+from portfolio_optimizer.engine.hashing import file_sha256, frame_sha256, json_sha256
 from portfolio_optimizer.engine.load import DatasetAudit
 from portfolio_optimizer.engine.schedule import ScheduleSummary
 from portfolio_optimizer.engine.timing import Span
 
 MANIFEST_FILENAME = "manifest.json"
+FAILURES_SUBDIR = "failures"
 
 
 class WorkerRecord(StrictModel):
@@ -164,7 +166,7 @@ class RunManifest(StrictModel):
     portfolios: tuple[PortfolioRecord, ...]
     artifacts: tuple[Artifact, ...]
     timing: tuple[Span, ...] = ()
-    """Wall-clock spans over the run's stages, per portfolio and run-wide; ``trace.json`` and the ``timeline`` command render them.
+    """Wall-clock spans over the run's stages, per portfolio and run-wide; ``trace.json`` beside the manifest renders them.
 
     Observability, never identity: ``diff_manifests`` does not compare them, and two runs of one
     config differ here by definition.
@@ -245,15 +247,42 @@ def finalize(manifest: RunManifest) -> RunManifest:
 
 def write_manifest(manifest: RunManifest, directory: Path) -> Path:
     """Write the manifest atomically and return its path."""
-    directory.mkdir(parents=True, exist_ok=True)
-    target = directory / MANIFEST_FILENAME
-    temp = target.with_name(f".{MANIFEST_FILENAME}.tmp")
-    try:
-        temp.write_text(manifest.model_dump_json(indent=2) + "\n")
-        temp.replace(target)
-    finally:
-        temp.unlink(missing_ok=True)
-    return target
+    return write_atomically(directory / MANIFEST_FILENAME, manifest.model_dump_json(indent=2) + "\n")
+
+
+def failure_report_path(directory: Path, failure: PortfolioFailure) -> Path:
+    """Where a failure's traceback is written: named for its portfolio, or for its stage when the run itself failed.
+
+    The naming follows ``problem_specs/<portfolio_id>.npz`` and its siblings, so the file for a
+    portfolio is found the same way as everything else the run persisted about it.
+    """
+    name = failure.stage if failure.portfolio_id == RUN_SCOPED else failure.portfolio_id
+    return directory / FAILURES_SUBDIR / f"{name}.txt"
+
+
+def failure_report(failure: PortfolioFailure, *, run_id: str) -> str:
+    """One failure as text: the identifiers that locate it in the manifest, then the traceback."""
+    header = [f"run_id: {run_id}", f"portfolio_id: {failure.portfolio_id}", f"stage: {failure.stage}", f"error: {failure.error_type}: {failure.message}"]
+    return "\n".join([*header, "", failure.traceback or ""])
+
+
+def write_failure_reports(failures: Sequence[PortfolioFailure], directory: Path, *, run_id: str) -> tuple[Artifact, ...]:
+    """Write each failure's traceback beside the manifest, atomically, and return what was written.
+
+    A failure with no traceback writes nothing: there was no exception, so there is no *where* to
+    record. Two failures that map to one path — a portfolio and a stage of the same name — write once,
+    to the first, since the run has only one file to give them.
+    """
+    written: list[Artifact] = []
+    seen: set[Path] = set()
+    for failure in failures:
+        target = failure_report_path(directory, failure)
+        if failure.traceback is None or target in seen:
+            continue
+        seen.add(target)
+        write_atomically(target, failure_report(failure, run_id=run_id))
+        written.append(Artifact(path=str(target), sha256=file_sha256(target), size_bytes=target.stat().st_size))
+    return tuple(written)
 
 
 def load_manifest(text: str) -> RunManifest:

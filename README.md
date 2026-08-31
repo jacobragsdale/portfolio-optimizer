@@ -171,8 +171,10 @@ and `solve_order` (a step that computes each portfolio's priority from the data 
 Numbers — positions, prices, caps, bands, tax rates, a liquidity threshold — are never in the config;
 they live in the data, including the run's own parameters.
 Behavior is never in the config either; it lives in the functions the config names.
-[Reading a run config](docs/explanation-run-config.md) explains each block in depth, and
-[the reference](docs/reference-run-config.md) lists every key with its type and default.
+[Reading a run config](docs/explanation-run-config.md) explains each block in depth,
+[the reference](docs/reference-run-config.md) covers what the schema cannot say, and
+`configs/run-config.schema.json` — generated from the models — lists every key with its type,
+default, and description.
 
 ## The solve schedule is a derived graph
 
@@ -211,7 +213,7 @@ column declares whether it reads the chain and — through its `scope` — which
 through, so a portfolio whose constraints read no chain waits for nobody, and only opaque rows keep
 the widest coupling. How the graph is derived and why it is exact
 is in [the architecture explanation](docs/explanation-architecture.md#a-run-couples-through-its-one-side-so-the-schedule-is-a-graph);
-`portfolio-optimizer timeline` draws where any run's wall clock went.
+the `trace.json` beside every manifest draws where the run's wall clock went.
 
 ## Quick start
 
@@ -269,7 +271,7 @@ an editor; the engine accepts the key and ignores it.
 | `src/portfolio_optimizer/solving.py` | The solve step's contract: `SolveRequest` in, `SolveResult` out. |
 | `src/portfolio_optimizer/ratelimit.py` | Rate-limit pools loaders draw from, and `fan_out` for sources that answer one portfolio per call. |
 | `configs/example_run.json`, `configs/run-config.schema.json`, `examples/data/` | The shipped example — a hundred accounts over three securities, one CSV table per source — and the generated JSON Schema. |
-| `benchmarks/` | `profile_portfolio.py` times one portfolio through the pipeline stage by stage at a chosen book size and side; `run_book.py` runs a synthetic book of *N* portfolios on a local cluster and reports the derived schedule and the timing spans. The numbers in `IDEAS.md` come from them. |
+| `benchmarks/` | `profile_portfolio.py` times one portfolio through the pipeline stage by stage at a chosen book size and side; `run_book.py` and `run_state_book.py` run a synthetic book of *N* portfolios on a local cluster and report the derived schedule and the timing spans — the first over interchangeable mandate groups, the second over a municipal desk's in-state and national sleeves, sharing the run harness in `harness.py`. The numbers in `IDEAS.md` come from them. |
 | `docs/` | Tutorial, how-to guides, reference, and explanation. |
 | `IDEAS.md` | Threads that are not yet decisions, and known defects waiting to be fixed. |
 

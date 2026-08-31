@@ -38,6 +38,7 @@ from portfolio_optimizer.domain.constraints import (
     WeightLimit,
     bounds_above,
     effective_bounds,
+    is_missing,
     opaque_frame,
     parse_constraints,
     starting_values,
@@ -224,7 +225,7 @@ def replace_constraints(result: SolveResult, refs: tuple[StepRef, ...]) -> Solve
 
 def _row(position: int, record: dict[str, object]) -> ConstraintRow:
     try:
-        return ConstraintRow.model_validate({key: value for key, value in record.items() if not _is_null(value)})
+        return ConstraintRow.model_validate({key: value for key, value in record.items() if not is_missing(value)})
     except ValueError as error:
         msg = f"constraints[{position}]: {error}"
         raise SolveSetupError(msg) from error
@@ -236,11 +237,6 @@ def _resolve(position: int, row: ConstraintRow) -> ResolvedStep:
     except ValueError as error:
         msg = f"constraints[{position}]: {error}"
         raise SolveSetupError(msg) from error
-
-
-def _is_null(value: object) -> bool:
-    """True for the several ways a missing optional column arrives from a frame: ``None``, ``pd.NA``, or a float ``NaN``."""
-    return value is None or value is pd.NA or (isinstance(value, float) and bool(np.isnan(value)))
 
 
 def _term(step: ResolvedStep, x: object, spec: ProblemSpec, chain: ChainState) -> ObjectiveTerm:

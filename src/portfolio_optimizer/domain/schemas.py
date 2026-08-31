@@ -130,8 +130,5 @@ DATASET_SCHEMAS: dict[str, FrameSchema] = {"holdings": HOLDINGS, "universe": UNI
 REQUIRED_DATASETS: tuple[str, ...] = ("holdings", "universe", "details")
 """Datasets a run cannot do without, loaded directly or produced by an assembly step. ``constraints`` is engine-known but optional."""
 
-REQUIRED_FRAMES: tuple[str, ...] = REQUIRED_DATASETS
-"""Every dataset is a frame, so these are the same names; both spellings are kept because each reads better in its own place."""
-
 RESERVED_DATASET_NAMES: frozenset[str] = frozenset({*DATASET_SCHEMAS, "portfolios"})
 """Names an extra dataset may not use."""

@@ -107,7 +107,8 @@ Every loaded dataset — the portfolio list included — may carry a `rate_limit
 a pool shared with other inputs on the same backend; the loader receives it as `request.rate_limiter`
 and wraps each call to its source in it, and `fan_out` packages the one-call-per-portfolio pattern.
 Why the bound is per input is in [the architecture explanation](explanation-architecture.md#loading-is-the-slow-part-so-it-is-concurrent-and-metered);
-the keys are in [the reference](reference-run-config.md#rate-limits).
+how a bound behaves at load time is in [the reference](reference-run-config.md#rate_limit-and-rate_limits),
+and its keys are in the generated JSON Schema.
 
 The shipped loaders (`loaders.py`) are the only place I/O happens. Each stands in for a service — a
 custodian, a security master, an account master — waiting as long as that source would and then
@@ -213,7 +214,7 @@ step, `solvers.cvxpy`, creates the side profile's decision variables — `w`, `b
 `both`; `w` alone under `buy` or `sell`, with the trade an expression of it — all fractions of NAV,
 adds the profile's trade identity, invokes each configured term and constraint function to obtain
 expressions, and hands them to the adapter. `cvx/adapter.py` is the **only module that imports
-cvxpy**; terms are written against a dozen typed atoms (`dot`, `matvec`, `sum_squares`, `at_most`,
+cvxpy**; terms are written against a dozen typed atoms (`dot`, `matvec`, `masked`, `at_most`,
 ...) so that the verifier can mirror each one in numpy. The adapter checks that the problem is
 DCP-compliant, maps `time_limit_s` to the solver's own option, solves once, and returns the
 `SolveResult` as is — status, weights, objective, iterations, solve time, solver and version. A step
@@ -359,7 +360,11 @@ the settings.
 ## 10. Failure semantics and exit codes
 
 Every portfolio ends as a `PortfolioResult` or a `PortfolioFailure` naming its stage — `slice`, `build`,
-`solve`, `worker`, or `skipped` — with the exception type and message. A skipped portfolio's message
+`solve`, `worker`, or `skipped` — with the exception type, its message, and its traceback. The traceback
+is what makes a failure debuggable once the run is over: `slice`, `build`, and `solve` all run in a
+worker process whose own stderr goes to a pod that outlives nothing, so the formatted frames travel home
+on the failure and the run writes them to `failures/<portfolio_id>.txt` beside the manifest, hashed like
+every other artifact. A skipped portfolio's message
 names what it was waiting for: the predecessor that failed, or, under `fail_fast`, any higher-priority
 failure. A build that fails has an unknown tradable set and is treated as overlapping everything after
 it, so under `continue` it skips every lower-priority portfolio whenever a step reads the chain. The

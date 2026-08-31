@@ -32,15 +32,27 @@ import pandas as pd
 from portfolio_optimizer.config.resolve import ResolvedConfig
 from portfolio_optimizer.cvx.adapter import solver_version
 from portfolio_optimizer.domain.data import IoContext
-from portfolio_optimizer.domain.results import Artifact, AssemblyAuditRecord, Contribution, PortfolioFailure, PortfolioResult
+from portfolio_optimizer.domain.results import RUN_SCOPED, Artifact, AssemblyAuditRecord, Contribution, PortfolioFailure, PortfolioResult
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.backends import Backend, BackendFactory, ClusterError, Pending, SharedRunData, TaskOutput, WorkerEnvironmentError, WorkersReady
 from portfolio_optimizer.engine.dask_backend import DaskBackend
 from portfolio_optimizer.engine.environment import GitInfo, WorkerEnvironment, environment_for, package_versions
 from portfolio_optimizer.engine.hashing import file_sha256
 from portfolio_optimizer.engine.load import DatasetAudit, assemble, load_datasets
-from portfolio_optimizer.engine.manifest import ClusterRecord, ConfigInfo, RunManifest, WorkerRecord, created_at, failed_record, finalize, solved_record, versions, write_manifest
-from portfolio_optimizer.engine.schedule import Coupling, OverlapIndex, Schedule, dependency_graph, order_portfolios
+from portfolio_optimizer.engine.manifest import (
+    ClusterRecord,
+    ConfigInfo,
+    RunManifest,
+    WorkerRecord,
+    created_at,
+    failed_record,
+    finalize,
+    solved_record,
+    versions,
+    write_failure_reports,
+    write_manifest,
+)
+from portfolio_optimizer.engine.schedule import Coupling, OverlapIndex, Schedule, order_portfolios
 from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, contribution, probe_task, skipped, solve_task, step_refs, summarize
 from portfolio_optimizer.engine.timing import Span, SpanRecorder, sort_spans, write_trace
 from portfolio_optimizer.settings import ExecutionSettings
@@ -123,7 +135,7 @@ class _Session:
     def start(self) -> None:
         """Ask for the backend now; the cluster then warms up while data loads."""
         self.backend = self.backend_factory(self.context.execution, run_id=self.context.io.run_id)
-        self.provision_started_at = self.context.io.clock.now()
+        self.provision_started_at = self.context.io.clock()
         self.provision_started_s = time.time()
         self.backend.start()
         log.info("backend %s starting", self.backend.kind, extra={"run_id": self.context.io.run_id, "stage": "cluster"})
@@ -136,7 +148,7 @@ class _Session:
         execution = self.context.execution
         self.backend.scale(execution.max_workers)
         self.ready = self.backend.ready(1, execution.cluster_timeout_s)
-        self.first_worker_ready_at = self.context.io.clock.now()
+        self.first_worker_ready_at = self.context.io.clock()
         self.ready_s = time.time()
         log.info("backend %s ready with %d worker(s)", self.backend.kind, self.ready.workers, extra={"run_id": self.context.io.run_id, "stage": "cluster"})
         return self.backend
@@ -145,7 +157,7 @@ class _Session:
         """Release the backend; always called."""
         if self.backend is not None:
             self.backend.close()
-            self.closed_at = self.context.io.clock.now()
+            self.closed_at = self.context.io.clock()
 
     def saw(self, environment: WorkerEnvironment, host: str, *, solved: bool) -> None:
         """Record that ``host``, running ``environment``, did work; only solves count toward its portfolio total."""
@@ -210,7 +222,7 @@ def run(resolved: ResolvedConfig, context: RunContext, *, backend_factory: Backe
         outcomes, order = executed.outcomes, executed.schedule.order
     except ClusterError as error:
         log.error("cluster unavailable", extra={"run_id": io.run_id, "stage": "cluster", "error": type(error).__name__})
-        cluster_error = PortfolioFailure("*", "cluster", type(error).__name__, str(error))
+        cluster_error = PortfolioFailure.from_exception(RUN_SCOPED, "cluster", error)
         reason = "a worker failed its environment check" if isinstance(error, WorkerEnvironmentError) else "the cluster did not come up"
         outcomes = {portfolio_id: PortfolioFailure(portfolio_id, "skipped", "ClusterUnavailable", f"not processed because {reason}") for portfolio_id in order}
     finally:
@@ -223,8 +235,10 @@ def run(resolved: ResolvedConfig, context: RunContext, *, backend_factory: Backe
         recorder.add("cluster", started_at_s=session.provision_started_s, duration_s=session.ready_s - session.provision_started_s)
     spans = sort_spans((*recorder.spans, *session.spans))
     trace_path = write_trace(spans, io.output_dir / io.run_id)
-    artifacts = (*persisted, *published, Artifact(path=str(trace_path), sha256=file_sha256(trace_path), size_bytes=trace_path.stat().st_size))
     infrastructure_error = publish_error if publish_error is not None else cluster_error
+    recorded = (*ordered, infrastructure_error) if infrastructure_error is not None else ordered
+    reports = write_failure_reports([outcome for outcome in recorded if isinstance(outcome, PortfolioFailure)], io.output_dir / io.run_id, run_id=io.run_id)
+    artifacts = (*persisted, *published, *reports, Artifact(path=str(trace_path), sha256=file_sha256(trace_path), size_bytes=trace_path.stat().st_size))
     exit_code = _exit_code(ordered, infrastructure_error)
     manifest = _manifest(resolved, session, dataset_audits, assembly_audits, ordered, executed, artifacts, exit_code, infrastructure_error, spans)
     manifest_path = write_manifest(manifest, io.output_dir / io.run_id)
@@ -420,7 +434,7 @@ def _plan_uncoupled(dispatch: _Dispatch, shared: SharedRunData, builds: _Builds)
     dispatch.backend.cancel([solves.pop(portfolio_id) for portfolio_id in outcomes if portfolio_id in solves])
     keys = {portfolio_id: builds.key(portfolio_id) for portfolio_id in ids}
     order = order_portfolios(keys)
-    return _Planned(dependency_graph(order, {}, {}, frozenset(), "none"), keys, solves, outcomes)
+    return _Planned(Schedule(order, dict.fromkeys(order, ()), "none"), keys, solves, outcomes)
 
 
 def _stream_solves(dispatch: _Dispatch, builds: _Builds, order: tuple[PortfolioId, ...], coupling: Coupling, *, fail_fast: bool, securities: Iterable[str]) -> _Planned:
@@ -537,14 +551,14 @@ def _classify(
         blamed = next((earlier for earlier in schedule.predecessors[portfolio_id] if isinstance(outcomes.get(earlier), PortfolioFailure)), None)
         if blamed is not None:
             return _skipped_after(portfolio_id, blamed, outcomes[blamed])
-        return PortfolioFailure(portfolio_id, "worker", type(raw).__name__, _stable_message(raw))
+        return PortfolioFailure.from_exception(portfolio_id, "worker", raw, message=_stable_message(raw))
     return _accept(raw, portfolio_id, session, expected, solved=True)
 
 
 def _accept[T](raw: TaskOutput[T] | Exception, portfolio_id: PortfolioId, session: _Session, expected: WorkerEnvironment, *, solved: bool) -> T | PortfolioFailure:
     """Record who did the work and refuse a result from an environment that differs from this run's."""
     if isinstance(raw, Exception):
-        return PortfolioFailure(portfolio_id, "worker", type(raw).__name__, _stable_message(raw))
+        return PortfolioFailure.from_exception(portfolio_id, "worker", raw, message=_stable_message(raw))
     session.saw(raw.environment, raw.host, solved=solved)
     session.absorb(raw.spans)
     differences = expected.differences(raw.environment)
@@ -589,7 +603,7 @@ def _publish(outcomes: Sequence[Outcome], resolved: ResolvedConfig, io: IoContex
             artifacts.append(item)
     except Exception as error:  # noqa: BLE001  # the manifest must still be written; the exit code carries the failure
         log.error("publishing failed", extra={"run_id": io.run_id, "stage": "sink", "error": type(error).__name__})
-        return tuple(artifacts), PortfolioFailure("*", "sink", type(error).__name__, str(error))
+        return tuple(artifacts), PortfolioFailure.from_exception(RUN_SCOPED, "sink", error)
     return tuple(artifacts), None
 
 
@@ -643,7 +657,7 @@ def _manifest(
     manifest = RunManifest(
         run_id=context.io.run_id,
         run_name=config.run.name,
-        created_at_utc=created_at(context.io.clock.now()),
+        created_at_utc=created_at(context.io.clock()),
         as_of_date=config.run.as_of_date,
         git_sha=context.git.sha,
         git_dirty=context.git.dirty,

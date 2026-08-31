@@ -7,6 +7,7 @@ are: what a step did is recorded once, in one shape, from the worker to the file
 
 import hashlib
 import json
+import traceback
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -26,6 +27,12 @@ type F64 = NDArray[np.float64]
 type Flags = NDArray[np.bool_]
 type I64 = NDArray[np.int64]
 
+RUN_SCOPED = "*"
+"""The ``portfolio_id`` of a failure no portfolio owns: the cluster, the sink, a worker's own config resolution."""
+
+TRACEBACK_LIMIT = 32_768
+"""Characters of a formatted traceback kept; anything longer is elided in the middle, never at the ends."""
+
 _SCALAR_FIELDS: tuple[str, ...] = ("nav", "max_turnover", "cash_lb", "cash_ub", "min_trade_notional")
 _VECTOR_FIELDS: tuple[str, ...] = ("w0", "price", "shares_held", "lot_size", "tax_per_dollar", "tcost_per_dollar", "lb", "ub", "adv_capacity")
 
@@ -43,20 +50,22 @@ class MissingSpecColumnError(KeyError):
         super().__init__(f"spec has no {kind} {name!r}; available: {list(available)}")
 
 
-def _readonly(array: F64) -> F64:
-    result = np.ascontiguousarray(array, dtype=np.float64)
+def _readonly[T: np.generic](array: NDArray[T], dtype: type[T]) -> NDArray[T]:
+    """A contiguous copy at ``dtype``, frozen: nothing a spec, solution, or chain state carries is mutated in place."""
+    result: NDArray[T] = np.ascontiguousarray(array, dtype=dtype)
     if result is array:
         result = result.copy()
     result.flags.writeable = False
     return result
 
 
-def _readonly_flags(array: Flags) -> Flags:
-    result = np.ascontiguousarray(array, dtype=np.bool_)
-    if result is array:
-        result = result.copy()
-    result.flags.writeable = False
-    return result
+def _aligned_shares(security_ids: tuple[str, ...], traded_shares: F64) -> F64:
+    """Freeze a per-security share vector and insist it lines up with the ids; what a chain state and a contribution both carry."""
+    frozen = _readonly(traded_shares, np.float64)
+    if frozen.shape != (len(security_ids),):
+        msg = f"traded_shares has shape {frozen.shape}, expected {(len(security_ids),)}"
+        raise ValueError(msg)
+    return frozen
 
 
 def _readonly_sparse(matrix: csr_array | F64) -> csr_array:
@@ -108,10 +117,10 @@ class ProblemSpec:
 
     def __post_init__(self) -> None:
         for name in _VECTOR_FIELDS:
-            object.__setattr__(self, name, _readonly(getattr(self, name)))
+            object.__setattr__(self, name, _readonly(getattr(self, name), np.float64))
         object.__setattr__(self, "sector_matrix", _readonly_sparse(self.sector_matrix))
-        object.__setattr__(self, "columns", {name: _readonly(array) for name, array in sorted(self.columns.items())})
-        object.__setattr__(self, "flags", {name: _readonly_flags(array) for name, array in sorted(self.flags.items())})
+        object.__setattr__(self, "columns", {name: _readonly(array, np.float64) for name, array in sorted(self.columns.items())})
+        object.__setattr__(self, "flags", {name: _readonly(array, np.bool_) for name, array in sorted(self.flags.items())})
         failures = list(self._failures())
         if failures:
             raise ProblemSpecError(f"portfolio {self.portfolio_id!r}: " + "; ".join(failures))
@@ -385,7 +394,7 @@ class Solution:
 
     def __post_init__(self) -> None:
         for name in ("w", "buy", "sell"):
-            object.__setattr__(self, name, _readonly(getattr(self, name)))
+            object.__setattr__(self, name, _readonly(getattr(self, name), np.float64))
         object.__setattr__(self, "constraints", tuple(self.constraints))
 
     def to_npz(self, path: Path) -> None:
@@ -508,10 +517,7 @@ class ChainState:
     predecessors: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "traded_shares", _readonly(self.traded_shares))
-        if self.traded_shares.shape != (len(self.security_ids),):
-            msg = f"traded_shares has shape {self.traded_shares.shape}, expected {(len(self.security_ids),)}"
-            raise ValueError(msg)
+        object.__setattr__(self, "traded_shares", _aligned_shares(self.security_ids, self.traded_shares))
 
     def content_hash(self) -> str:
         """Deterministic sha256 of the chain inputs a solve depended on; independent of which predecessors produced them, and of what the shares are called."""
@@ -548,10 +554,7 @@ class Contribution:
     traded_shares: F64
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "traded_shares", _readonly(self.traded_shares))
-        if self.traded_shares.shape != (len(self.security_ids),):
-            msg = f"traded_shares has shape {self.traded_shares.shape}, expected {(len(self.security_ids),)}"
-            raise ValueError(msg)
+        object.__setattr__(self, "traded_shares", _aligned_shares(self.security_ids, self.traded_shares))
 
     @classmethod
     def from_orders(cls, portfolio_id: str, orders: pd.DataFrame, side: str) -> Self:
@@ -581,12 +584,49 @@ class PortfolioResult:
 
 @dataclass(frozen=True, slots=True)
 class PortfolioFailure:
-    """A portfolio that did not produce orders, and where it failed."""
+    """A portfolio that did not produce orders, and where it failed.
+
+    ``portfolio_id`` is :data:`RUN_SCOPED` for a failure no portfolio owns — the cluster never came up,
+    the sink refused the orders, a worker could not resolve the config.
+
+    ``traceback`` is the formatted traceback of the exception behind the failure, carried home from
+    whichever process raised it. It is the whole reason a failure is debuggable at all once the run is
+    over: a worker's own stderr goes to a pod that outlives nothing, so this is the only surviving
+    record of *where* the failure happened. It is ``None`` for a failure no exception produced — a
+    portfolio skipped after another's, a worker refused for its environment, an input simply absent.
+    Observability, never identity: like the timing spans, neither it nor the file the run writes it to
+    is compared by ``diff-manifests``.
+    """
 
     portfolio_id: str
     stage: str
     error_type: str
     message: str
+    traceback: str | None = None
+
+    @classmethod
+    def from_exception(cls, portfolio_id: str, stage: str, error: BaseException, *, message: str | None = None) -> Self:
+        """Record ``error`` as the failure of ``portfolio_id`` at ``stage``, keeping its traceback.
+
+        ``message`` overrides the exception's own text where the caller has a steadier one to record —
+        a worker death names the task it blames rather than the worker address.
+        """
+        return cls(portfolio_id=portfolio_id, stage=stage, error_type=type(error).__name__, message=str(error) if message is None else message, traceback=format_traceback(error))
+
+
+def format_traceback(error: BaseException) -> str:
+    """The exception, its causes, and their frames as text, capped at :data:`TRACEBACK_LIMIT`.
+
+    This string is carried from a worker to the client for every failed portfolio, so it needs a bound.
+    Deep recursion is not what threatens one — Python collapses repeated frames itself — but a message
+    that names every offending row does, and a book has a hundred thousand of them. The cap elides the
+    middle and keeps both ends, where the origin and the raise site are.
+    """
+    text = "".join(traceback.format_exception(error))
+    if len(text) <= TRACEBACK_LIMIT:
+        return text
+    half = TRACEBACK_LIMIT // 2
+    return f"{text[:half]}\n... {len(text) - TRACEBACK_LIMIT} character(s) elided ...\n{text[-half:]}"
 
 
 def derive_chain_state(security_ids: tuple[str, ...], tradable: Flags, contributions: Sequence[Contribution]) -> ChainState:

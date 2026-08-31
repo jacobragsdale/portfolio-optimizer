@@ -33,6 +33,7 @@ from pathlib import Path
 import cvxpy as cp
 import numpy as np
 import pandas as pd
+from harness import SHIPPED_CONSTRAINTS
 from scipy.sparse import issparse
 
 from portfolio_optimizer.config.models import StepSpec, load_run_config
@@ -55,8 +56,6 @@ EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
 AS_OF = datetime(2026, 8, 28, tzinfo=UTC)
 NAV = Decimal(1_000_000_000)
 MB = 1e6
-SHIPPED_CONSTRAINTS: tuple[str, ...] = ("long_only", "max_weight", "cash_bounds", "turnover_cap", "cumulative_adv_participation")
-"""Every constraint the template ships that needs no params, as the shipped convention names them in the constraints frame; `sector_bound` is added once per sector, with its band."""
 
 
 @dataclass(frozen=True, slots=True)

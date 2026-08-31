@@ -4,8 +4,9 @@ A run config is one JSON document that tells the engine what to load, how to com
 and terms apply, and how to execute. This page reads through that document block by block, in the
 order the shipped `configs/example_run.json` lists them, and for each block answers three questions:
 what is it telling the engine, when does the engine consume it, and what changes if you set it
-differently. It is the companion to two other pages: the [reference](reference-run-config.md) lists
-every key with its type and default and says nothing about why, and
+differently. It is the companion to two other pages: the [reference](reference-run-config.md) carries what the
+generated JSON Schema cannot — step signatures, load-time behaviour, the constraint rows and style
+limits that live in data — and says nothing about why, and
 [the life of a run](explanation-run-lifecycle.md) follows the engine stage by stage. The README gives
 [a sentence or two per block](../README.md#the-run-config-block-by-block); this page is the long
 version. Read it when you have a config in front of you and want it to make sense.
@@ -259,8 +260,9 @@ second input on that vendor would have to share the same budget; `details` carri
 is about sharing — a pool is a property of the *backend*, not of any one input, which is why pools are
 declared at the top level — and the reasoning is in
 [the architecture explanation](explanation-architecture.md#loading-is-the-slow-part-so-it-is-concurrent-and-metered).
-The keys of a bound (`requests_per_second`, `burst`, `max_in_flight`) and their defaults are in
-[the reference](reference-run-config.md#rate-limits); wiring a fan-out loader to one is in
+The keys of a bound (`requests_per_second`, `burst`, `max_in_flight`) and their defaults are in the
+generated JSON Schema, how one behaves is in
+[the reference](reference-run-config.md#rate_limit-and-rate_limits), and wiring a fan-out loader to one is in
 [how to add a loader](how-to-add-a-loader-or-sink.md#async-loaders-fan-out-and-rate-limits).
 
 ## `assembly`

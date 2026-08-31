@@ -18,7 +18,7 @@ from portfolio_optimizer import assembly, loaders, rules, sinks, solve_order, so
 from portfolio_optimizer.config.models import STEP_NAME_DESCRIPTION, STEP_NAME_PATTERN, RunConfig
 from portfolio_optimizer.config.steps import StepKind
 from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm
-from portfolio_optimizer.domain.schemas import REQUIRED_DATASETS, REQUIRED_FRAMES
+from portfolio_optimizer.domain.schemas import REQUIRED_DATASETS
 from portfolio_optimizer.domain.types import Params
 
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
@@ -169,14 +169,14 @@ def _params_schema(model: type[Params], defs: JsonObject) -> JsonObject:
 def _datasets_schema(datasets: object) -> JsonObject:
     schema = _object(datasets)
     schema.pop("additionalProperties", None)
-    properties: JsonObject = {name: {"$ref": "#/$defs/DatasetConfig"} for name in (*REQUIRED_FRAMES, "constraints")}
+    properties: JsonObject = {name: {"$ref": "#/$defs/DatasetConfig"} for name in (*REQUIRED_DATASETS, "constraints")}
     properties["portfolios"] = _portfolios_property()
     return {
         **schema,
         "properties": dict(sorted(properties.items())),
         "required": ["portfolios"],
         "additionalProperties": {"$ref": "#/$defs/DatasetConfig"},
-        "$comment": f"`portfolios` is always required; {list(REQUIRED_FRAMES)} are required unless an assembly step produces them. `constraints` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
+        "$comment": f"`portfolios` is always required; {list(REQUIRED_DATASETS)} are required unless an assembly step produces them. `constraints` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
     }
 
 

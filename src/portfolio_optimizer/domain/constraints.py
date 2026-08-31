@@ -334,7 +334,7 @@ def parse_constraints(frame: pd.DataFrame) -> ParsedConstraints | None:
     names: dict[str, int] = {}
     for position, record in enumerate(frame.to_dict("records")):
         kind = record.get("kind")
-        if _is_missing(kind) or kind == "function":
+        if is_missing(kind) or kind == "function":
             opaque_rows += 1
             continue
         constraint = _typed_row(position, {str(key): value for key, value in record.items()})
@@ -370,7 +370,7 @@ def opaque_frame(frame: pd.DataFrame) -> pd.DataFrame:
     """The rows this spec does not type, exactly as loaded — what a solve step's own convention still interprets."""
     if "kind" not in frame.columns:
         return frame
-    keep = pd.Series([_is_missing(kind) or kind == "function" for kind in frame["kind"]], index=frame.index)
+    keep = pd.Series([is_missing(kind) or kind == "function" for kind in frame["kind"]], index=frame.index)
     return frame[keep].drop(columns=["kind"]).reset_index(drop=True)
 
 
@@ -411,6 +411,6 @@ def _typed_row(position: int, record: dict[str, object]) -> AnyTypedConstraint:
         raise ConstraintSpecError(msg) from error
 
 
-def _is_missing(value: object) -> bool:
+def is_missing(value: object) -> bool:
     """The ways an absent optional column arrives from a frame: ``None``, ``pd.NA``, a float ``NaN``, or blank text."""
     return value is None or value is pd.NA or (isinstance(value, float) and bool(np.isnan(value))) or (isinstance(value, str) and not value.strip())

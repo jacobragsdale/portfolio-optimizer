@@ -1,12 +1,27 @@
 """Tier 1/2: the manifest round-trips with an integrity hash, is written atomically, and localizes drift."""
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+from portfolio_optimizer.domain.results import PortfolioFailure
 from portfolio_optimizer.engine.environment import WorkerEnvironment
-from portfolio_optimizer.engine.manifest import ConfigInfo, OrdersRecord, PortfolioRecord, RunManifest, VersionInfo, WorkerRecord, diff_manifests, finalize, load_manifest, write_manifest
+from portfolio_optimizer.engine.manifest import (
+    ConfigInfo,
+    OrdersRecord,
+    PortfolioRecord,
+    RunManifest,
+    VersionInfo,
+    WorkerRecord,
+    diff_manifests,
+    failure_report_path,
+    finalize,
+    load_manifest,
+    write_failure_reports,
+    write_manifest,
+)
 from portfolio_optimizer.engine.schedule import ScheduleSummary
 from tests.conftest import AS_OF
 
@@ -109,3 +124,48 @@ def test_worker_hosts_do_not_differ_but_worker_environments_do() -> None:
     stale_worker = manifest(versions=manifest().versions.model_copy(update={"workers": (_worker("pod-1"), _worker("pod-2", git_sha="old"))}))
     assert diff_manifests(left, same_environment_elsewhere) == []
     assert "versions: library, solver, or step-package versions differ" in diff_manifests(left, stale_worker)
+
+
+def failed(portfolio_id: str = "P1", stage: str = "solve", traceback: str | None = "Traceback (most recent call last):\n  boom\n") -> PortfolioFailure:
+    return PortfolioFailure(portfolio_id=portfolio_id, stage=stage, error_type="KeyError", message="no such column 'oas'", traceback=traceback)
+
+
+def test_a_failure_report_names_the_portfolio_and_carries_the_traceback(tmp_path: Path) -> None:
+    (artifact,) = write_failure_reports([failed()], tmp_path, run_id="run-1")
+    path = Path(artifact.path)
+    assert path == tmp_path / "failures" / "P1.txt"
+    text = path.read_text()
+    assert "run_id: run-1" in text
+    assert "portfolio_id: P1" in text
+    assert "stage: solve" in text
+    assert "error: KeyError: no such column 'oas'" in text
+    assert text.rstrip().endswith("boom")
+
+
+def test_a_failure_with_no_traceback_writes_nothing(tmp_path: Path) -> None:
+    assert write_failure_reports([failed("P2", "skipped", traceback=None)], tmp_path, run_id="run-1") == ()
+    assert not (tmp_path / "failures").exists(), "a skipped portfolio has no where to record"
+
+
+def test_the_run_s_own_failure_is_named_for_its_stage(tmp_path: Path) -> None:
+    (artifact,) = write_failure_reports([failed("*", "sink")], tmp_path, run_id="run-1")
+    assert Path(artifact.path) == tmp_path / "failures" / "sink.txt"
+
+
+def test_reports_are_written_atomically_and_hashed(tmp_path: Path) -> None:
+    (artifact,) = write_failure_reports([failed()], tmp_path, run_id="run-1")
+    path = Path(artifact.path)
+    assert sorted(p.name for p in path.parent.iterdir()) == ["P1.txt"], "no temp file survives"
+    assert artifact.size_bytes == len(path.read_bytes())
+    assert artifact.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_two_failures_that_map_to_one_path_are_written_once(tmp_path: Path) -> None:
+    written = write_failure_reports([failed("sink", "solve"), failed("*", "sink")], tmp_path, run_id="run-1")
+    assert [Path(a.path).name for a in written] == ["sink.txt"]
+    assert (tmp_path / "failures" / "sink.txt").read_text().count("portfolio_id: sink") == 1, "the first failure keeps the path"
+
+
+def test_the_report_path_is_the_one_the_writer_used(tmp_path: Path) -> None:
+    (artifact,) = write_failure_reports([failed()], tmp_path, run_id="run-1")
+    assert Path(artifact.path) == failure_report_path(tmp_path, failed())

@@ -160,7 +160,7 @@ class GatewaySinkParams(Params):
 
 def orders_to_gateway(orders: pd.DataFrame, io: IoContext, params: GatewaySinkParams) -> tuple[Artifact, ...]:
     """Submit the run's orders and return the gateway's acknowledgement as an artifact."""
-    gateway: TradingGateway = build_gateway(params.account)
+    gateway = build_gateway(params.account)  # your own client, behind your own seam
     return gateway.submit(orders, io.run_id)
 ```
 
@@ -170,8 +170,8 @@ def orders_to_gateway(orders: pd.DataFrame, io: IoContext, params: GatewaySinkPa
 - Return a tuple of `Artifact(path, sha256, size_bytes)` describing what was written or acknowledged;
   the manifest records them. For a network destination, write the acknowledgement to a file under
   `io.output_dir / io.run_id` and return that.
-- `TradingGateway` is a `Protocol`; implement it in your own module and keep the network client behind
-  it so the sink can be exercised against a fake in tests.
+- Keep the network client behind a seam of your own — a `Protocol` in your module — so the sink can be
+  exercised against a fake in tests.
 - A sink that raises is recorded in the manifest as a `sink` failure and the run exits with code 3.
 
 ### 2. Name it in the config
@@ -182,6 +182,7 @@ def orders_to_gateway(orders: pd.DataFrame, io: IoContext, params: GatewaySinkPa
 
 ### 3. Test
 
-Write the sink's test against a fake `TradingGateway`; assert on the artifacts returned and on what the
-fake received. The shipped `orders_to_parquet` and `orders_to_csv` write atomically (temp file plus
-rename) — do the same for any file destination so a crash never leaves a partial file behind.
+Write the sink's test against a fake gateway; assert on the artifacts returned and on what the fake
+received. The shipped `orders_to_parquet` and `orders_to_csv` go through
+`engine.files.write_atomically` (temp file plus rename) — use it for any file destination so a crash
+never leaves a partial file behind.

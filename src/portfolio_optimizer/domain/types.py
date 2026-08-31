@@ -1,12 +1,12 @@
-"""Identifiers, the strict model base classes, and the protocols for injected dependencies."""
+"""Identifiers, the strict model base classes, and the injected clock."""
 
+from collections.abc import Callable
 from datetime import datetime
-from typing import NewType, Protocol
+from typing import NewType
 
 from pydantic import BaseModel, ConfigDict
 
 PortfolioId = NewType("PortfolioId", str)
-SecurityId = NewType("SecurityId", str)
 
 STRICT_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True, validate_default=True, revalidate_instances="always", allow_inf_nan=False)
 
@@ -28,17 +28,5 @@ class Params(StrictModel):
     """
 
 
-class Clock(Protocol):
-    """Source of the current time, injected so runs are reproducible from their manifest."""
-
-    def now(self) -> datetime:
-        """Return the current time as a timezone-aware UTC datetime."""
-        ...
-
-
-class IdFactory(Protocol):
-    """Source of run identifiers, injected so tests can use fixed ids."""
-
-    def new_run_id(self) -> str:
-        """Return a new unique run id."""
-        ...
+type Clock = Callable[[], datetime]
+"""Source of the current time as a timezone-aware UTC datetime, injected so runs are reproducible from their manifest."""

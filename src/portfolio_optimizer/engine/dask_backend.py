@@ -29,29 +29,19 @@ log = logging.getLogger(__name__)
 
 @runtime_checkable
 class _ClusterLike(Protocol):
-    """What any cluster object Dask hands back must offer."""
+    """What any cluster object Dask hands back must offer; the one place its untyped surface is typed."""
 
     def scale(self, n: int) -> object: ...
 
     def close(self) -> object: ...
 
 
-class _Cluster:
-    """A typed handle on a Dask cluster object; the one place its untyped surface is called."""
-
-    def __init__(self, cluster: object) -> None:
-        if not isinstance(cluster, _ClusterLike):
-            msg = f"{type(cluster).__name__} does not expose scale() and close()"
-            raise ClusterError(msg)
-        self._cluster = cluster
-
-    def scale(self, workers: int) -> None:
-        """Ask the cluster for ``workers`` in total."""
-        self._cluster.scale(workers)
-
-    def close(self) -> None:
-        """Tear the cluster down."""
-        self._cluster.close()
+def _cluster_like(cluster: object) -> _ClusterLike:
+    """Narrow whatever Dask constructed to the surface this backend calls."""
+    if not isinstance(cluster, _ClusterLike):
+        msg = f"{type(cluster).__name__} does not expose scale() and close()"
+        raise ClusterError(msg)
+    return cluster
 
 
 class _DaskPending[T]:
@@ -82,7 +72,7 @@ class DaskBackend:
         self._min_workers = execution.min_workers
         self._timeout_s = execution.cluster_timeout_s
         self._desired: int | None = None
-        self._cluster: _Cluster | None = None
+        self._cluster: _ClusterLike | None = None
         self._client: Client | None = None
         self._provisioner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dask-provision")
         self._connecting: Future[Client] | None = None
@@ -176,16 +166,16 @@ class DaskBackend:
             self._cluster = cluster
             if self._desired is not None:
                 cluster.scale(self._desired)
-            client = Client(cluster._cluster, set_as_default=False)  # noqa: SLF001  # the handle exists to type the object Dask needs back here
+            client = Client(cluster, set_as_default=False)
         self._client = client
         log.info("dask %s cluster connected", self._kind, extra={"run_id": self._run_id, "stage": "cluster"})
         return client
 
-    def _local_cluster(self) -> _Cluster:
+    def _local_cluster(self) -> _ClusterLike:
         # An ephemeral dashboard port: `None` falls back to distributed's default 8787, which a second cluster in the same process cannot bind.
-        return _Cluster(LocalCluster(n_workers=self._min_workers, threads_per_worker=1, processes=True, dashboard_address=":0", worker_dashboard_address=":0", silence_logs=logging.WARNING))
+        return _cluster_like(LocalCluster(n_workers=self._min_workers, threads_per_worker=1, processes=True, dashboard_address=":0", worker_dashboard_address=":0", silence_logs=logging.WARNING))
 
-    def _kube_cluster(self) -> _Cluster:
+    def _kube_cluster(self) -> _ClusterLike:
         """A ``DaskCluster`` resource managed by the Dask Kubernetes operator, running this run's image.
 
         Verify the constructor's surface against the installed ``dask-kubernetes`` at upgrade time; it
@@ -195,7 +185,7 @@ class DaskBackend:
         env = {"OMP_NUM_THREADS": "1"}
         if self._execution.image_digest is not None:
             env[IMAGE_DIGEST_VARIABLE] = self._execution.image_digest
-        return _Cluster(
+        return _cluster_like(
             operator.KubeCluster(
                 name=_dns_label(f"po-{self._run_id}"),
                 image=self._execution.worker_image,

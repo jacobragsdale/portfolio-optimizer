@@ -10,12 +10,12 @@ import pytest
 
 from portfolio_optimizer.cli import run_cli
 from tests.conftest import EXAMPLE_CONFIG, example_body
-from tests.engine.support import EXAMPLE_ORDERS_P1, FixedClock, FixedIds, example_book
+from tests.engine.support import EXAMPLE_ORDERS_P1, details_csv, example_book, fixed_clock
 
 
 def cli(argv: Sequence[str], env: dict[str, str] | None = None, run_id: str = "run-smoke") -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
-    code = run_cli(argv, env=env or {}, clock=FixedClock(), ids=FixedIds(run_id), stdout=out, stderr=err)
+    code = run_cli(argv, env=env or {}, clock=fixed_clock(), new_run_id=lambda: run_id, stdout=out, stderr=err)
     return code, out.getvalue(), err.getvalue()
 
 
@@ -71,16 +71,11 @@ def test_rerun_diffs_clean_and_verify_passes_without_cvxpy_objects(tmp_path: Pat
     assert "was not solved" in err
 
 
-def test_timeline_renders_the_recorded_spans(tmp_path: Path, env: dict[str, str], config: Path) -> None:
+def test_run_writes_the_recorded_spans_as_a_chrome_trace(tmp_path: Path, env: dict[str, str], config: Path) -> None:
     assert cli(["run", str(config)], env)[0] == 0
-    run_dir = tmp_path / "out" / "run-smoke"
-    assert (run_dir / "trace.json").exists(), "the same spans are written beside the manifest in the Chrome trace format"
-    code, out, err = cli(["timeline", str(run_dir / "manifest.json")])
-    assert code == 0, err
-    assert "run run-smoke" in out
-    assert "wall clock" in out
-    assert "solve P1" in out
-    assert cli(["timeline", str(tmp_path / "missing.json")])[0] == 3
+    trace = tmp_path / "out" / "run-smoke" / "trace.json"
+    assert trace.exists(), "the manifest's spans are written beside it in the Chrome trace format"
+    assert "solve" in {str(event["name"]) for event in json.loads(trace.read_text())["traceEvents"]}
 
 
 def test_validate_config_lists_every_resolved_step() -> None:
@@ -131,3 +126,15 @@ def test_run_flags_override_settings(tmp_path: Path, env: dict[str, str], config
     assert manifest["settings"]["max_workers"] == "1"
     assert manifest["cluster"]["kind"] == "address"
     assert cli(["run", str(config), "--max-workers", "0"], env)[0] == 2
+
+
+def test_a_failed_run_points_at_the_traceback_it_wrote(tmp_path: Path, env: dict[str, str], config: Path) -> None:
+    env["PORTFOLIO_OPTIMIZER_DATA_ROOT"] = str(example_book(tmp_path, **{"details.csv": details_csv(P1={"max_weight": "0.25"})}))
+    code, out, err = cli(["run", str(config)], env)
+    assert code == 1, err
+    report_path = tmp_path / "out" / "run-smoke" / "failures" / "P1.txt"
+    assert "P1: FAILED at solve: InfeasibleError" in out
+    assert f"(traceback: {report_path})" in out
+    assert "InfeasibleError" in report_path.read_text()
+    assert "P2: FAILED at skipped" in out
+    assert "traceback:" not in out.split("P2: FAILED")[1], "nothing was written for a skipped portfolio, so nothing is offered"

@@ -139,16 +139,6 @@ def variable(n: int, name: str) -> cp.Variable:
     return cp.Variable(n, name=name)
 
 
-def sum_squares(expr: Expr) -> Expr:
-    """``‖expr‖²``, convex."""
-    return _expr(cp.sum_squares(expr))
-
-
-def norm1(expr: Expr) -> Expr:
-    """``‖expr‖₁``, convex."""
-    return _expr(cp.norm1(expr))
-
-
 def total(expr: Expr) -> Expr:
     """Sum of all entries, affine."""
     return _expr(cp.sum(expr))

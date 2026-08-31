@@ -1,4 +1,4 @@
-"""Run helpers shared by the engine and CLI tests: a fixed clock and ids, the example book with files swapped, the hand-checked answers, and one ``execute``."""
+"""Run helpers shared by the engine and CLI tests: a fixed clock and id, the example book with files swapped, the hand-checked answers, and one ``execute``."""
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from portfolio_optimizer.domain.data import IoContext
+from portfolio_optimizer.domain.types import Clock
 from portfolio_optimizer.engine.backends import BackendFactory
 from portfolio_optimizer.engine.environment import GitInfo
 from portfolio_optimizer.engine.runner import RunContext, RunReport, run
@@ -18,31 +19,14 @@ GIT = GitInfo(sha="0123456789abcdef", dirty=False)
 type Orders = list[dict[str, object]]
 
 
-class FixedClock:
+def fixed_clock(at: datetime = AS_OF) -> Clock:
     """Always the same instant, so manifests are reproducible in tests."""
-
-    def __init__(self, at: datetime = AS_OF) -> None:
-        self.at = at
-
-    def now(self) -> datetime:
-        """The fixed instant."""
-        return self.at
-
-
-class FixedIds:
-    """Deterministic run ids."""
-
-    def __init__(self, run_id: str = "run-test") -> None:
-        self.run_id = run_id
-
-    def new_run_id(self) -> str:
-        """The fixed id."""
-        return self.run_id
+    return lambda: at
 
 
 def io_context(output_dir: Path, data_root: Path = EXAMPLE_DATA, run_id: str = "run-test") -> IoContext:
     """An ``IoContext`` with a fixed clock."""
-    return IoContext(data_root=data_root, output_dir=output_dir, run_id=run_id, clock=FixedClock())
+    return IoContext(data_root=data_root, output_dir=output_dir, run_id=run_id, clock=fixed_clock())
 
 
 def execution_on(scheduler_address: str, *, max_workers: int = 2) -> ExecutionSettings:

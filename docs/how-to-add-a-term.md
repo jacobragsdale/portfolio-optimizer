@@ -42,8 +42,8 @@ def max_names_traded(x: DecisionVars, spec: ProblemSpec, params: TurnoverParams)
     return ConstraintSet("max_names_traded", (at_most(x.trade, float(params.limit)),))
 ```
 
-Write the math through the atoms in `portfolio_optimizer.cvx.adapter` (`sum_squares`, `norm1`, `total`,
-`dot`, `matvec`, `scale`, `plus`, `minus`, `shifted`, `shortfall`, `equals`, `at_most`, `at_least`). They are the whole
+Write the math through the atoms in `portfolio_optimizer.cvx.adapter` (`total`, `dot`, `matvec`, `scale`,
+`masked`, `plus`, `minus`, `shifted`, `shortfall`, `equals`, `at_most`, `at_least`). They are the whole
 cvxpy surface the template exposes, and every one preserves DCP convexity when the inputs do. A term that
 is not convex is rejected when the problem is built, before the solver runs.
 

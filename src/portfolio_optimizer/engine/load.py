@@ -46,7 +46,7 @@ from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.data import PREVALIDATED_FRAMES, Frames, LoadRequest, PortfolioData, details_from_frame
 from portfolio_optimizer.domain.frames import FrameSchemaError, empty_frame, validate_frame
 from portfolio_optimizer.domain.results import AssemblyAuditRecord, PortfolioFailure
-from portfolio_optimizer.domain.schemas import CONSTRAINTS, DATASET_SCHEMAS, PORTFOLIOS, REQUIRED_FRAMES
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, DATASET_SCHEMAS, PORTFOLIOS, REQUIRED_DATASETS
 from portfolio_optimizer.domain.types import PortfolioId, StrictModel
 from portfolio_optimizer.engine.hashing import frame_sha256
 from portfolio_optimizer.ratelimit import RateLimiter
@@ -417,7 +417,7 @@ def _as_frame(batch: _BatchResult) -> pd.DataFrame:
 
 def _load_failure(portfolio_id: PortfolioId, dataset: str, error: Exception) -> PortfolioFailure:
     """A portfolio whose batch of ``dataset`` did not come back; it never reaches a build."""
-    return PortfolioFailure(portfolio_id=portfolio_id, stage="load", error_type=type(error).__name__, message=f"dataset {dataset!r} did not load for this portfolio: {_describe(error)}")
+    return PortfolioFailure.from_exception(portfolio_id, "load", error, message=f"dataset {dataset!r} did not load for this portfolio: {_describe(error)}")
 
 
 def _leaves(error: BaseException) -> tuple[BaseException, ...]:
@@ -536,14 +536,14 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -
         )
         log.info("assembly step %r applied: %s", step.qualname, ", ".join(f"{name}={rows}" for name, rows in frames.row_counts().items()), extra={"run_id": run_id, "stage": "assembly"})
     frames = Frames({**frames, **loaded.per_portfolio})
-    missing_frames = [name for name in REQUIRED_FRAMES if name not in frames]
+    missing_frames = [name for name in REQUIRED_DATASETS if name not in frames]
     if missing_frames:
         msg = f"after assembly, required datasets are missing {missing_frames}; declare a loader for each or produce it in an assembly step"
         raise LoadError(msg)
     failures: list[str] = []
     for name, schema in DATASET_SCHEMAS.items():
         if name not in frames:
-            continue  # only REQUIRED_FRAMES must exist; constraints is engine-known but optional
+            continue  # only REQUIRED_DATASETS must exist; constraints is engine-known but optional
         try:
             validate_frame(frames[name], schema)
         except FrameSchemaError as error:

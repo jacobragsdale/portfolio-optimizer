@@ -17,7 +17,6 @@
 | `validate-config CONFIG` | | Validate and resolve a config without loading data; prints how dependencies will be derived and lists every resolved step with `[external]` and `[chain]` markers. |
 | `verify` | `--manifest PATH --portfolio ID` | Reload the persisted spec, solution, and chain state and recompute every shipped constraint and term in numpy, holding every residual to the `check.tolerance` the run used. Reads `sides` from the manifest's resolved config to pick the side profile whose identity checks apply. Never imports cvxpy. |
 | `diff-manifests LEFT RIGHT` | | Print the first stage at which two runs diverge, overall and per portfolio. |
-| `timeline MANIFEST` | `--limit N` | Render the manifest's recorded timing spans: per-stage totals (count, total, max), then an ASCII waterfall — one row per run-scoped stage and per-portfolio span up to `--limit` portfolios (default 40), past which each worker process becomes one occupancy lane. The `trace.json` beside the manifest holds the same spans for `chrome://tracing` or Perfetto. |
 | `schema` | | Print the JSON Schema for run configs; `> configs/run-config.schema.json` regenerates the checked-in file. |
 
 ## Output directory
@@ -31,6 +30,7 @@
 | `problem_specs/<portfolio_id>.npz` | The `ProblemSpec` as arrays plus JSON metadata; no pickle. |
 | `solutions/<portfolio_id>.npz` | The solve step's `w` and the profile's `buy`/`sell` split, with the objective (null when the step minimized nothing), status, solver and its version, solve time, iterations, and spec hash. |
 | `chain/<portfolio_id>.npz` | The chain state the solve depended on: `traded_shares`, the shares its predecessors traded on the side the run couples through (bought under `both` and `buy`, sold under `sell`), per security, zero where the portfolio cannot trade the name on that side; the metadata names the predecessors. Chain files written before 2026-08-29 carry the key `bought_shares` and no longer load; their hash is unchanged. |
+| `failures/<portfolio_id>.txt` | The traceback of the exception that failed a portfolio, with the `run_id`, stage, and error above it. Written only for a failure an exception produced: a portfolio skipped after another's, a worker refused for its environment, and an input simply absent have no traceback and no file. A failure the run itself owns (`portfolio_id` `*`) is named for its stage — `failures/sink.txt`, `failures/cluster.txt`. This is normally the only surviving record of *where* a failure happened, since a worker's own stderr goes nowhere the run can read. |
 | `trace.json` | The manifest's `timing` spans in the Chrome trace format: a row per worker process, a lane per portfolio, one complete event per span. Opens in `chrome://tracing` or [Perfetto](https://ui.perfetto.dev). |
 
 Files are written to a sibling temp file and renamed, so a crash leaves no partial output.
@@ -72,7 +72,7 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `assembly[]` | Per assembly step, in order: `qualname`, `source_sha256`, `params_sha256`, `rows_in` and `rows_out` (rows per dataset before and after), `columns_added` (per dataset, the columns the step introduced). |
 | `portfolios[]` | See below. A `sink` failure appears as an extra record with `portfolio_id: "*"`. |
 | `artifacts[]` | `path`, `sha256`, `size_bytes` of every file written. |
-| `timing[]` | Wall-clock spans over the run's stages: `name` (`load`, `dataset:<name>`, `assembly`, `cluster` — provisioning to first worker — `build`, `solve`, `sink`, with sub-phases as `build:slice`/`build:rules`/`build:spec` and `solve:chain`/`solve:solve`/`solve:verify`/`solve:orders`), `portfolio_id` (`null` for a run-scoped stage), `worker` (`host:pid`), `started_at_s` (Unix wall clock), `duration_s`. Observability, never identity: `diff-manifests` does not compare them, and instants are each process's own wall clock, so cross-host skew is visible rather than corrected. Rendered by `timeline` and written beside the manifest as `trace.json`. |
+| `timing[]` | Wall-clock spans over the run's stages: `name` (`load`, `dataset:<name>`, `assembly`, `cluster` — provisioning to first worker — `build`, `solve`, `sink`, with sub-phases as `build:slice`/`build:rules`/`build:spec` and `solve:chain`/`solve:solve`/`solve:verify`/`solve:orders`), `portfolio_id` (`null` for a run-scoped stage), `worker` (`host:pid`), `started_at_s` (Unix wall clock), `duration_s`. Observability, never identity: `diff-manifests` does not compare them, and instants are each process's own wall clock, so cross-host skew is visible rather than corrected. Written beside the manifest as `trace.json`, which opens in `chrome://tracing` or Perfetto. |
 | `exit_code` | The code the run returned. |
 
 ### `portfolios[]`
@@ -89,7 +89,7 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `check` | `tolerance` (the `violation_tol` every residual was held to), `max_violation`, `violated` (check names), `objective_gap`, `objective_passed`, `unverified`, `passed`. |
 | `drift` | `max_weight_error`, `tolerance`, `dropped_orders`, `passed` — the effect of rounding to shares. |
 | `orders` | `count`, `sha256` (content hash excluding `run_id`), `gross_notional`. |
-| `failure_stage`, `error` | For failed portfolios: `slice`, `build`, `solve`, `worker` (the worker died, or its environment fingerprint differed from the run's), `skipped` (the error names the failed predecessor, or the `fail_fast` cut-off), `sink`, or `cluster` (on the `*` record: no worker came up), and the error. |
+| `failure_stage`, `error` | For failed portfolios: `slice`, `build`, `solve`, `worker` (the worker died, or its environment fingerprint differed from the run's), `skipped` (the error names the failed predecessor, or the `fail_fast` cut-off), `sink`, or `cluster` (on the `*` record: no worker came up), and the error. The traceback behind the error, where there was an exception, is in `failures/` above — the manifest keeps the one-line summary. |
 
 ### Content hashes
 

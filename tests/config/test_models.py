@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from portfolio_optimizer.config.models import DatasetConfig, InlinePortfolios, RunConfig, StepSpec, config_sha256, is_step_name, load_run_config
+from portfolio_optimizer.config.models import DatasetConfig, InlinePortfolios, RunConfig, StepSpec, config_sha256, load_run_config
 from tests.conftest import EXAMPLE_CONFIG, example_body
 
 
@@ -46,13 +46,11 @@ def test_step_spec_accepts_bare_names_and_objects() -> None:
 
 @pytest.mark.parametrize("name", ["cap", "cap_single_name", "pkg.mod:fn", "a.b.c:fn_2"])
 def test_well_formed_step_names(name: str) -> None:
-    assert is_step_name(name)
     assert StepSpec.model_validate_json(json.dumps(name)).name == name
 
 
 @pytest.mark.parametrize("name", ["", "1abc", "pkg:", ":fn", "pkg.mod", "pkg mod:fn", "fn()", "a:b:c"])
 def test_malformed_step_names_are_rejected(name: str) -> None:
-    assert not is_step_name(name)
     with pytest.raises(ValidationError):
         StepSpec.model_validate_json(json.dumps(name))
 

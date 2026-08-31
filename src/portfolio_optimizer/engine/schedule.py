@@ -9,14 +9,13 @@ A portfolio whose consume set is empty reads nothing and waits for no one. The g
 transitively reduced: a solve folds its *direct* predecessors' own contributions, so every
 overlapping earlier portfolio must stay a direct dependency.
 
-Every predecessor is earlier in the order, so the graph can be grown a portfolio at a time:
+Every predecessor is earlier in the order, so the graph is grown a portfolio at a time:
 :class:`OverlapIndex` takes one portfolio's tradable set and answers which earlier ones it overlaps,
 without knowing the portfolios still to come. That is what lets the runner submit a solve while the
-tail of the book is still building; :func:`dependency_graph` is the same index driven over a book
-whose builds have all reported.
+tail of the book is still building.
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
@@ -92,39 +91,6 @@ class Schedule:
         return ScheduleSummary(
             coupling=self.coupling, portfolios=len(self.order), edges=edges, components=len(sizes), largest_component=max(sizes.values(), default=0), critical_path=max(depth.values(), default=0)
         )
-
-
-def dependency_graph(
-    order: Sequence[PortfolioId], tradable: Mapping[PortfolioId, Iterable[str]], consumes: Mapping[PortfolioId, Iterable[str]], unknown: frozenset[PortfolioId], coupling: Coupling
-) -> Schedule:
-    """Which higher-priority portfolios each portfolio waits for.
-
-    ``tradable`` is each built portfolio's tradable securities — what its trades can reach others
-    through; ``consumes`` is each portfolio's consume set — what its own chain readers can see, at
-    most its tradable set and absent (or empty) when nothing it runs reads the chain. ``unknown``
-    names portfolios whose build failed: both sets are unknown, so they are treated as overlapping
-    every other portfolio. Under ``all`` every earlier portfolio is a predecessor; under ``none``
-    nothing is, and both mappings are ignored.
-    """
-    ordered = tuple(order)
-    if coupling == "none":
-        return Schedule(ordered, dict.fromkeys(ordered, ()), coupling)
-    if coupling == "all":
-        return Schedule(ordered, {portfolio_id: tuple(ordered[:position]) for position, portfolio_id in enumerate(ordered)}, coupling)
-    return Schedule(ordered, _overlap_predecessors(ordered, tradable, consumes, unknown), coupling)
-
-
-def _overlap_predecessors(
-    order: tuple[PortfolioId, ...], tradable: Mapping[PortfolioId, Iterable[str]], consumes: Mapping[PortfolioId, Iterable[str]], unknown: frozenset[PortfolioId]
-) -> dict[PortfolioId, tuple[PortfolioId, ...]]:
-    """One :class:`OverlapIndex` driven over the whole order, seeded with every security it will see."""
-    index = OverlapIndex(len(order), (security for portfolio_id in order for security in tradable.get(portfolio_id, ())))
-    predecessors: dict[PortfolioId, tuple[PortfolioId, ...]] = {}
-    for portfolio_id in order:
-        produced = tuple(tradable.get(portfolio_id, ()))
-        earlier = index.add(produced, tuple(consumes[portfolio_id]) if portfolio_id in consumes else produced, unknown=portfolio_id in unknown)
-        predecessors[portfolio_id] = tuple(order[position] for position in earlier)
-    return predecessors
 
 
 class OverlapIndex:

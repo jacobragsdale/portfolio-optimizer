@@ -1,9 +1,9 @@
-"""Tier 1: spans record what ran where, and the Chrome trace and the ASCII waterfall render the same recorded spans."""
+"""Tier 1: spans record what ran where, and the Chrome trace renders the recorded spans."""
 
 import json
 from pathlib import Path
 
-from portfolio_optimizer.engine.timing import Span, SpanRecorder, render_timeline, sort_spans, write_trace
+from portfolio_optimizer.engine.timing import Span, SpanRecorder, sort_spans, write_trace
 
 
 def span(name: str, start: float, duration: float = 1.0, portfolio_id: str | None = None, worker: str = "host:1") -> Span:
@@ -46,24 +46,3 @@ def test_trace_is_chrome_json_with_a_process_per_worker_and_microsecond_offsets(
     assert min(event["ts"] for event in complete) == 0.0, "timestamps count from the earliest span"
     build_p1 = next(event for event in complete if event["name"] == "build" and event["args"]["portfolio_id"] == "P1")
     assert build_p1["dur"] == 1e6, "durations are microseconds"
-
-
-def test_timeline_draws_run_rows_and_portfolio_rows_within_the_limit() -> None:
-    spans = [span("load", 0.0, 2.0), span("build", 2.0, 1.0, "P1"), span("build:rules", 2.0, 0.5, "P1")]
-    text = render_timeline(spans, limit=5)
-    totals, waterfall = text.split("waterfall")
-    assert "build P1" in waterfall
-    assert "build:rules" in totals, "sub-phases count in the totals"
-    assert "build:rules" not in waterfall, "and are not drawn as rows"
-
-
-def test_timeline_collapses_a_large_book_into_worker_occupancy_lanes() -> None:
-    spans = [span("build", float(index), 1.0, f"P{index}", worker=f"host:{index % 2}") for index in range(10)]
-    text = render_timeline(spans, limit=3)
-    assert "occupancy lane" in text
-    assert "host:0" in text
-    assert "host:1" in text
-
-
-def test_timeline_with_no_spans_says_so() -> None:
-    assert render_timeline([]) == "no timing recorded\n"

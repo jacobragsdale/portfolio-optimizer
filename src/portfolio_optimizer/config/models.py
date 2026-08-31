@@ -8,7 +8,6 @@ this module is also the schema's documentation.
 
 import hashlib
 import math
-import re
 from collections import Counter
 from collections.abc import Mapping
 from typing import Literal, Self
@@ -21,7 +20,6 @@ from portfolio_optimizer.domain.types import PortfolioId, StrictModel
 from portfolio_optimizer.ratelimit import RateLimit
 
 STEP_NAME_PATTERN = r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$"
-_STEP_NAME = re.compile(STEP_NAME_PATTERN)
 
 type OnError = Literal["fail_fast", "continue"]
 type Dependencies = Literal["overlap", "all", "none"]
@@ -57,11 +55,6 @@ class StepSpec(StrictModel):
     def is_qualified(self) -> bool:
         """True when the name carries an explicit module."""
         return ":" in self.name
-
-
-def is_step_name(value: str) -> bool:
-    """True when ``value`` is a well-formed bare or qualified step name."""
-    return _STEP_NAME.match(value) is not None
 
 
 class RunMeta(StrictModel):

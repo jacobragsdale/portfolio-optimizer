@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from scipy.sparse import csr_array
 
-from portfolio_optimizer.domain.results import ChainState, Contribution, MissingSpecColumnError, ProblemSpecError, Solution, SolveStatus, derive_chain_state
+from portfolio_optimizer.domain.results import TRACEBACK_LIMIT, ChainState, Contribution, MissingSpecColumnError, PortfolioFailure, ProblemSpecError, Solution, SolveStatus, derive_chain_state
 from tests.conftest import Factories, Frames
 
 
@@ -180,3 +180,70 @@ def contributions(frames: Frames) -> tuple[Contribution, Contribution]:
     first = frames.orders({"security_id": "A", "side": "SELL", "quantity": 1250, "notional": 125000}, {"security_id": "C", "side": "BUY", "quantity": 20000, "reference_price": 10, "notional": 200000})
     second = frames.orders({"security_id": "C", "side": "BUY", "quantity": 5000, "reference_price": 10, "notional": 50000})
     return Contribution.from_orders("P1", first, "BUY"), Contribution.from_orders("P2", second, "BUY")
+
+
+def raise_from_a_named_frame() -> None:
+    """A frame with a name a traceback can be searched for."""
+    msg = "no such column 'oas'"
+    raise KeyError(msg)
+
+
+def raise_through_a_cause() -> None:
+    """The same failure wrapped, so the traceback has a chain to keep."""
+    try:
+        raise_from_a_named_frame()
+    except KeyError as cause:
+        msg = "could not build the universe"
+        raise ValueError(msg) from cause
+
+
+def test_from_exception_keeps_the_frame_the_failure_happened_in() -> None:
+    with pytest.raises(KeyError) as caught:
+        raise_from_a_named_frame()
+    failure = PortfolioFailure.from_exception("P1", "build", caught.value)
+    assert (failure.portfolio_id, failure.stage, failure.error_type) == ("P1", "build", "KeyError")
+    assert failure.traceback is not None
+    assert "raise_from_a_named_frame" in failure.traceback, "the frame is the whole point: the message alone never says where"
+    assert "KeyError" in failure.traceback
+
+
+def test_from_exception_keeps_the_cause_chain() -> None:
+    with pytest.raises(ValueError) as caught:
+        raise_through_a_cause()
+    failure = PortfolioFailure.from_exception("P1", "build", caught.value)
+    assert failure.traceback is not None
+    assert "raise_from_a_named_frame" in failure.traceback
+    assert "The above exception was the direct cause" in failure.traceback
+
+
+def test_message_override_leaves_the_traceback_alone() -> None:
+    with pytest.raises(KeyError) as caught:
+        raise_from_a_named_frame()
+    failure = PortfolioFailure.from_exception("P1", "worker", caught.value, message="task 'solve-P1' killed its worker")
+    assert failure.message == "task 'solve-P1' killed its worker"
+    assert failure.traceback is not None and "raise_from_a_named_frame" in failure.traceback
+
+
+def test_an_enormous_traceback_is_capped_at_both_ends() -> None:
+    # Deep recursion is not the case that needs the cap — Python collapses repeated frames itself.
+    # A validation error that names every offending row is, and a book has a hundred thousand of them.
+    with pytest.raises(ValueError) as caught:
+        msg = "rejected rows: " + ", ".join(f"SEC{index:06d}" for index in range(6000))
+        raise ValueError(msg)
+    failure = PortfolioFailure.from_exception("P1", "build", caught.value)
+    assert failure.traceback is not None
+    assert len(failure.traceback) < TRACEBACK_LIMIT + 100, "the cap plus its elision notice, not the whole message"
+    assert failure.traceback.startswith("Traceback"), "the origin survives"
+    assert failure.traceback.rstrip().endswith("SEC005999"), "the tail survives"
+    assert "character(s) elided" in failure.traceback
+
+
+def test_an_ordinary_traceback_is_passed_through_whole() -> None:
+    with pytest.raises(KeyError) as caught:
+        raise_from_a_named_frame()
+    failure = PortfolioFailure.from_exception("P1", "build", caught.value)
+    assert failure.traceback is not None and "elided" not in failure.traceback
+
+
+def test_a_failure_no_exception_produced_has_no_traceback() -> None:
+    assert PortfolioFailure("P2", "skipped", "SkippedAfterFailure", "predecessor 'P1' failed").traceback is None

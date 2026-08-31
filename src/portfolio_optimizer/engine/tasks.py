@@ -30,6 +30,7 @@ from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.constraints import ConstraintSpecError, check_against_spec, consumed_securities, parse_constraints
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError
 from portfolio_optimizer.domain.results import (
+    RUN_SCOPED,
     ChainState,
     ConstraintReport,
     Contribution,
@@ -229,11 +230,6 @@ def step_refs(steps: Sequence[ResolvedStep]) -> tuple[StepRef, ...]:
     return tuple(StepRef(qualname=step.qualname, params=step.params_json, label=step.name.rpartition(":")[2]) for step in steps)
 
 
-def failure(portfolio_id: str, stage: str, error: BaseException) -> PortfolioFailure:
-    """Record ``error`` as the failure of ``portfolio_id`` at ``stage``."""
-    return PortfolioFailure(portfolio_id=portfolio_id, stage=stage, error_type=type(error).__name__, message=str(error))
-
-
 def skipped(portfolio_id: str, message: str) -> PortfolioFailure:
     """A portfolio that was never solved because of another portfolio's failure."""
     return PortfolioFailure(portfolio_id=portfolio_id, stage="skipped", error_type=SKIPPED_ERROR, message=message)
@@ -245,11 +241,11 @@ def slice_and_build(shared: SharedRunData, resolved: ResolvedConfig, portfolio_i
         with recorder.span("build:slice"):
             data = slice_portfolio(shared.assembled, portfolio_id)
     except (PortfolioDataError, ValueError) as error:
-        return failure(portfolio_id, "slice", error)
+        return PortfolioFailure.from_exception(portfolio_id, "slice", error)
     try:
         return build_portfolio(data, resolved, Decimal(shared.assembled.solve_orders[portfolio_id]), recorder)
     except Exception as error:  # noqa: BLE001  # recorded per portfolio; on_error decides what happens next
-        return failure(portfolio_id, "build", error)
+        return PortfolioFailure.from_exception(portfolio_id, "build", error)
 
 
 def finish_or_fail(built: BuildResult, resolved: ResolvedConfig, chain: ChainState, run_id: str, recorder: SpanRecorder) -> Outcome:
@@ -258,7 +254,7 @@ def finish_or_fail(built: BuildResult, resolved: ResolvedConfig, chain: ChainSta
         result = finish_portfolio(built, resolved, chain, run_id, recorder)
     except Exception as error:  # noqa: BLE001  # recorded per portfolio; on_error decides what happens next
         log.error("portfolio failed", extra={"run_id": run_id, "portfolio_id": built.portfolio_id, "stage": "solve", "error": type(error).__name__})
-        return failure(built.portfolio_id, "solve", error)
+        return PortfolioFailure.from_exception(built.portfolio_id, "solve", error)
     log.info("portfolio solved", extra={"run_id": run_id, "portfolio_id": built.portfolio_id, "stage": "solve", "orders": len(result.orders), "predecessors": len(chain.predecessors)})
     return result
 
@@ -295,7 +291,7 @@ def probe_task(config: RunConfig) -> TaskOutput[None]:
     try:
         resolved = resolve_config(config)
     except Exception as error:  # noqa: BLE001  # a solver or step package missing on this worker is what the probe exists to report
-        failed: TaskOutput[None] = TaskOutput(outcome=failure("*", "worker", error), environment=environment, host=host_name())
+        failed: TaskOutput[None] = TaskOutput(outcome=PortfolioFailure.from_exception(RUN_SCOPED, "worker", error), environment=environment, host=host_name())
         return failed
     _RESOLVED[resolved.config_sha256] = resolved
     passed: TaskOutput[None] = TaskOutput(outcome=None, environment=environment, host=host_name())
@@ -354,7 +350,7 @@ def _task[T](data: SharedRunData, portfolio_id: str, stage: str, pipeline: Calla
     try:
         resolved = resolved_for(data)
     except Exception as error:  # noqa: BLE001  # a step package missing on this worker is a worker failure, not a crash
-        return TaskOutput(outcome=failure(portfolio_id, "worker", error), environment=environment, host=host_name())
+        return TaskOutput(outcome=PortfolioFailure.from_exception(portfolio_id, "worker", error), environment=environment, host=host_name())
     recorder = SpanRecorder(portfolio_id)
     with recorder.span(stage):
         outcome = pipeline(data, resolved, recorder)

@@ -1,5 +1,6 @@
 """Tier 2: on the real cluster — the golden orders, the line equals the overlap schedule, failures skip only what depended on them (or everything under fail_fast), and nothing partial is published."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -201,3 +202,42 @@ def test_a_typed_only_book_derives_an_edge_free_schedule_that_still_matches_the_
     for left, right in zip(overlap.solved, line.solved, strict=True):
         assert left.orders.drop(columns=["run_id"]).equals(right.orders.drop(columns=["run_id"]))
         assert left.chain_state.content_hash() == right.chain_state.content_hash(), "the line folded a predecessor, the graph folded none; the consume mask zeroes both to the same state"
+
+
+def test_a_worker_side_failure_carries_its_traceback_home_and_is_persisted(tmp_path: Path, scheduler_address: str) -> None:
+    data_root = example_book(tmp_path, **CAPPED_P1)
+    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
+    p1, p2 = report.outcomes
+    assert isinstance(p1, PortfolioFailure) and p1.stage == "solve"
+    assert p1.traceback is not None, "the solve ran in a worker process; without this the frames die with it"
+    assert "InfeasibleError" in p1.traceback
+    assert "portfolio_optimizer/engine/" in p1.traceback, "the engine frames, not just the message"
+    report_path = tmp_path / "run-test" / "run-test" / "failures" / "P1.txt"
+    assert report_path.read_text().endswith(p1.traceback)
+    assert isinstance(p2, PortfolioFailure) and p2.stage == "skipped"
+    assert p2.traceback is None
+    assert {path.name for path in report_path.parent.iterdir()} == {"P1.txt"}, "a skipped portfolio has no traceback to write"
+
+
+def test_the_failure_report_is_a_manifest_artifact(tmp_path: Path, scheduler_address: str) -> None:
+    data_root = example_book(tmp_path, **CAPPED_P1)
+    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
+    report_path = tmp_path / "run-test" / "run-test" / "failures" / "P1.txt"
+    artifact = next(a for a in report.manifest.artifacts if a.path == str(report_path))
+    assert artifact.sha256 == hashlib.sha256(report_path.read_bytes()).hexdigest()
+    assert artifact.size_bytes == len(report_path.read_bytes())
+
+
+def test_the_sink_failure_writes_its_own_traceback(tmp_path: Path, scheduler_address: str) -> None:
+    run_dir = tmp_path / "run-test" / "run-test"
+    run_dir.mkdir(parents=True)
+    (run_dir / "orders").write_text("not a directory")  # the parquet sink cannot create its output directory
+    report = execute(tmp_path, scheduler_address=scheduler_address)
+    assert report.exit_code == EXIT_INFRASTRUCTURE
+    report_path = run_dir / "failures" / "sink.txt"
+    text = report_path.read_text()
+    assert "portfolio_id: *" in text
+    assert "stage: sink" in text
+    assert "FileExistsError" in text
+    assert "portfolio_optimizer/sinks.py" in text, "the sink's own frame, so the failure is placed in the step that raised it"
+    assert str(report_path) in {a.path for a in report.manifest.artifacts}

@@ -31,23 +31,6 @@ def run[T](coroutine: Coroutine[object, object, T]) -> T:
     return asyncio.run(coroutine)
 
 
-# --- RateLimit ---
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "fragment"),
-    [
-        ({}, "requests_per_second, max_in_flight, or both"),
-        ({"requests_per_second": 0.0}, "requests_per_second must be positive"),
-        ({"requests_per_second": 1.0, "burst": 0}, "burst must be at least 1"),
-        ({"max_in_flight": 0}, "max_in_flight must be at least 1"),
-    ],
-)
-def test_rate_limit_rejects_meaningless_bounds(kwargs: dict[str, object], fragment: str) -> None:
-    with pytest.raises(ValueError, match=fragment):
-        RateLimit(**kwargs)  # ty: ignore[invalid-argument-type]  # the bad values are the case under test
-
-
 # --- token bucket ---
 
 

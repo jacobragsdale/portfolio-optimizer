@@ -26,25 +26,15 @@ type Sleep = Callable[[float], Awaitable[None]]
 
 @dataclass(frozen=True, slots=True)
 class RateLimit:
-    """What one pool allows. At least one of the two bounds must be set."""
+    """What one pool allows, as the limiter consumes it.
+
+    The config's ``RateLimitConfig`` is the boundary that validates these bounds — at least one set,
+    a positive rate, a burst and an in-flight count of at least one — and ``to_limit`` builds this.
+    """
 
     requests_per_second: float | None = None
     burst: int = 1
     max_in_flight: int | None = None
-
-    def __post_init__(self) -> None:
-        if self.requests_per_second is None and self.max_in_flight is None:
-            msg = "a rate limit needs requests_per_second, max_in_flight, or both"
-            raise ValueError(msg)
-        if self.requests_per_second is not None and self.requests_per_second <= 0:
-            msg = f"requests_per_second must be positive, got {self.requests_per_second}"
-            raise ValueError(msg)
-        if self.burst < 1:
-            msg = f"burst must be at least 1, got {self.burst}"
-            raise ValueError(msg)
-        if self.max_in_flight is not None and self.max_in_flight < 1:
-            msg = f"max_in_flight must be at least 1, got {self.max_in_flight}"
-            raise ValueError(msg)
 
 
 class RateLimiter:

@@ -4,7 +4,7 @@ import argparse
 import os
 import sys
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,38 +18,31 @@ from portfolio_optimizer.config.schema import run_config_schema, schema_json
 from portfolio_optimizer.domain.data import IoContext
 from portfolio_optimizer.domain.results import ChainState, ConstraintCheck, PortfolioResult, ProblemSpec, Solution, Tolerances
 from portfolio_optimizer.domain.sides import profile_for
-from portfolio_optimizer.domain.types import Clock, IdFactory
+from portfolio_optimizer.domain.types import Clock
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.environment import read_git_info
 from portfolio_optimizer.engine.logging import configure_logging
-from portfolio_optimizer.engine.manifest import diff_manifests, load_manifest
+from portfolio_optimizer.engine.manifest import diff_manifests, failure_report_path, load_manifest
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_INPUT_REJECTED, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunContext, run
-from portfolio_optimizer.engine.timing import render_timeline
 from portfolio_optimizer.settings import SettingsError, load_settings
 
 
-class SystemClock:
+def system_clock() -> datetime:
     """The real clock."""
-
-    def now(self) -> datetime:
-        """Current UTC time."""
-        return datetime.now(tz=UTC)
+    return datetime.now(tz=UTC)
 
 
-class UuidIdFactory:
-    """Random run ids."""
-
-    def new_run_id(self) -> str:
-        """A fresh run id."""
-        return f"run-{uuid.uuid4().hex[:12]}"
+def new_uuid_run_id() -> str:
+    """A fresh random run id."""
+    return f"run-{uuid.uuid4().hex[:12]}"
 
 
 def main() -> int:
     """Console-script entry point."""
-    return run_cli(sys.argv[1:], env=os.environ, clock=SystemClock(), ids=UuidIdFactory(), stdout=sys.stdout, stderr=sys.stderr)
+    return run_cli(sys.argv[1:], env=os.environ, clock=system_clock, new_run_id=new_uuid_run_id, stdout=sys.stdout, stderr=sys.stderr)
 
 
-def run_cli(argv: Sequence[str], *, env: Mapping[str, str], clock: Clock, ids: IdFactory, stdout: TextIO, stderr: TextIO) -> int:
+def run_cli(argv: Sequence[str], *, env: Mapping[str, str], clock: Clock, new_run_id: Callable[[], str], stdout: TextIO, stderr: TextIO) -> int:
     """Parse ``argv`` and dispatch. Exit codes: 0 ok, 1 a portfolio failed, 2 inputs rejected, 3 infrastructure."""
     parser = _parser()
     try:
@@ -58,13 +51,11 @@ def run_cli(argv: Sequence[str], *, env: Mapping[str, str], clock: Clock, ids: I
         return EXIT_OK if exit_.code == 0 else EXIT_INPUT_REJECTED
     command = str(args.command)
     if command == "run":
-        return _run(args, env=env, clock=clock, ids=ids, stdout=stdout, stderr=stderr)
+        return _run(args, env=env, clock=clock, new_run_id=new_run_id, stdout=stdout, stderr=stderr)
     if command == "validate-config":
         return _validate_config(args, stdout=stdout, stderr=stderr)
     if command == "verify":
         return _verify(args, stdout=stdout, stderr=stderr)
-    if command == "timeline":
-        return _timeline(args, stdout=stdout, stderr=stderr)
     if command == "schema":
         stdout.write(schema_json(run_config_schema()))
         return EXIT_OK
@@ -85,16 +76,13 @@ def _parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--manifest", type=Path, required=True)
     verify_parser.add_argument("--portfolio", required=True)
     commands.add_parser("schema", help="print the JSON Schema for run configs (redirect to configs/run-config.schema.json)")
-    timeline = commands.add_parser("timeline", help="print a run's recorded timing: per-stage totals and an ASCII waterfall")
-    timeline.add_argument("manifest", type=Path)
-    timeline.add_argument("--limit", type=int, default=40, help="most per-portfolio rows to draw before collapsing to one occupancy lane per worker")
     diff = commands.add_parser("diff-manifests", help="name the first stage at which two runs diverge")
     diff.add_argument("left", type=Path)
     diff.add_argument("right", type=Path)
     return parser
 
 
-def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, ids: IdFactory, stdout: TextIO, stderr: TextIO) -> int:
+def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_run_id: Callable[[], str], stdout: TextIO, stderr: TextIO) -> int:
     try:
         settings = load_settings(env)
     except SettingsError as error:
@@ -119,7 +107,7 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, ids:
             return EXIT_INPUT_REJECTED
         execution = replace(execution, max_workers=int(args.max_workers))
     context = RunContext(
-        io=IoContext(data_root=data_root, output_dir=output_dir, run_id=ids.new_run_id(), clock=clock),
+        io=IoContext(data_root=data_root, output_dir=output_dir, run_id=new_run_id(), clock=clock),
         execution=execution,
         git=read_git_info(Path.cwd()),
         config_path=str(config_path),
@@ -134,11 +122,13 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, ids:
         stderr.write(f"infrastructure failure: {error}\n")
         return EXIT_INFRASTRUCTURE
     stdout.write(f"run {report.run_id}: manifest {report.manifest_path}\n")
+    run_dir = report.manifest_path.parent
     for outcome in report.outcomes:
         if isinstance(outcome, PortfolioResult):
             stdout.write(f"  {outcome.portfolio_id}: solved, {len(outcome.orders)} order(s)\n")
         else:
-            stdout.write(f"  {outcome.portfolio_id}: FAILED at {outcome.stage}: {outcome.error_type}: {outcome.message}\n")
+            traceback_hint = "" if outcome.traceback is None else f" (traceback: {failure_report_path(run_dir, outcome)})"
+            stdout.write(f"  {outcome.portfolio_id}: FAILED at {outcome.stage}: {outcome.error_type}: {outcome.message}{traceback_hint}\n")
     stdout.write(f"exit code {report.exit_code}\n")
     return report.exit_code
 
@@ -203,21 +193,6 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
     )
     stdout.write(f"{'VERIFIED' if report.passed else 'VERIFICATION FAILED'} {portfolio_id} (spec {spec.content_hash()[:12]})\n")
     return EXIT_OK if report.passed else EXIT_PORTFOLIO_FAILED
-
-
-def _timeline(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
-    """Render the manifest's recorded spans; the Chrome trace beside the manifest holds the same spans for a graphical viewer."""
-    try:
-        manifest = load_manifest(Path(args.manifest).read_text())
-    except OSError as error:
-        stderr.write(f"cannot read manifest: {error}\n")
-        return EXIT_INFRASTRUCTURE
-    except (ValidationError, ValueError) as error:
-        stderr.write(f"manifest rejected: {error}\n")
-        return EXIT_INPUT_REJECTED
-    stdout.write(f"run {manifest.run_id} ({manifest.run_name})\n")
-    stdout.write(render_timeline(manifest.timing, limit=int(args.limit)))
-    return EXIT_OK
 
 
 def _diff_manifests(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
