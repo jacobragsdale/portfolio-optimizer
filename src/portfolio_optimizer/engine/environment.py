@@ -20,7 +20,11 @@ from portfolio_optimizer.cvx.adapter import solver_version
 from portfolio_optimizer.domain.types import StrictModel
 
 IMAGE_DIGEST_VARIABLE = "PORTFOLIO_OPTIMIZER_IMAGE_DIGEST"
-"""The variable a platform sets to the digest of the image a process runs in; part of the fingerprint when present."""
+"""The variable an image or platform sets to the digest of the image a process runs in; part of the fingerprint when present.
+
+The run and every worker read it from their own environment: a client that does not run the worker
+image does not carry its digest, and the fingerprint comparison is what says so.
+"""
 
 
 @dataclass(frozen=True, slots=True)

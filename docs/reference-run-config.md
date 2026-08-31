@@ -101,7 +101,7 @@ solve order. Under `dependencies: none`, no portfolio waits for another. `depend
 not inferred: constraints are loaded data the engine does not interpret, so it cannot tell whether
 yours read the chain — though a row with a typed `kind` column does declare it, and narrows the graph
 accordingly. The workers are the Dask cluster the run provisions for itself — local worker processes on
-a laptop, pods on Kubernetes, or a scheduler someone else runs — sized by the settings below; they are
+a laptop, pods a Dask Gateway creates, or a scheduler someone else runs — sized by the settings below; they are
 recorded in the manifest's `settings` block and never affect the config hash.
 
 ## Shipped steps
@@ -184,11 +184,12 @@ All required unless stated; no defaults; an unknown `PORTFOLIO_OPTIMIZER_*` vari
 | `PORTFOLIO_OPTIMIZER_OUTPUT_DIR` | path | Where `<run_id>/` directories are written. |
 | `PORTFOLIO_OPTIMIZER_DATA_ROOT` | path | `request.data_root` for the shipped file loaders. |
 | `PORTFOLIO_OPTIMIZER_LOG_LEVEL` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` | |
-| `PORTFOLIO_OPTIMIZER_CLUSTER` | `local` \| `kubernetes` \| `auto` \| `tcp://host:port` \| `tls://host:port` | The Dask cluster the run provisions for itself (`local`: worker processes on this machine; `kubernetes`: pods through the Dask operator) or a scheduler to connect to. `auto` becomes `kubernetes` when `KUBERNETES_SERVICE_HOST` is set and `local` otherwise; the manifest records the resolved value. |
+| `PORTFOLIO_OPTIMIZER_CLUSTER` | `local` \| `http(s)://gateway` \| `tcp://host:port` \| `tls://host:port` | The Dask cluster the run provisions for itself (`local`: worker processes on this machine; an `http(s)://` address: a cluster asked of the Dask Gateway there) or a scheduler to connect to. |
 | `PORTFOLIO_OPTIMIZER_MIN_WORKERS` | integer ≥ 1, ≤ max | Workers provisioned before the load stage. |
 | `PORTFOLIO_OPTIMIZER_MAX_WORKERS` | integer ≥ 1 | Workers after assembly. Every build and every solve is submitted at once; the scheduler runs what is ready. |
 | `PORTFOLIO_OPTIMIZER_CLUSTER_TIMEOUT_S` | number > 0 | How long to wait, after assembly, for the first worker. |
-| `PORTFOLIO_OPTIMIZER_WORKER_IMAGE` | image reference | Required when the cluster resolves to `kubernetes`: the image worker pods run, normally this run's own. |
-| `PORTFOLIO_OPTIMIZER_IMAGE_DIGEST` | string | Optional; set by the platform. Part of every process's environment fingerprint and forwarded to worker pods. |
+| `PORTFOLIO_OPTIMIZER_WORKER_IMAGE` | image reference | Required for a gateway: the image its scheduler and worker pods run, normally this run's own. |
+| `PORTFOLIO_OPTIMIZER_GATEWAY_PASSWORD` | string | Required for a gateway: the password its simple authenticator accepts. Recorded in the manifest as `**********`. |
+| `PORTFOLIO_OPTIMIZER_GATEWAY_PROXY_ADDRESS` | `tls://host:port` | Optional; where the gateway publishes scheduler traffic when that is not its own host and port. Unset, `dask-gateway` assumes the gateway's. |
 
 See [how to run on a cluster](how-to-run-on-a-cluster.md).

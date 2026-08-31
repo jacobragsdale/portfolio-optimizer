@@ -20,6 +20,7 @@ stage, scaled and waited on only after assembly, and closed in a ``finally``.
 """
 
 import logging
+import os
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -36,7 +37,7 @@ from portfolio_optimizer.domain.results import RUN_SCOPED, Artifact, AssemblyAud
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.backends import Backend, BackendFactory, ClusterError, Pending, SharedRunData, TaskOutput, WorkerEnvironmentError, WorkersReady
 from portfolio_optimizer.engine.dask_backend import DaskBackend
-from portfolio_optimizer.engine.environment import GitInfo, WorkerEnvironment, environment_for, package_versions
+from portfolio_optimizer.engine.environment import IMAGE_DIGEST_VARIABLE, GitInfo, WorkerEnvironment, environment_for, package_versions
 from portfolio_optimizer.engine.hashing import file_sha256
 from portfolio_optimizer.engine.load import DatasetAudit, assemble, load_datasets
 from portfolio_optimizer.engine.manifest import (
@@ -327,7 +328,7 @@ def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session,
     config = resolved.config
     fail_fast = config.execution.on_error == "fail_fast"
     backend = session.wait()
-    expected = environment_for(config, cwd=Path.cwd(), image_digest=session.context.execution.image_digest)
+    expected = environment_for(config, cwd=Path.cwd(), image_digest=os.environ.get(IMAGE_DIGEST_VARIABLE))
     _check_workers(backend, shared, session, expected)
     dispatch = _Dispatch(backend, backend.share(shared), shared.run_id, len(shared.assembled.portfolio_ids), session, expected)
     coupling: Coupling = config.execution.dependencies

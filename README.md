@@ -296,7 +296,7 @@ uv run pytest                       # unit, property, and smoke tests; warnings 
 ```
 
 Every run provisions its own Dask cluster and tears it down when it ends: `PORTFOLIO_OPTIMIZER_CLUSTER=local`
-on a laptop needs nothing beyond the locked environment; on Kubernetes the `kubernetes` extra
-(`uv sync --locked --extra kubernetes`) and the Dask operator. See [how to run on a cluster](docs/how-to-run-on-a-cluster.md).
+on a laptop needs nothing beyond the locked environment; a Dask Gateway address needs the `gateway` extra
+(`uv sync --locked --extra gateway`). See [how to run on a cluster](docs/how-to-run-on-a-cluster.md).
 
 Python 3.12 or newer. Dependencies are locked in `uv.lock`; solver versions are recorded in every manifest.

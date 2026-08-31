@@ -20,8 +20,8 @@ dependencies = [
 portfolio-optimizer = "portfolio_optimizer.cli:main"
 
 [project.optional-dependencies]
-kubernetes = [
-    "dask-kubernetes>=2026.3.0",
+gateway = [
+    "dask-gateway>=2026.3.0",
 ]
 piqp = [
     "piqp>=0.6.4",
@@ -150,7 +150,7 @@ exclude_also = [
 
 [dependency-groups]
 dev = [
-    "dask-kubernetes>=2026.3.0",
+    "dask-gateway>=2026.3.0",
     "hypothesis>=6.165.10",
     "jsonschema>=4.26.0",
     "pandas-stubs>=3.0.5.260730",

@@ -236,22 +236,22 @@ chain, whatever the graph looks like.
 ## Where the work runs is a setting, and the run owns its cluster
 
 The graph says which portfolios wait for which; it says nothing about machines. Which
-cluster the run provisions — worker processes on this machine, pods on Kubernetes, or a scheduler
+cluster the run provisions — worker processes on this machine, pods a Dask Gateway creates, or a scheduler
 someone else runs — and how many workers, are settings, so the same config hashes identically on a
 laptop and on a cluster and `diff-manifests` never blames the wiring for where a run happened to
 execute. There is one execution path whatever the answer: the runner starts the cluster before the load
 stage so its start-up hides under the slow part, waits for the first worker only after assembly, hands
 it the assembled datasets once, submits tasks that carry a portfolio id and nothing else, and closes it
-in a `finally`. A laptop run and a Kubernetes run differ in one setting and exercise the same code.
+in a `finally`. A laptop run and a gateway run differ in two settings and exercise the same code.
 
 ![Where each stage runs](images/execution-stages.svg)
 
 The cluster is the run's own. It is provisioned when the config resolves — a `LocalCluster` on a
-laptop, a `DaskCluster` resource on Kubernetes running the run's own image — sized up after assembly,
-and deleted when the run ends. That is deliberate: a shared, long-lived cluster has to be operated,
-pushes fairness between runs onto the scheduler's priorities, and can only prove which code solved a
-portfolio through a fingerprint check. Per-run clusters use the run's image, let Kubernetes quotas
-arbitrate between runs, and cost start-up latency that the load stage mostly hides.
+laptop, a cluster a Dask Gateway creates running the run's own image — sized up after assembly, and shut
+down when the run ends. That is deliberate: a shared, long-lived cluster has to be operated, pushes
+fairness between runs onto the scheduler's priorities, and can only prove which code solved a portfolio
+through a fingerprint check. Per-run clusters use the run's image, let the gateway's own limits and the
+namespace's quota arbitrate between runs, and cost start-up latency that the load stage mostly hides.
 
 ![The run owns its cluster: provisioning overlaps the load stage](images/cluster-lifecycle.svg)
 

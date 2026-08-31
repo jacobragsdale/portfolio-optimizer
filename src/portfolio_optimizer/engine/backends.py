@@ -1,7 +1,7 @@
 """Where per-portfolio work runs: the backend seam.
 
 A backend is what executes tasks. There is one real implementation — a Dask cluster the run owns
-(``engine/dask_backend.py``): local worker processes on a laptop, pods on Kubernetes, or a scheduler
+(``engine/dask_backend.py``): local worker processes on a laptop, pods a Dask Gateway creates, or a scheduler
 someone else runs — and the seam exists so the runner can be exercised against a fake. The runner asks
 for the backend right after config resolution (:meth:`Backend.start`, non-blocking, so the cluster
 warms up under the load stage), scales it and waits for the first worker after assembly
@@ -82,7 +82,7 @@ class Backend(Protocol):
 
     @property
     def kind(self) -> str:
-        """``local``, ``kubernetes``, or ``address``, for the manifest."""
+        """``local``, ``gateway``, or ``address``, for the manifest."""
         ...
 
     def start(self) -> None:

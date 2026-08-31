@@ -11,25 +11,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Self, override
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, EnvSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
 
 ENV_PREFIX = "PORTFOLIO_OPTIMIZER_"
-KUBERNETES_MARKER = "KUBERNETES_SERVICE_HOST"
-"""Set in every pod by Kubernetes and on no laptop; what ``cluster: auto`` resolves on."""
 
-type ClusterKind = Literal["local", "kubernetes", "address"]
+type ClusterKind = Literal["local", "gateway", "address"]
 
-CLUSTER_PATTERN = r"^(local|kubernetes|auto|tcp://\S+|tls://\S+)$"
+CLUSTER_PATTERN = r"^(local|https?://\S+|tcp://\S+|tls://\S+)$"
+"""A cluster is provisioned here (``local``), asked of a Dask Gateway (its ``http(s)://`` address), or already running (a ``tcp://`` or ``tls://`` scheduler address)."""
 
 
 @dataclass(frozen=True, slots=True)
 class ExecutionSettings:
     """Which cluster the run provisions and how big it is; the runner's view of the settings.
 
-    ``cluster`` is the resolved kind (``local``, ``kubernetes``) or a scheduler address — never
-    ``auto``. ``min_workers`` is what is provisioned before the load stage and ``max_workers`` what the
-    run scales to after assembly.
+    ``cluster`` is ``local``, the address of a Dask Gateway the run asks for a cluster, or the address
+    of a scheduler someone else runs. ``min_workers`` is what is provisioned before the load stage and
+    ``max_workers`` what the run scales to after assembly.
     """
 
     cluster: str
@@ -37,15 +36,16 @@ class ExecutionSettings:
     max_workers: int
     cluster_timeout_s: float
     worker_image: str | None = None
-    image_digest: str | None = None
+    gateway_password: SecretStr | None = None
+    gateway_proxy_address: str | None = None
 
     @property
     def cluster_kind(self) -> ClusterKind:
-        """``local``, ``kubernetes``, or ``address`` for a scheduler URL."""
+        """``local``, ``gateway`` for a Dask Gateway address, or ``address`` for a scheduler's."""
         if self.cluster == "local":
             return "local"
-        if self.cluster == "kubernetes":
-            return "kubernetes"
+        if self.cluster.startswith(("http://", "https://")):
+            return "gateway"
         return "address"
 
 
@@ -62,7 +62,8 @@ class Settings(BaseSettings):
     max_workers: int = Field(ge=1)
     cluster_timeout_s: float = Field(gt=0)
     worker_image: str | None = Field(default=None, min_length=1)
-    image_digest: str | None = Field(default=None, min_length=1)
+    gateway_password: SecretStr | None = Field(default=None, min_length=1)
+    gateway_proxy_address: str | None = Field(default=None, min_length=1)
 
     @classmethod
     @override
@@ -80,9 +81,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _cluster_settings_agree(self) -> Self:
-        if self.cluster == "kubernetes" and self.worker_image is None:
-            msg = f"{_variable('cluster')}=kubernetes requires {_variable('worker_image')}: the image worker pods run, normally this run's own"
-            raise ValueError(msg)
+        if self.execution().cluster_kind == "gateway":
+            if self.worker_image is None:
+                msg = f"{_variable('cluster')}={self.cluster} is a Dask Gateway address and requires {_variable('worker_image')}: the image its scheduler and worker pods run, normally this run's own"
+                raise ValueError(msg)
+            if self.gateway_password is None:
+                msg = f"{_variable('cluster')}={self.cluster} is a Dask Gateway address and requires {_variable('gateway_password')}: the password its simple authenticator accepts"
+                raise ValueError(msg)
         if self.min_workers > self.max_workers:
             msg = f"{_variable('min_workers')} ({self.min_workers}) exceeds {_variable('max_workers')} ({self.max_workers})"
             raise ValueError(msg)
@@ -91,7 +96,13 @@ class Settings(BaseSettings):
     def execution(self) -> ExecutionSettings:
         """The execution mechanics as the runner consumes them."""
         return ExecutionSettings(
-            cluster=self.cluster, min_workers=self.min_workers, max_workers=self.max_workers, cluster_timeout_s=self.cluster_timeout_s, worker_image=self.worker_image, image_digest=self.image_digest
+            cluster=self.cluster,
+            min_workers=self.min_workers,
+            max_workers=self.max_workers,
+            cluster_timeout_s=self.cluster_timeout_s,
+            worker_image=self.worker_image,
+            gateway_password=self.gateway_password,
+            gateway_proxy_address=self.gateway_proxy_address,
         )
 
     def shown(self) -> dict[str, str]:
@@ -123,9 +134,7 @@ def load_settings(env: Mapping[str, str]) -> Settings:
     """Build settings from an explicit environment mapping (a seam for tests; production passes ``os.environ``).
 
     Every ``PORTFOLIO_OPTIMIZER_*`` variable must correspond to a field, and every field must be
-    present: a typo in a variable name is an error, not a silently ignored value. ``cluster: auto``
-    is resolved here — ``kubernetes`` inside a pod, ``local`` anywhere else — so the settings the run
-    sees, and the manifest records, name what actually happened.
+    present: a typo in a variable name is an error, not a silently ignored value.
     """
     known = {_variable(name) for name in Settings.model_fields}
     unknown = sorted(key for key in env if key.upper().startswith(ENV_PREFIX) and key.upper() not in known)
@@ -133,19 +142,11 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         msg = f"invalid settings: unknown variable(s) {unknown}; expected {sorted(known)}"
         raise SettingsError(msg)
     try:
-        return Settings.model_validate(_MappingEnvSource(Settings, _resolve_auto_cluster(env))())
+        return Settings.model_validate(_MappingEnvSource(Settings, env)())
     except ValidationError as error:
         details = "; ".join(_detail(item["loc"], str(item["msg"])) for item in error.errors())
         msg = f"invalid settings: {details}"
         raise SettingsError(msg) from error
-
-
-def _resolve_auto_cluster(env: Mapping[str, str]) -> dict[str, str]:
-    resolved = dict(env)
-    for key, value in env.items():
-        if key.upper() == _variable("cluster") and value == "auto":
-            resolved[key] = "kubernetes" if KUBERNETES_MARKER in env else "local"
-    return resolved
 
 
 def _detail(loc: tuple[int | str, ...], message: str) -> str:

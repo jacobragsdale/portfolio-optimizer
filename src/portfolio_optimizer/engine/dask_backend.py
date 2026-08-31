@@ -1,4 +1,4 @@
-"""A Dask cluster the run owns: ``LocalCluster`` on a laptop, ``KubeCluster`` on Kubernetes, or a scheduler address.
+"""A Dask cluster the run owns: ``LocalCluster`` on a laptop, a cluster a Dask Gateway creates for it, or a scheduler address.
 
 Provisioning is issued from a helper thread so :meth:`DaskBackend.start` returns at once and the
 scheduler and its first workers come up under the load stage; :meth:`DaskBackend.ready` is where the
@@ -21,7 +21,6 @@ from distributed import Client, LocalCluster, as_completed
 
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.backends import ClusterError, Pending, SharedRunData, WorkersReady
-from portfolio_optimizer.engine.environment import IMAGE_DIGEST_VARIABLE
 from portfolio_optimizer.settings import ExecutionSettings
 
 log = logging.getLogger(__name__)
@@ -79,7 +78,7 @@ class DaskBackend:
 
     @property
     def kind(self) -> str:
-        """``local``, ``kubernetes``, or ``address``."""
+        """``local``, ``gateway``, or ``address``."""
         kind: str = self._kind
         return kind
 
@@ -162,7 +161,7 @@ class DaskBackend:
         if self._kind == "address":
             client = Client(self._cluster_setting, timeout=self._timeout_s, set_as_default=False)
         else:
-            cluster = self._local_cluster() if self._kind == "local" else self._kube_cluster()
+            cluster = self._local_cluster() if self._kind == "local" else self._gateway_cluster()
             self._cluster = cluster
             if self._desired is not None:
                 cluster.scale(self._desired)
@@ -175,36 +174,38 @@ class DaskBackend:
         # An ephemeral dashboard port: `None` falls back to distributed's default 8787, which a second cluster in the same process cannot bind.
         return _cluster_like(LocalCluster(n_workers=self._min_workers, threads_per_worker=1, processes=True, dashboard_address=":0", worker_dashboard_address=":0", silence_logs=logging.WARNING))
 
-    def _kube_cluster(self) -> _ClusterLike:
-        """A ``DaskCluster`` resource managed by the Dask Kubernetes operator, running this run's image.
+    def _gateway_cluster(self) -> _ClusterLike:
+        """A cluster a Dask Gateway creates for this run, its scheduler and workers running this run's image.
 
-        Verify the constructor's surface against the installed ``dask-kubernetes`` at upgrade time; it
-        has changed more than once. The name must be a DNS label.
+        Only the options the gateway declares can be set from here, and ``image`` is the one that
+        matters: a scheduler or worker without this package cannot run the run's tasks. One thread per
+        worker, ``OMP_NUM_THREADS``, the image digest, and the idle timeout belong to the gateway's own
+        configuration or to the image, because a client cannot reach into pods it does not create.
+
+        ``gateway_proxy_address`` is separate from the gateway's own address because the two endpoints
+        need not share a host or a port: scheduler traffic is raw TLS routed by SNI, so a deployment
+        that terminates the REST API behind an HTTP proxy usually publishes the scheduler proxy
+        elsewhere. Left unset, ``dask-gateway`` assumes the gateway's own host and port, which is right
+        only when they are in fact the same endpoint.
         """
-        operator = importlib.import_module("dask_kubernetes.operator")
-        env = {"OMP_NUM_THREADS": "1"}
-        if self._execution.image_digest is not None:
-            env[IMAGE_DIGEST_VARIABLE] = self._execution.image_digest
-        return _cluster_like(
-            operator.KubeCluster(
-                name=_dns_label(f"po-{self._run_id}"),
+        gateway = importlib.import_module("dask_gateway")
+        if self._execution.gateway_password is None:
+            msg = "a gateway cluster needs a gateway password"
+            raise ClusterError(msg)
+        cluster = _cluster_like(
+            gateway.GatewayCluster(
+                address=self._cluster_setting,
+                proxy_address=self._execution.gateway_proxy_address,
+                auth=gateway.BasicAuth(password=self._execution.gateway_password.get_secret_value()),
                 image=self._execution.worker_image,
-                n_workers=self._min_workers,
-                env=env,
-                worker_command=["dask-worker", "--nthreads", "1"],
-                idle_timeout=int(self._timeout_s),
                 shutdown_on_close=True,
-                quiet=True,
             )
         )
+        cluster.scale(self._min_workers)  # a gateway cluster starts empty: it takes no worker count at construction
+        return cluster
 
     def _require_client(self) -> Client:
         if self._client is None:
             msg = "backend is not ready; call ready() after start()"
             raise ClusterError(msg)
         return self._client
-
-
-def _dns_label(value: str) -> str:
-    cleaned = "".join(character if character.isalnum() else "-" for character in value.lower()).strip("-")
-    return cleaned[:63].rstrip("-") or "portfolio-optimizer"

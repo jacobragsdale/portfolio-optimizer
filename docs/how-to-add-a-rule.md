@@ -55,7 +55,7 @@ every portfolio build at once.
 Rules run in list order. A bare string is a rule without params. A qualified name such as
 `"my_firm.rules:exclude_sector"` resolves a function outside this module — useful when a firm keeps
 its rules in a separate package. That package must be importable wherever tasks run — the run's worker
-processes on a laptop, or its pods on Kubernetes — exactly as any Python import; every task
+processes on a laptop, or its pods on a gateway's cluster — exactly as any Python import; every task
 reports the version it found, and a worker that has a different one fails its portfolio rather than
 answering with different code.
 

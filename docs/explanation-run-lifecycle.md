@@ -24,8 +24,8 @@ to log, and — deliberately here rather than in the config — which Dask clust
 itself and how big it is (`PORTFOLIO_OPTIMIZER_CLUSTER`, how many workers to provision up front, how
 many after assembly, and how long to wait for the first). There are no defaults, `.env` files are read
 only when you pass `--env-file`, and an *unknown* `PORTFOLIO_OPTIMIZER_*` variable is an error — a typo
-fails loudly instead of being ignored. `PORTFOLIO_OPTIMIZER_CLUSTER=auto` is resolved right here, to
-`kubernetes` inside a pod and `local` anywhere else, so what the manifest records is what happened.
+fails loudly instead of being ignored. A cluster the run cannot actually ask for is refused right here:
+a gateway address without the image its pods run, or without the password it authenticates with.
 
 **The config** (`config/models.py`) is a strict pydantic model: unknown keys are errors, money is written
 as strings (`"0.05"`) so it becomes exact `Decimal`, and `as_of_date` must carry a timezone. The validated
@@ -60,7 +60,7 @@ checks. There is no execution mode to check the steps against: the schedule is d
 steps and the data (§9).
 
 `portfolio-optimizer validate-config` stops here and prints one line per resolved step. `run` then,
-**before any data loads, asks for its cluster** — local worker processes or Kubernetes pods. The call
+**before any data loads, asks for its cluster** — local worker processes or a gateway's pods. The call
 does not block; the point is that the cluster comes up underneath the slow stage that follows.
 
 ## 2. Loading and assembly: validation, first layer
@@ -323,7 +323,7 @@ it are read only to finish the graph the manifest records.
 ![Where each stage runs](images/execution-stages.svg)
 
 Which cluster the run provisions is a *setting*: a `LocalCluster` of worker processes on a laptop, a
-`KubeCluster` of pods on Kubernetes, or a scheduler address (`engine/dask_backend.py`), behind a seam
+`GatewayCluster` of pods a Dask Gateway creates, or a scheduler address (`engine/dask_backend.py`), behind a seam
 the runner can also be tested against with a fake (`engine/backends.py`). The runner drives it through
 one lifetime: **start** it before the load stage, so worker processes import the solver stack and pods
 come up while the loaders wait on their sources; **scale** it and **wait** for the first worker after
@@ -341,7 +341,7 @@ solver, the versions of the packages behind external steps, the git revision, th
 the runner compares it with its own. A worker running different code fails its portfolio at stage
 `worker` rather than answering, and the manifest lists every environment that did work. A local
 cluster's workers are spawned from the run's own environment, so the fingerprints agree by construction;
-on Kubernetes this is what makes sharing machines safe.
+on a gateway's cluster this is what makes sharing machines safe.
 
 Under `fail_fast`, the first failure *in solve order* cancels every solve behind it — a running task
 finishes and is discarded — and every lower-priority portfolio is recorded `skipped`, whatever it had
@@ -426,7 +426,7 @@ The [tutorial](tutorial-first-run.md) walks through exactly this.
 
 ## Where validation happens, in one list
 
-1. **Settings** — unknown or missing environment variables; a Kubernetes cluster without a worker image.
+1. **Settings** — unknown or missing environment variables; a gateway without a worker image or a password.
 2. **Config** — strict models; money as strings; timestamps with a zone.
 3. **Resolver** — the function exists, its signature matches the contract, its params validate; the
    solver is known and installed; constraint labels are unique; then every term and constraint is
