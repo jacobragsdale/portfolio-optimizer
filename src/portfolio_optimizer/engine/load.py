@@ -5,8 +5,7 @@ asynchronous and driven by the DAG the config declares: every dataset is a task 
 moment the datasets its ``depends_on`` names (plus ``portfolios``, for a ``per_portfolio`` dataset)
 have loaded, and one with no dependencies starts the moment the stage does. ``async def`` loaders run
 as tasks on the event loop; plain ``def`` loaders run in worker threads so a blocking driver never
-stalls the loop. Each dataset's rate-limit pool is created here and shared by every dataset that
-names it. A loader receives its dependencies' frames as ``request.inputs``.
+stalls the loop. A loader receives its dependencies' frames as ``request.inputs``.
 
 ``portfolios`` is engine-known but scheduled like any other node: once it loads — or is read straight
 from an inline config list, which costs nothing — its frame is validated, sorted by ``solve_order``
@@ -15,9 +14,10 @@ then ``portfolio_id``, and the ids still in the run reach its direct dependents 
 
 A dataset's ``scope`` says how it is partitioned. A ``global`` dataset is one call and is what the
 assembly steps see. A ``per_portfolio`` dataset is the engine's own fan-out: the ids are cut into
-batches of ``batch_size`` and the loader is called once per batch, so a source that answers one
-account at a time is driven by the engine — schedulable, throttled by one limiter, and overlapping
-every dataset that does not depend on it — rather than by a loader that fans out privately.
+batches of ``batch_size`` and the loader is called once per batch, at most ``max_in_flight`` of them
+at a time, so a source that answers one account at a time is driven by the engine — schedulable,
+bounded, and overlapping every dataset that does not depend on it — rather than by a loader that
+fans out privately.
 
 Failure is split along the same line. A **structural** problem rejects the run: a required dataset
 missing, a schema violated, a global loader that raised, or a per-portfolio dataset no batch of which
@@ -49,7 +49,6 @@ from portfolio_optimizer.domain.results import AssemblyAuditRecord, PortfolioFai
 from portfolio_optimizer.domain.schemas import CONSTRAINTS, DATASET_SCHEMAS, PORTFOLIOS, REQUIRED_DATASETS
 from portfolio_optimizer.domain.types import PortfolioId, StrictModel
 from portfolio_optimizer.engine.hashing import frame_sha256
-from portfolio_optimizer.ratelimit import RateLimiter
 
 log = logging.getLogger(__name__)
 
@@ -178,8 +177,8 @@ class _Plan:
     dependencies: tuple[str, ...]
 
 
-type _RequestFactory = Callable[[str, DatasetConfig, tuple[PortfolioId, ...], Frames], LoadRequest]
-"""Builds one loader call's request: dataset name, its config, the ids this call is for, and its view of the input frames."""
+type _RequestFactory = Callable[[str, tuple[PortfolioId, ...], Frames], LoadRequest]
+"""Builds one loader call's request: dataset name, the ids this call is for, and its view of the input frames."""
 
 
 def load_datasets(resolved: ResolvedConfig, *, data_root: Path, run_id: str) -> LoadedDatasets:
@@ -207,26 +206,9 @@ async def load_datasets_async(resolved: ResolvedConfig, *, data_root: Path, run_
     """
     config = resolved.config
     order = dataset_order(config.datasets)  # the model validator already refused a cycle; guard again so a hand-built config cannot deadlock the scheduler
-    pools = {name: RateLimiter(pool.to_limit(), name=name) for name, pool in config.rate_limits.items()}
-    private: dict[str, RateLimiter] = {}
 
-    def limiter_for(dataset: str, spec: DatasetConfig) -> RateLimiter:
-        """The shared pool the input names, a private limiter from its inline bound, or no limit.
-
-        An inline bound is built once per input and kept, because a ``per_portfolio`` input asks for one
-        limiter per batch and a bound that is not shared between them is not a bound at all.
-        """
-        bound = spec.rate_limit
-        if bound is None:
-            return RateLimiter.unlimited()
-        if isinstance(bound, str):
-            return pools[bound]
-        if dataset not in private:
-            private[dataset] = RateLimiter(bound.to_limit(), name=dataset)
-        return private[dataset]
-
-    def request(name: str, spec: DatasetConfig, ids: tuple[PortfolioId, ...], inputs: Frames) -> LoadRequest:
-        return LoadRequest(dataset=name, portfolio_ids=ids, as_of_date=config.run.as_of_date, data_root=data_root, run_id=run_id, rate_limiter=limiter_for(name, spec), inputs=inputs)
+    def request(name: str, ids: tuple[PortfolioId, ...], inputs: Frames) -> LoadRequest:
+        return LoadRequest(dataset=name, portfolio_ids=ids, as_of_date=config.run.as_of_date, data_root=data_root, run_id=run_id, inputs=inputs)
 
     plans = {name: _Plan(name=name, step=resolved.loaders.get(name), spec=spec, dependencies=spec.dependencies()) for name, spec in config.datasets.items()}
     started = time.perf_counter()
@@ -235,8 +217,6 @@ async def load_datasets_async(resolved: ResolvedConfig, *, data_root: Path, run_
         for name in order:
             tasks[name] = group.create_task(_run_dataset(plans[name], tasks, request, stage_started=started, run_id=run_id))
     outcomes = {name: tasks[name].result() for name in order}
-    for limiter in (*pools.values(), *private.values()):
-        log.info("rate limit %r: %d request(s), %.2fs spent waiting", limiter.name, limiter.acquired, limiter.waited_s, extra={"run_id": run_id, "stage": "load"})
     return _collect(outcomes, run_id=run_id)
 
 
@@ -297,6 +277,9 @@ def _inputs_for(inputs: Frames, ids: tuple[PortfolioId, ...]) -> Frames:
 async def _load_dataset(plan: _Plan, dataset: DatasetConfig, ids: tuple[PortfolioId, ...], inputs: Frames, request: _RequestFactory, *, started_s: float, run_id: str) -> _Loaded | _Failed:
     """Call the loader once per batch, concurrently, and combine what came back.
 
+    Every batch starts at once and ``max_in_flight`` decides how many actually run, so a source that
+    answers one account per call is paced by the config rather than by the loader.
+
     A global dataset has one batch and any failure is the dataset's. A per-portfolio dataset fails only
     the portfolios of the batches that raised — unless no batch survived, which is the source being
     down rather than a portfolio being bad, and rejects the run like any other dataset failure.
@@ -308,8 +291,9 @@ async def _load_dataset(plan: _Plan, dataset: DatasetConfig, ids: tuple[Portfoli
     started = time.perf_counter()
     batches = dataset.batches(ids)
     per_portfolio = dataset.scope == "per_portfolio"
-    requests = [request(plan.name, dataset, batch, _inputs_for(inputs, batch) if per_portfolio else inputs) for batch in batches]
-    results: list[_BatchResult | BaseException] = list(await asyncio.gather(*(_load_frame(step, batch_request) for batch_request in requests), return_exceptions=True))
+    requests = [request(plan.name, batch, _inputs_for(inputs, batch) if per_portfolio else inputs) for batch in batches]
+    slots = asyncio.Semaphore(dataset.max_in_flight or max(len(batches), 1))  # an unbounded dataset gets a slot per batch, which never waits
+    results: list[_BatchResult | BaseException] = list(await asyncio.gather(*(_load_frame(step, batch_request, slots) for batch_request in requests), return_exceptions=True))
     for result in results:
         if isinstance(result, BaseException) and not isinstance(result, Exception):
             raise result  # cancellation and the like are the caller's, not a dataset's failure to report
@@ -430,10 +414,10 @@ def _leaves(error: BaseException) -> tuple[BaseException, ...]:
 def _unwrap(error: Exception) -> Exception:
     """The one failure a loader's exception group wraps, or the group itself when it holds more than one.
 
-    A loader that fans out privately runs its calls in a ``TaskGroup`` — :func:`~portfolio_optimizer.ratelimit.fan_out`
-    does — and the first failure cancels the others, so what reaches the engine is almost always a single
-    real error inside a group. Unwrapping keeps the type the exit code is chosen from and the message that
-    names the missing file, instead of the group's ``unhandled errors in a TaskGroup``.
+    A loader that fans out privately — ``asyncio.gather`` or a ``TaskGroup`` over the batch's ids — lets
+    the first failure surface inside a group, so what reaches the engine is usually a single real error
+    wrapped in one. Unwrapping keeps the type the exit code is chosen from and the message that names the
+    missing file, instead of the group's ``unhandled errors in a TaskGroup``.
     """
     leaves = _leaves(error)
     if len(leaves) == 1 and isinstance(leaves[0], Exception):
@@ -470,8 +454,9 @@ def _raise_load_failures(failures: list[_Failed], skipped: list[_Skipped]) -> No
     raise LoadError("; ".join([*(f"{failure.name}: {_describe(failure.error)}" for failure in failures), *notes]))
 
 
-async def _load_frame(step: ResolvedStep, request: LoadRequest) -> pd.DataFrame:
-    result = await step.invoke_async(request=request)
+async def _load_frame(step: ResolvedStep, request: LoadRequest, slots: asyncio.Semaphore) -> pd.DataFrame:
+    async with slots:
+        result = await step.invoke_async(request=request)
     if not isinstance(result, pd.DataFrame):
         msg = f"loader {step.qualname!r} for {request.dataset!r} returned {type(result).__name__}, expected DataFrame"
         raise LoadError(msg)

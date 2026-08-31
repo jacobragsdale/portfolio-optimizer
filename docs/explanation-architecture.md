@@ -36,13 +36,13 @@ master's scan — rather than the book of record plus everything behind it. Load
 kind that may be async; everything downstream is pure and synchronous.
 
 A backend has limits, and a source that answers one portfolio per call will hit them on a large run.
-Backends also differ: a vendor API may tolerate two concurrent requests where a warehouse takes
-thirty-two. So every input carries its own bound — a token bucket plus an in-flight cap — either
-inline and private to it, or as the name of a shared pool when two inputs come from the same backend;
-the loader draws from it through `request.rate_limiter`. The limiter is one object usable from both
-async code and threads, so a sync loader and an async loader on the same API cannot exceed the limit
-between them. The manifest records each input's load time and the log each limiter's wait, so "why was
-this run slow" has an answer.
+Backends also differ: a vendor API may tolerate eight concurrent requests where a warehouse takes
+thirty-two. So the input that is cut into per-account calls carries `max_in_flight`, and the engine —
+which already owns that partition — holds a slot for the length of each call. One number per input,
+and no loader counts its own requests: a bound the loader enforces is a bound the engine cannot
+schedule around, and one shared between inputs is budget arithmetic in a config file. A source that
+needs pacing rather than a concurrency cap gets it in the client, beside its retry and backoff. The
+manifest records each input's load time and its batch count, so "why was this run slow" has an answer.
 
 ## Assembly is a step kind, and the bundle is two tables
 

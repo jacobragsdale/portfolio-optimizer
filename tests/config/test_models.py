@@ -130,38 +130,15 @@ def test_defaults_fill_optional_sections() -> None:
     assert config.rules == ()
 
 
-def test_rate_limit_pool_named_by_a_dataset_must_be_declared(example_dict: dict[str, object]) -> None:
-    datasets = section(example_dict, "datasets") | {"holdings": {"loader": "load_holdings", "rate_limit": "vendor"}}
-    with pytest.raises(ValidationError, match="rate_limit 'vendor' is not declared in rate_limits \\['custodian'\\]"):
-        load_run_config(json.dumps(example_dict | {"datasets": datasets}))
-    config = load_run_config(json.dumps(example_dict | {"datasets": datasets, "rate_limits": {"vendor": {"requests_per_second": 20, "max_in_flight": 4}}}))
-    holdings = config.datasets["holdings"]
-    assert isinstance(holdings, DatasetConfig) and holdings.rate_limit == "vendor"
-    assert config.rate_limits["vendor"].to_limit().burst == 20
-
-
 @pytest.mark.parametrize(
-    ("pool", "fragment"),
-    [
-        ({}, "requests_per_second, max_in_flight, or both"),
-        ({"burst": 5, "max_in_flight": 2}, "burst only applies with requests_per_second"),
-        ({"requests_per_second": 0}, "greater than 0"),
-        ({"max_in_flight": 0}, "greater than or equal to 1"),
-    ],
-    ids=["no bound", "burst without a rate", "zero rate", "zero in-flight"],
+    ("holdings", "fragment"),
+    [({"scope": "per_portfolio", "max_in_flight": 0}, "greater than or equal to 1"), ({"max_in_flight": 4}, "apply only to a per_portfolio dataset")],
+    ids=["zero in-flight", "a bound on a dataset loaded by one call"],
 )
-def test_meaningless_rate_limits_are_rejected(example_dict: dict[str, object], pool: dict[str, object], fragment: str) -> None:
+def test_a_meaningless_in_flight_bound_is_rejected(example_dict: dict[str, object], holdings: dict[str, object], fragment: str) -> None:
+    datasets = section(example_dict, "datasets") | {"holdings": {"loader": "load_holdings"} | holdings}
     with pytest.raises(ValidationError, match=fragment):
-        load_run_config(json.dumps(example_dict | {"rate_limits": {"vendor": pool}}))
-
-
-def test_rate_limit_burst_defaults_to_the_rate_rounded_up_and_never_below_one() -> None:
-    from portfolio_optimizer.config.models import RateLimitConfig
-
-    assert RateLimitConfig.model_validate({"requests_per_second": 2.5}).to_limit().burst == 3
-    assert RateLimitConfig.model_validate({"requests_per_second": 0.1}).to_limit().burst == 1
-    assert RateLimitConfig.model_validate({"requests_per_second": 4, "burst": 1}).to_limit().burst == 1
-    assert RateLimitConfig.model_validate({"max_in_flight": 8}).to_limit().max_in_flight == 8
+        load_run_config(json.dumps(example_dict | {"datasets": datasets}))
 
 
 @pytest.mark.parametrize("portfolios", [["P7", "P2", "P9"], {"ids": ["P7", "P2", "P9"]}], ids=["bare array", "object form"])
@@ -229,16 +206,12 @@ def test_dependency_cycles_are_rejected_naming_the_cycle(example_dict: dict[str,
         load_run_config(json.dumps(example_dict | {"datasets": implicit}))
 
 
-def test_each_input_may_carry_its_own_inline_bound(example_dict: dict[str, object]) -> None:
+def test_each_input_carries_its_own_bound(example_dict: dict[str, object]) -> None:
     datasets = section(example_dict, "datasets") | {
-        "holdings": {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}, "rate_limit": {"requests_per_second": 5, "max_in_flight": 2}},
-        "universe": {"loader": {"name": "csv", "params": {"path": "universe.csv"}}, "rate_limit": {"max_in_flight": 16}},
-        "portfolios": {"loader": "csv", "rate_limit": "slow"},
+        "holdings": {"loader": {"name": "csv", "params": {"path": "holdings.csv"}}, "scope": "per_portfolio", "batch_size": 1, "max_in_flight": 2},
+        "details": {"loader": "csv", "scope": "per_portfolio"},
     }
-    config = load_run_config(json.dumps(example_dict | {"datasets": datasets, "rate_limits": {"slow": {"requests_per_second": 1}}}))
-    holdings, universe, book = config.datasets["holdings"], config.datasets["universe"], config.datasets["portfolios"]
-    assert isinstance(holdings, DatasetConfig) and not isinstance(holdings.rate_limit, str | None) and holdings.rate_limit.to_limit().max_in_flight == 2
-    assert isinstance(universe, DatasetConfig) and not isinstance(universe.rate_limit, str | None) and universe.rate_limit.to_limit().requests_per_second is None
-    assert isinstance(book, DatasetConfig) and book.rate_limit == "slow"
-    with pytest.raises(ValidationError, match=r"datasets\.portfolios: rate_limit 'fast' is not declared"):
-        load_run_config(json.dumps(example_dict | {"datasets": section(example_dict, "datasets") | {"portfolios": {"loader": "csv", "rate_limit": "fast"}}}))
+    config = load_run_config(json.dumps(example_dict | {"datasets": datasets}))
+    holdings, details = config.datasets["holdings"], config.datasets["details"]
+    assert isinstance(holdings, DatasetConfig) and holdings.max_in_flight == 2
+    assert isinstance(details, DatasetConfig) and details.max_in_flight is None, "omitted is unbounded"

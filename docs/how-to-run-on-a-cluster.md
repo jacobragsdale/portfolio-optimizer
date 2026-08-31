@@ -125,7 +125,7 @@ older image fails its portfolios rather than answering with different code; the 
   client pod that was killed before its `finally` exits on its own. For belt and braces, give the
   `DaskCluster` resource an owner reference to the client's Job so Kubernetes garbage-collects it; that
   is a deployment concern, not an engine one.
-- Rate limits are per run. Several runs hitting one vendor at the same time each respect their own pool
-  and together exceed it; if that is your situation, the limiter has to live outside the run.
+- `max_in_flight` is per run. Several runs hitting one vendor at the same time each respect their own
+  bound and together exceed it; if that is your situation, the limit has to live outside the run.
 - The `dask-kubernetes` API has changed more than once. `engine/dask_backend.py` is the only module that
   touches it; check its constructor call against the installed version when upgrading.

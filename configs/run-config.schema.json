@@ -312,7 +312,7 @@
     },
     "DatasetConfig": {
       "additionalProperties": false,
-      "description": "How one input is loaded, what it depends on, how its portfolios are partitioned across calls, and how hard its source may be pushed.",
+      "description": "How one input is loaded, what it depends on, and how its portfolios are partitioned across calls.",
       "properties": {
         "batch_size": {
           "anyOf": [
@@ -341,21 +341,19 @@
           "$ref": "#/$defs/LoaderStep",
           "description": "The loader step: `(request: LoadRequest[, params]) -> DataFrame`, plain or `async def`."
         },
-        "rate_limit": {
+        "max_in_flight": {
           "anyOf": [
             {
-              "type": "string"
-            },
-            {
-              "$ref": "#/$defs/RateLimitConfig"
+              "minimum": 1,
+              "type": "integer"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "How hard this input's source may be pushed: the name of a shared pool in the top-level `rate_limits`, or an inline bound private to this input. The loader receives it as `request.rate_limiter`. Omit for no limit.",
-          "title": "Rate Limit"
+          "description": "How many of this dataset's calls the engine keeps in flight at once. A slot is held for the whole call, so `batch_size: 1` with `max_in_flight: 8` is eight concurrent per-portfolio calls to the source. Omit for no bound.",
+          "title": "Max In Flight"
         },
         "scope": {
           "$ref": "#/$defs/DatasetScope",
@@ -918,56 +916,6 @@
         }
       },
       "title": "PostSolveConfig",
-      "type": "object"
-    },
-    "RateLimitConfig": {
-      "additionalProperties": false,
-      "description": "Bounds shared by every dataset that names this pool.\n\nAt least one of `requests_per_second` and `max_in_flight` is required. The loader receives the pool as\n`request.rate_limiter` and wraps each call to the backend in it.",
-      "properties": {
-        "burst": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Requests that may be made at once before the rate applies; defaults to `requests_per_second` rounded up. Requires `requests_per_second`.",
-          "title": "Burst"
-        },
-        "max_in_flight": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Maximum simultaneous requests across every loader in the pool. Omit for no concurrency bound.",
-          "title": "Max In Flight"
-        },
-        "requests_per_second": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Sustained request rate the pool allows, refilled continuously (a token bucket). Omit for no rate bound.",
-          "title": "Requests Per Second"
-        }
-      },
-      "title": "RateLimitConfig",
       "type": "object"
     },
     "RuleStep": {
@@ -1881,14 +1829,6 @@
     "post_solve": {
       "$ref": "#/$defs/PostSolveConfig",
       "description": "Verification tolerances."
-    },
-    "rate_limits": {
-      "additionalProperties": {
-        "$ref": "#/$defs/RateLimitConfig"
-      },
-      "description": "Named rate-limit pools for loaders, e.g. `{\"vendor_api\": {\"requests_per_second\": 20, \"max_in_flight\": 8}}`. A dataset opts in with `rate_limit`; datasets naming the same pool share its budget.",
-      "title": "Rate Limits",
-      "type": "object"
     },
     "rules": {
       "default": [],

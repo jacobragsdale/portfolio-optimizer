@@ -7,7 +7,6 @@ this module is also the schema's documentation.
 """
 
 import hashlib
-import math
 from collections import Counter
 from collections.abc import Mapping
 from typing import Literal, Self
@@ -17,7 +16,6 @@ from pydantic import AwareDatetime, Field, field_validator, model_validator
 from portfolio_optimizer.domain.schemas import REQUIRED_DATASETS
 from portfolio_optimizer.domain.sides import Sides
 from portfolio_optimizer.domain.types import PortfolioId, StrictModel
-from portfolio_optimizer.ratelimit import RateLimit
 
 STEP_NAME_PATTERN = r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$"
 
@@ -65,37 +63,8 @@ class RunMeta(StrictModel):
     tags: dict[str, str] = Field(default_factory=dict, description='Free-form string labels copied into the manifest, e.g. `{"desk": "tax-aware"}`.')
 
 
-class RateLimitConfig(StrictModel):
-    """Bounds shared by every dataset that names this pool.
-
-    At least one of `requests_per_second` and `max_in_flight` is required. The loader receives the pool as
-    `request.rate_limiter` and wraps each call to the backend in it.
-    """
-
-    requests_per_second: float | None = Field(default=None, gt=0, description="Sustained request rate the pool allows, refilled continuously (a token bucket). Omit for no rate bound.")
-    burst: int | None = Field(
-        default=None, ge=1, description="Requests that may be made at once before the rate applies; defaults to `requests_per_second` rounded up. Requires `requests_per_second`."
-    )
-    max_in_flight: int | None = Field(default=None, ge=1, description="Maximum simultaneous requests across every loader in the pool. Omit for no concurrency bound.")
-
-    @model_validator(mode="after")
-    def _at_least_one_bound(self) -> Self:
-        if self.requests_per_second is None and self.max_in_flight is None:
-            msg = "a rate limit needs requests_per_second, max_in_flight, or both"
-            raise ValueError(msg)
-        if self.burst is not None and self.requests_per_second is None:
-            msg = "burst only applies with requests_per_second"
-            raise ValueError(msg)
-        return self
-
-    def to_limit(self) -> RateLimit:
-        """The runtime form the engine builds a limiter from."""
-        default_burst = 1 if self.requests_per_second is None else max(1, math.ceil(self.requests_per_second))
-        return RateLimit(requests_per_second=self.requests_per_second, burst=self.burst if self.burst is not None else default_burst, max_in_flight=self.max_in_flight)
-
-
 class DatasetConfig(StrictModel):
-    """How one input is loaded, what it depends on, how its portfolios are partitioned across calls, and how hard its source may be pushed."""
+    """How one input is loaded, what it depends on, and how its portfolios are partitioned across calls."""
 
     loader: StepSpec = Field(description="The loader step: `(request: LoadRequest[, params]) -> DataFrame`, plain or `async def`.")
     depends_on: tuple[str, ...] = Field(
@@ -111,15 +80,16 @@ class DatasetConfig(StrictModel):
         ge=1,
         description="How many portfolios one call of a `per_portfolio` loader is given, as `request.portfolio_ids`. `1` is a call per portfolio; a larger number batches a source that takes an id list; omitted, every portfolio goes in one call. Ignored for a `global` dataset, which is loaded by one call.",
     )
-    rate_limit: str | RateLimitConfig | None = Field(
+    max_in_flight: int | None = Field(
         default=None,
-        description="How hard this input's source may be pushed: the name of a shared pool in the top-level `rate_limits`, or an inline bound private to this input. The loader receives it as `request.rate_limiter`. Omit for no limit.",
+        ge=1,
+        description="How many of this dataset's calls the engine keeps in flight at once. A slot is held for the whole call, so `batch_size: 1` with `max_in_flight: 8` is eight concurrent per-portfolio calls to the source. Omit for no bound.",
     )
 
     @model_validator(mode="after")
     def _shape_is_consistent(self) -> Self:
-        if self.batch_size is not None and self.scope != "per_portfolio":
-            msg = "batch_size applies only to a per_portfolio dataset; a global dataset is loaded by one call"
+        if self.scope != "per_portfolio" and (self.batch_size is not None or self.max_in_flight is not None):
+            msg = "batch_size and max_in_flight apply only to a per_portfolio dataset; a global dataset is loaded by one call"
             raise ValueError(msg)
         duplicates = sorted(name for name, count in Counter(self.depends_on).items() if count > 1)
         if duplicates:
@@ -278,10 +248,6 @@ class RunConfig(StrictModel):
     datasets: dict[str, DatasetSpec] = Field(
         description="Named datasets, every one a frame. `portfolios` is required — the list of portfolio ids and their `solve_order` priorities (lower solves first, ties break on `portfolio_id`), loaded like any dataset or written inline as a list of ids — and is consumed by the engine rather than passed to assembly. `holdings`, `universe`, and `details` must be declared unless an assembly step produces them; `constraints` is engine-known but optional, and a run that omits it constrains nothing beyond the trade identity. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Each dataset's loader starts the moment its `depends_on` dependencies have loaded — with none, the moment the load stage does."
     )
-    rate_limits: dict[str, RateLimitConfig] = Field(
-        default_factory=dict,
-        description='Named rate-limit pools for loaders, e.g. `{"vendor_api": {"requests_per_second": 20, "max_in_flight": 8}}`. A dataset opts in with `rate_limit`; datasets naming the same pool share its budget.',
-    )
     assembly: tuple[StepSpec, ...] = Field(
         default=(),
         description="Assembly steps from `assembly.py`, applied in order to the loaded datasets before the engine-known frames are validated: `join`, `union`, `select`, `drop`, or any custom `(frames: Frames[, params]) -> Frames` function. This is where analytics columns are attached to `holdings` and `universe`.",
@@ -325,9 +291,6 @@ class RunConfig(StrictModel):
                     msg = f"datasets.{name}: only 'portfolios' may be written inline as a list of ids; every other dataset needs a loader"
                     raise ValueError(msg)
                 continue
-            if isinstance(dataset.rate_limit, str) and dataset.rate_limit not in self.rate_limits:
-                msg = f"datasets.{name}: rate_limit {dataset.rate_limit!r} is not declared in rate_limits {sorted(self.rate_limits)}"
-                raise ValueError(msg)
             self._check_dependencies(name, dataset)
         dataset_order(self.datasets)
         return self

@@ -38,13 +38,13 @@ The quickest way to see what the engine does is to read the run it ships with,
 
     // `per_portfolio` is the engine's fan-out: one call per batch of accounts, `batch_size: 1`
     // being a call each — the shape of a custodian that answers one at a time — and it implies
-    // `depends_on: ["portfolios"]`. A hundred calls at once is more than a vendor allows, so this
-    // input names a pool.
+    // `depends_on: ["portfolios"]`. A hundred calls at once is more than the vendor allows, so
+    // `max_in_flight` keeps eight of them running and queues the rest.
     "holdings": {
       "loader": "load_holdings",
       "scope": "per_portfolio",
       "batch_size": 1,
-      "rate_limit": "custodian"
+      "max_in_flight": 8
     },
 
     // No `scope` means `global`: one call for the book, and the only datasets assembly sees. No
@@ -53,13 +53,13 @@ The quickest way to see what the engine does is to read the run it ships with,
     "universe": {"loader": "load_universe"},
 
     // The account master: NAV, cash, tax rates, style limits. `batch_size: 25` hands the loader
-    // twenty-five ids per call — the shape of a source that takes a list — and the bound is inline
-    // because the firm's own database is nobody else's budget to share.
+    // twenty-five ids per call — the shape of a source that takes a list — and four of those
+    // queries may be open against the firm's database at once.
     "details": {
       "loader": "load_details",
       "scope": "per_portfolio",
       "batch_size": 25,
-      "rate_limit": {"max_in_flight": 4}
+      "max_in_flight": 4
     },
 
     // Which constraints bind each account and how tight they are. The engine reads `portfolio_id`
@@ -76,10 +76,6 @@ The quickest way to see what the engine does is to read the run it ships with,
     // The same shape, read earlier: `restrict_low_liquidity` takes its `min_adv_shares` here.
     "buy_universe_parameters": {"loader": "load_parameters"}
   },
-
-  // Named pools inputs share. `holdings` is the only one here that names this pool, but a second
-  // input on the same vendor would draw from the same budget rather than a second one.
-  "rate_limits": {"custodian": {"requests_per_second": 20, "burst": 20, "max_in_flight": 8}},
 
   // Applied in order to each portfolio's bundle; a rule never sees another portfolio.
   "rules": ["restrict_low_liquidity"],
@@ -138,8 +134,7 @@ that kind of step, or by `package.module:function`, with optional `params` (see
   the shape of a custodian that answers one at a time; `25` hands the loader twenty-five ids per call,
   the shape of an account master that takes a list. It is also why a portfolio whose own inputs are
   missing fails alone instead of stopping the run. An input whose source will not take a hundred calls
-  at once adds a `rate_limit`: a named pool it shares with the other inputs on that backend, or a bound
-  of its own.
+  at once adds `max_in_flight`, which is how many of those calls the engine keeps open.
 - **`rules`** — business logic, run per portfolio in order: each takes one portfolio's validated bundle
   and returns a modified one, and never sees other portfolios. The example runs one, freezing names too
   illiquid to trade at a threshold it reads from `buy_universe_parameters` rather than from the config;
@@ -269,7 +264,6 @@ an editor; the engine accepts the key and ignores it.
 | `src/portfolio_optimizer/config/` | The run-config models and the step resolver. |
 | `src/portfolio_optimizer/cvx/` | `adapter.py`, the only module that imports cvxpy, and `sides.py`, the side profiles' cvxpy half: each side's decision variables and trade identity. |
 | `src/portfolio_optimizer/solving.py` | The solve step's contract: `SolveRequest` in, `SolveResult` out. |
-| `src/portfolio_optimizer/ratelimit.py` | Rate-limit pools loaders draw from, and `fan_out` for sources that answer one portfolio per call. |
 | `configs/example_run.json`, `configs/run-config.schema.json`, `examples/data/` | The shipped example — a hundred accounts over three securities, one CSV table per source — and the generated JSON Schema. |
 | `benchmarks/` | `profile_portfolio.py` times one portfolio through the pipeline stage by stage at a chosen book size and side; `run_book.py` and `run_state_book.py` run a synthetic book of *N* portfolios on a local cluster and report the derived schedule and the timing spans — the first over interchangeable mandate groups, the second over a municipal desk's in-state and national sleeves, sharing the run harness in `harness.py`. The numbers in `IDEAS.md` come from them. |
 | `docs/` | Tutorial, how-to guides, reference, and explanation. |

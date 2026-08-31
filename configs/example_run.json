@@ -10,20 +10,19 @@
       "loader": "load_holdings",
       "scope": "per_portfolio",
       "batch_size": 1,
-      "rate_limit": "custodian"
+      "max_in_flight": 8
     },
     "universe": {"loader": "load_universe"},
     "details": {
       "loader": "load_details",
       "scope": "per_portfolio",
       "batch_size": 25,
-      "rate_limit": {"max_in_flight": 4}
+      "max_in_flight": 4
     },
     "constraints": {"loader": "load_constraints", "depends_on": ["portfolios"]},
     "global_parameters": {"loader": "load_parameters"},
     "buy_universe_parameters": {"loader": "load_parameters"}
   },
-  "rate_limits": {"custodian": {"requests_per_second": 20, "burst": 20, "max_in_flight": 8}},
   "rules": ["restrict_low_liquidity"],
   "objective": {
     "sense": "minimize",

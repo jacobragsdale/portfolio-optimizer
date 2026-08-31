@@ -7,7 +7,7 @@ exact `Decimal` values; solver tolerances are JSON numbers.
 **Every key, its type, its default, and its description are in the generated JSON Schema**
 (`configs/run-config.schema.json`, below) — including the parameters of every shipped step. This page
 carries only what the schema cannot say: the signature each kind of step must have, how datasets and
-their rate limits behave at load time, what an account's constraint rows and style limits look like
+their in-flight bounds behave at load time, what an account's constraint rows and style limits look like
 (neither is part of the config), and the environment variables. For what each block *means* to the
 engine and when it is consumed, see [reading a run config](explanation-run-config.md).
 
@@ -62,7 +62,7 @@ side the run couples through (buys under `both` and `buy`, sells under `sell`).
 
 ## Datasets
 
-### `depends_on`, `scope`, and `batch_size`
+### `depends_on`, `scope`, `batch_size`, and `max_in_flight`
 
 The engine starts each dataset the moment its `depends_on` dependencies have fully loaded (a
 per-portfolio dependency: every batch, concatenated) and hands their frames to the loader as
@@ -82,21 +82,16 @@ and skipped; the rest of the book runs. A dataset *no* batch of which came back 
 down, and rejects the run. So does a required dataset that is missing, or one that violates its schema
 — structural problems reject, coverage problems fail a portfolio.
 
-### `rate_limit` and `rate_limits`
+### `max_in_flight`
 
-Every loaded entry of `datasets` (`portfolios` included; an inline book has no source to bound) may carry a `rate_limit`, which the loader
-receives as `request.rate_limiter`. It is written one of two ways:
+A `per_portfolio` dataset may carry `max_in_flight`: how many of the batches `batch_size` cut the book
+into the engine runs at once. A slot is held for the whole call, so `"batch_size": 1, "max_in_flight": 8`
+is eight concurrent single-account requests and the rest queued behind them. Omitted, every batch runs
+at once. It is per dataset — two inputs on one backend each get their own bound, which is the only
+budget arithmetic the config does — and it is rejected on a `global` dataset, which is one call.
 
-- **An inline bound**, private to that input: `"rate_limit": {"requests_per_second": 5, "max_in_flight": 2}`.
-  Use this when sources scale differently — a fragile vendor API on one input, a database that takes
-  32 concurrent queries on another.
-- **The name of a shared pool** declared under the top-level `rate_limits`: `"rate_limit": "vendor_api"`.
-  Inputs naming the same pool share its budget, which is what you want when two datasets come from the
-  same backend.
-
-A bound sets `requests_per_second` (a continuously refilled token bucket, with `burst` allowed at
-once), `max_in_flight` (simultaneous requests across every loader drawing from it), or both — at least
-one is required. Naming an undeclared pool is a config error.
+There is no rate limit beyond it: a source that needs pacing rather than a concurrency cap gets it in
+the loader, where the client's own retry and backoff live.
 
 ## `execution`
 

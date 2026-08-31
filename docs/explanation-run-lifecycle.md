@@ -70,7 +70,7 @@ is asynchronous and runs the **dependency DAG the config declares**: every datas
 starts the moment the datasets its `depends_on` names (plus `portfolios`, for a `per_portfolio`
 dataset) have loaded, and one with no dependencies starts immediately, so the stage costs its longest
 chain rather than its sum. Each loader is called with a `LoadRequest` (dataset name, portfolio ids,
-its dependencies' frames as `inputs`, `as_of_date`, `data_root`, `run_id`, and a rate limiter): an
+its dependencies' frames as `inputs`, `as_of_date`, `data_root`, and `run_id`): an
 `async def` loader runs as a task on the event loop, a plain `def` loader in a worker thread so a
 blocking driver never stalls the loop.
 
@@ -87,8 +87,8 @@ How many times each loader is called is the dataset's `scope`. A **global** data
 whole book, and is what the assembly steps see. A **per-portfolio** dataset is the engine's own
 fan-out: the ids are cut into batches of `batch_size` and the loader is called once per batch, so a
 source that answers one account at a time is driven by the engine rather than privately inside a
-loader. The batches share the dataset's one rate limiter and run alongside the global loaders, so on a
-book whose global stage is the long pole they cost nothing.
+loader. At most `max_in_flight` of those batches run at once, and they run alongside the global
+loaders, so on a book whose global stage is the long pole they cost nothing.
 
 Failure is split along the same line. A **structural** problem rejects the whole run — a required
 dataset missing, a schema violated, a global loader that raised, a per-portfolio dataset no batch of
@@ -103,12 +103,9 @@ params hash, row count, columns, how many batches it took, how many portfolios a
 how long it took, and a **content hash** that ignores row order, column order, and index, so which
 batch returned first never reaches the manifest.
 
-Every loaded dataset — the portfolio list included — may carry a `rate_limit`, inline or as the name of
-a pool shared with other inputs on the same backend; the loader receives it as `request.rate_limiter`
-and wraps each call to its source in it, and `fan_out` packages the one-call-per-portfolio pattern.
-Why the bound is per input is in [the architecture explanation](explanation-architecture.md#loading-is-the-slow-part-so-it-is-concurrent-and-metered);
-how a bound behaves at load time is in [the reference](reference-run-config.md#rate_limit-and-rate_limits),
-and its keys are in the generated JSON Schema.
+Why the bound on those calls is one number per input, and the engine's rather than the loader's, is in
+[the architecture explanation](explanation-architecture.md#loading-is-the-slow-part-so-it-is-concurrent-and-metered);
+how `max_in_flight` behaves at load time is in [the reference](reference-run-config.md#max_in_flight).
 
 The shipped loaders (`loaders.py`) are the only place I/O happens. Each stands in for a service — a
 custodian, a security master, an account master — waiting as long as that source would and then

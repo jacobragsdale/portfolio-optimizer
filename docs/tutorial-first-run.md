@@ -101,7 +101,7 @@ costs about what its slowest input costs rather than the sum.
 
 The universe is book-wide, so its loader was called once. `holdings` is not: the config asks for it with
 `"scope": "per_portfolio", "batch_size": 1`, so the engine called its loader once per account — a
-hundred calls, paced by the `custodian` rate-limit pool the input names. That is how a source that
+hundred calls, eight of them open at a time under the input's `max_in_flight`. That is how a source that
 answers one account per call is wired up, and it is why a single account whose data is missing fails on
 its own instead of stopping the book.
 

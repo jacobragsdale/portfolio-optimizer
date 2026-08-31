@@ -26,17 +26,15 @@ from portfolio_optimizer.loaders import (
     load_portfolios,
     load_universe,
 )
-from portfolio_optimizer.ratelimit import RateLimit, RateLimiter
 from tests.conftest import AS_OF, EXAMPLE_DATA
 
 INSTANT = ServiceParams(min_latency_s=0, max_latency_s=0)
 """Every shipped loader's simulated wait turned off; a test pays for the read and nothing else."""
 
 
-def request(dataset: str, *portfolio_ids: str, root: Path = EXAMPLE_DATA, rate_limiter: RateLimiter | None = None) -> LoadRequest:
+def request(dataset: str, *portfolio_ids: str, root: Path = EXAMPLE_DATA) -> LoadRequest:
     ids = tuple(PortfolioId(portfolio_id) for portfolio_id in portfolio_ids)
-    limiter = rate_limiter if rate_limiter is not None else RateLimiter.unlimited()
-    return LoadRequest(dataset=dataset, portfolio_ids=ids, as_of_date=AS_OF, data_root=root, run_id="test", rate_limiter=limiter)
+    return LoadRequest(dataset=dataset, portfolio_ids=ids, as_of_date=AS_OF, data_root=root, run_id="test")
 
 
 # --- what each service answers, and how it is typed on the way in ---
@@ -113,27 +111,12 @@ def test_no_accounts_asked_for_returns_an_empty_frame_with_the_schema_columns() 
     assert list(holdings.columns) == [column.name for column in HOLDINGS.columns]
 
 
-# --- fan-out, rate limits, and the simulated wait ---
+# --- fan-out and the simulated wait ---
 
 
-def test_the_custodian_fans_out_under_the_rate_limit_and_keeps_the_requests_order() -> None:
-    async def scenario() -> tuple[list[str], RateLimiter]:
-        limiter = RateLimiter(RateLimit(max_in_flight=1), name="custodian")
-        holdings = await load_holdings(request("holdings", "P2", "P1", rate_limiter=limiter), INSTANT)
-        return [str(value) for value in holdings["portfolio_id"]], limiter
-
-    ordered, limiter = asyncio.run(scenario())
-    assert ordered == ["P2", "P2", "P1", "P1"], "results come back in the order the request listed the accounts, not the order the calls finished"
-    assert limiter.acquired == 2, "one acquisition per account, because this source answers one account per call"
-
-
-def test_the_blocking_loader_draws_from_the_same_pool_through_the_sync_bridge() -> None:
-    async def scenario() -> RateLimiter:
-        limiter = RateLimiter(RateLimit(max_in_flight=2), name="account_master")
-        await asyncio.to_thread(load_details, request("details", "P1", "P2", rate_limiter=limiter), INSTANT)
-        return limiter
-
-    assert asyncio.run(scenario()).acquired == 1, "one query for the whole batch"
+def test_the_custodian_fans_out_over_its_batch_and_keeps_the_requests_order() -> None:
+    holdings = asyncio.run(load_holdings(request("holdings", "P2", "P1"), INSTANT))
+    assert [str(value) for value in holdings["portfolio_id"]] == ["P2", "P2", "P1", "P1"], "results come back in the order the request listed the accounts, not the order the calls finished"
 
 
 def test_a_loader_waits_as_long_as_its_service_would() -> None:

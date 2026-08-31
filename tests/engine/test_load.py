@@ -13,7 +13,7 @@ from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.load import AssemblyError, LoadedDatasets, LoadError, assemble, load_datasets, load_datasets_async, slice_portfolio
 from tests import steps
-from tests.conftest import AS_OF, Frames, example_body, example_datasets, instant, resolved_example, two_account_book
+from tests.conftest import AS_OF, Frames, example_datasets, instant, resolved_example, two_account_book
 
 JOIN_SCORES_PARAMS: dict[str, object] = {"into": "universe", "source": "scores", "on": ["security_id"], "cardinality": "one_to_one", "require_all_matched": True}
 JOIN_SCORES: dict[str, object] = {"name": "join", "params": JOIN_SCORES_PARAMS}
@@ -202,7 +202,7 @@ def test_portfolio_list_must_satisfy_its_schema(book: Path) -> None:
 
 def _with_extra_datasets(**extra: object) -> ResolvedConfig:
     body = resolved_example().config.model_dump(mode="json", by_alias=True, exclude_none=True)
-    return resolved_example(datasets={**body["datasets"], **extra}, rate_limits=body.get("rate_limits", {}) | {"vendor": {"requests_per_second": 50, "max_in_flight": 2}})
+    return resolved_example(datasets={**body["datasets"], **extra})
 
 
 @pytest.mark.parametrize("loader", ["barrier_loader", "async_barrier_loader"], ids=["sync loaders in threads", "async loaders on the loop"])
@@ -260,18 +260,6 @@ def test_an_inline_book_costs_nothing_and_keeps_its_written_order(book: Path) ->
     assert len(audit.content_sha256) == 64
 
 
-def test_each_dataset_receives_the_pool_its_config_names(book: Path) -> None:
-    resolved = _with_extra_datasets(
-        left={"loader": "tests.steps:pool_reporting_loader", "rate_limit": "vendor"},
-        right={"loader": "tests.steps:async_pool_reporting_loader", "rate_limit": "vendor"},
-        free={"loader": "tests.steps:pool_reporting_loader"},
-    )
-    loaded = load_datasets(resolved, data_root=book, run_id="test")
-    assert loaded.frames["left"].iloc[0].tolist() == ["vendor", True]
-    assert loaded.frames["right"].iloc[0].tolist() == ["vendor", True]
-    assert loaded.frames["free"].iloc[0].tolist() == ["unlimited", False]
-
-
 def test_every_failed_dataset_is_reported_together_as_rejected_input(book: Path) -> None:
     resolved = _with_extra_datasets(left={"loader": "tests.steps:invalid_input_loader"}, right={"loader": "tests.steps:invalid_input_loader"})
     with pytest.raises(LoadError, match=r"left: left: no rows as of 2026-08-28; right: right: no rows"):
@@ -303,27 +291,15 @@ def test_the_async_entry_point_can_be_awaited_directly(book: Path) -> None:
     assert loaded.portfolio_ids == ("P1", "P2")
 
 
-def test_an_inline_bound_is_private_to_its_input_while_a_named_pool_is_shared(book: Path) -> None:
-    resolved = _with_extra_datasets(
-        left={"loader": "tests.steps:pool_reporting_loader", "rate_limit": "vendor"},
-        right={"loader": "tests.steps:async_pool_reporting_loader", "rate_limit": "vendor"},
-        slow={"loader": "tests.steps:pool_reporting_loader", "rate_limit": {"max_in_flight": 1}},
-        fast={"loader": "tests.steps:async_pool_reporting_loader", "rate_limit": {"requests_per_second": 100, "max_in_flight": 32}},
-    )
-    loaded = load_datasets(resolved, data_root=book, run_id="test")
-    assert loaded.frames["left"].iloc[0].tolist() == ["vendor", True]
-    assert loaded.frames["right"].iloc[0].tolist() == ["vendor", True]
-    assert loaded.frames["slow"].iloc[0].tolist() == ["slow", True]
-    assert loaded.frames["fast"].iloc[0].tolist() == ["fast", True]
+def test_max_in_flight_bounds_the_batches_the_engine_runs_at_once(book: Path) -> None:
+    def peak(**bound: object) -> int:
+        steps.PEAK_IN_FLIGHT.clear()
+        holdings = {"loader": "tests.steps:in_flight_recording_holdings", "scope": "per_portfolio", "batch_size": 1, **bound}
+        load_datasets(resolved_example(datasets=example_datasets(holdings=holdings)), data_root=book, run_id="test")
+        return steps.PEAK_IN_FLIGHT["holdings"]
 
-
-def test_the_portfolio_list_input_can_be_bounded_too(book: Path) -> None:
-    bounded = example_datasets(portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": {"max_in_flight": 1}})
-    assert load_datasets(resolved_example(datasets=bounded), data_root=book, run_id="test").portfolio_ids == ("portfolios",)
-    pools = example_body().get("rate_limits", {})
-    assert isinstance(pools, dict)
-    shared = example_datasets(portfolios={"loader": "tests.steps:limiter_naming_portfolios_loader", "rate_limit": "shared"})
-    assert load_datasets(resolved_example(datasets=shared, rate_limits=pools | {"shared": {"max_in_flight": 1}}), data_root=book, run_id="test").portfolio_ids == ("shared",)
+    assert peak(max_in_flight=1) == 1, "one slot serialises the batches the engine cut"
+    assert peak() == 2, "an unbounded dataset runs every batch at once"
 
 
 # --- per-portfolio datasets: the engine owns the fan-out ---

@@ -14,7 +14,6 @@ from portfolio_optimizer.domain.frames import FrameSchemaError, validate_frame
 from portfolio_optimizer.domain.optimizer_frame import column_dtype_conflicts, stack_frames
 from portfolio_optimizer.domain.schemas import CONSTRAINTS, HOLDINGS, RESERVED_DATASET_NAMES, UNIVERSE
 from portfolio_optimizer.domain.types import Clock, PortfolioId, StrictModel
-from portfolio_optimizer.ratelimit import RateLimiter
 
 
 class Frames(Mapping[str, pd.DataFrame]):
@@ -268,12 +267,9 @@ class LoadRequest:
     whose ``depends_on`` names ``portfolios``, the batch's ids for a ``per_portfolio`` dataset, and
     empty for a dataset that declared no dependency on the book. ``inputs`` holds the loaded frames of
     the dataset's dependencies by name; for a ``per_portfolio`` batch, an input with a ``portfolio_id``
-    column is reduced to the batch's rows and one without is passed whole.
-
-    ``rate_limiter`` is the pool the dataset's config names, or an unlimited one. A loader that
-    makes many calls wraps each in ``async with request.rate_limiter:`` (or
-    ``with request.rate_limiter.sync:`` from a sync loader) so large runs stay inside the
-    backend's limits.
+    column is reduced to the batch's rows and one without is passed whole. How many of a dataset's
+    calls run at once is the engine's: its ``max_in_flight`` bounds the batches in flight, so a loader
+    never counts its own requests.
     """
 
     dataset: str
@@ -281,7 +277,6 @@ class LoadRequest:
     as_of_date: datetime
     data_root: Path
     run_id: str
-    rate_limiter: RateLimiter = field(default_factory=RateLimiter.unlimited)
     inputs: Frames = field(default_factory=Frames)
 
 

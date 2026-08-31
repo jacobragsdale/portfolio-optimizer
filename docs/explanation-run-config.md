@@ -17,7 +17,6 @@ version. Read it when you have a config in front of you and want it to make sens
 |---|---|---|
 | [`run`](#run) | The run's name and tags, and the instant it is *as of* | `as_of_date` at load and at build (tax-lot terms) |
 | [`datasets`](#datasets) | How to load every input — the portfolio list included — what each depends on, and how its calls are partitioned | Each dataset the moment its dependencies are loaded |
-| [`rate_limits`](#rate_limit-on-a-dataset-and-rate_limits) | Named request budgets that inputs on one backend share | During loading |
 | [`assembly`](#assembly) | Steps that turn loaded datasets into the tables the build expects | Once, after all loaders return, before schema validation |
 | [`rules`](#rules) | Business logic applied to each portfolio's bundle, in order | Per portfolio, on a worker, before the build |
 | [`solve_order`](#solve_order) | A step that computes each portfolio's priority from its data | Per portfolio, after its rules |
@@ -92,10 +91,10 @@ timestamp compared against a lot's `acquired_on` would be a silent off-by-hours 
 "datasets": {
   "portfolios":  {"loader": "load_portfolios"},
   "holdings":    {"loader": "load_holdings", "scope": "per_portfolio", "batch_size": 1,
-                  "rate_limit": "custodian"},
+                  "max_in_flight": 8},
   "universe":    {"loader": "load_universe"},
   "details":     {"loader": "load_details", "scope": "per_portfolio", "batch_size": 25,
-                  "rate_limit": {"max_in_flight": 4}},
+                  "max_in_flight": 4},
   "constraints": {"loader": "load_constraints", "depends_on": ["portfolios"]}
 }
 ```
@@ -180,7 +179,7 @@ receives their frames as `request.inputs`; declaring `portfolios` is what fills
 `request.portfolio_ids`, which is why `constraints` declares it — its loader fetches the book, not the
 firm. The whole stage costs its longest chain rather than its sum. Each loader is called with a
 `LoadRequest` carrying the dataset name, portfolio ids, the input frames, `as_of_date`, the data root,
-the run id, and a rate limiter. An `async def` loader runs on the event loop; a plain `def` loader
+and the run id. An `async def` loader runs on the event loop; a plain `def` loader
 runs in a worker thread so a blocking driver cannot stall the others. Each loaded frame is recorded in
 the manifest with its loader, params hash, row count, dependencies, start offset, and an
 order-insensitive content hash, which is what lets `diff-manifests` say "the data changed" rather than
@@ -189,7 +188,7 @@ order-insensitive content hash, which is what lets `diff-manifests` say "the dat
 **How many times each loader is called is `scope`.** A `global` dataset — the default, so every entry
 above that says nothing about scope — is one call for the whole book, and is what the assembly steps
 see. A `per_portfolio` dataset is the engine's fan-out: the ids are cut into batches of `batch_size`
-and the loader is called once per batch, sharing the dataset's one rate limiter. That is the
+and the loader is called once per batch, at most `max_in_flight` of them at a time. That is the
 arrangement for a source that answers one account at a time, and it buys three things a loader that
 fans out privately cannot give you — the batches are visible in the manifest, they overlap the global
 loaders, and a failure is isolated. The cost is that assembly, which runs over whole datasets, never
@@ -237,33 +236,30 @@ are reported together.
 
 The shipped loaders show the two shapes a source can take. `load_universe`, `load_constraints`, and
 `load_parameters` answer for the whole book in one call. `load_holdings` answers one account per call:
-it hands `request.portfolio_ids` to `fan_out`, which starts every call at once and lets the rate limiter
-decide when each runs — the shape of a loader for an API with a per-account endpoint. It works under
-either scope: as a `global` dataset it owns its own fan-out, and — as the example configures it — with
-`"scope": "per_portfolio", "batch_size": 1` the engine owns the partition and each call fetches one
-account. `load_details` is the third shape and a plain `def`: a blocking database driver, run by the
-engine in a worker thread, taking the limiter's synchronous form and issuing one query per batch of ids.
+it runs one request per id in the batch together — the shape of a loader for an API with a per-account
+endpoint. It works under either scope: as a `global` dataset it owns its own fan-out, unbounded, and —
+as the example configures it — with `"scope": "per_portfolio", "batch_size": 1` the engine owns the
+partition, so `max_in_flight` bounds it. `load_details` is the third shape and a plain `def`: a
+blocking database driver, run by the engine in a worker thread, issuing one query per batch of ids.
 
 None of them is really a file loader. Each waits as long as its own source would and then answers from a
 CSV table under the data root, so the template runs against no infrastructure; replacing one with the
 real client changes the line that waits and nothing around it.
 
-### `rate_limit` on a dataset, and `rate_limits`
+### `max_in_flight`
 
-Every loaded entry in `datasets` (an inline book has no source to bound) accepts an optional `rate_limit`, which the loader
-receives as `request.rate_limiter` and wraps around each call to its backend: either an inline bound
-private to that input, or the name of a pool declared under the top-level `rate_limits` and shared by
-every input that names it. Omit it and the loader never waits. The example uses both spellings: `holdings`
-names the shared `custodian` pool, because a hundred calls at once is more than a vendor allows and a
-second input on that vendor would have to share the same budget; `details` carries an inline
-`{"max_in_flight": 4}`, because the firm's own database is nobody else's budget to share. The choice between the two spellings
-is about sharing — a pool is a property of the *backend*, not of any one input, which is why pools are
-declared at the top level — and the reasoning is in
-[the architecture explanation](explanation-architecture.md#loading-is-the-slow-part-so-it-is-concurrent-and-metered).
-The keys of a bound (`requests_per_second`, `burst`, `max_in_flight`) and their defaults are in the
-generated JSON Schema, how one behaves is in
-[the reference](reference-run-config.md#rate_limit-and-rate_limits), and wiring a fan-out loader to one is in
-[how to add a loader](how-to-add-a-loader-or-sink.md#async-loaders-fan-out-and-rate-limits).
+A `per_portfolio` entry may add `max_in_flight`: how many of the batches `batch_size` cut the book into
+the engine keeps open at once. The example bounds both account-shaped inputs — `holdings` to 8, because
+a hundred calls at once is more than the custodian's API allows, and `details` to 4 queries against the
+firm's database. Omit it and every batch runs at once; a `global` dataset is one call and may not carry
+it at all.
+
+There is one number and it belongs to one input: no shared pools, no request rate, no burst. Why the
+bound is the engine's rather than the loader's is in
+[the architecture explanation](explanation-architecture.md#loading-is-the-slow-part-so-it-is-concurrent-and-metered);
+how it behaves at load time is in [the reference](reference-run-config.md#max_in_flight), and wiring a
+per-account source to it is in
+[how to add a loader](how-to-add-a-loader-or-sink.md#async-loaders-and-fan-out).
 
 ## `assembly`
 

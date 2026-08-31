@@ -34,8 +34,8 @@ def holdings_from_sql(request: LoadRequest, params: SqlParams) -> pd.DataFrame:
 
 - `request: LoadRequest` carries `dataset` (the config key being loaded), `portfolio_ids` in solve
   order (filled when the entry's `depends_on` names `portfolios`; `per_portfolio` implies it),
-  `inputs` (the frames of the datasets named in `depends_on`), `as_of_date`, `data_root`, `run_id`,
-  and `rate_limiter` (see below).
+  `inputs` (the frames of the datasets named in `depends_on`), `as_of_date`, `data_root`, and
+  `run_id`. How many calls run at once is the config's, not the loader's (see below).
 - Return `pd.DataFrame` with every dtype declared. `coerce_frame` casts to the dataset's schema and turns
   money written as strings, ints, or floats into `Decimal` — do this at the read boundary, not later.
 - Every dataset loader returns a DataFrame, `constraints` included; money inside a frame may
@@ -44,7 +44,7 @@ def holdings_from_sql(request: LoadRequest, params: SqlParams) -> pd.DataFrame:
 Pass the database client in as a parameter of your gateway object rather than reaching for a global,
 so a tier-4 contract test can call the real query and validate its shape with the production schema.
 
-### Async loaders, fan-out, and rate limits
+### Async loaders and fan-out
 
 Every dataset loader starts the moment the datasets its entry depends on have loaded — with no
 `depends_on`, the moment the run does: an `async def` loader runs on the engine's event loop, a plain
@@ -53,66 +53,45 @@ is fine as a plain function and still overlaps with the other loaders. A loader 
 dataset's rows — a vendor whose query wants the universe's tickers, say — names it in `depends_on` and
 reads `request.inputs["universe"]` rather than loading it again.
 
-A source that answers one portfolio per call needs two things a large run cannot do without: fan-out
-and a rate limit. Every input can be bounded on its own, because sources scale differently:
+A source that answers one portfolio per call needs fan-out and a bound on it, and both belong to the
+engine rather than to your loader:
 
 ```json
-"rate_limits": {"vendor_api": {"requests_per_second": 20, "burst": 40, "max_in_flight": 8}},
 "datasets": {
-  "portfolios": {"loader": "portfolios_from_api", "rate_limit": {"max_in_flight": 1}},
-  "holdings": {"loader": "holdings_from_api", "rate_limit": "vendor_api", "depends_on": ["portfolios"]},
-  "universe": {"loader": "universe_from_api", "rate_limit": "vendor_api"},
-  "details": {"loader": "details_from_sql", "rate_limit": {"max_in_flight": 32}, "depends_on": ["portfolios"]}
+  "portfolios": {"loader": "portfolios_from_api"},
+  "holdings": {"loader": "holdings_from_api", "scope": "per_portfolio", "batch_size": 1, "max_in_flight": 8},
+  "universe": {"loader": "universe_from_api"},
+  "details": {"loader": "details_from_sql", "scope": "per_portfolio", "batch_size": 25, "max_in_flight": 32}
 }
 ```
 
-`holdings` and `universe` name the same pool, so together they never exceed 20 requests per second or
-8 in flight against the vendor. `details` has an inline bound of its own — the database takes 32
-concurrent queries happily — and the portfolio list is held to one call at a time. `holdings` and
-`details` declare `depends_on: ["portfolios"]`, which is what fills their `request.portfolio_ids`;
-`universe` declares nothing and starts immediately. The loader receives
-whichever bound its input carries as `request.rate_limiter`:
+`scope: "per_portfolio"` says the ids are the engine's to cut up, `batch_size` says how finely, and
+`max_in_flight` says how many of those calls may be open at once — 8 against the fragile vendor, 32
+against a database that takes concurrent queries happily. A per-portfolio dataset implies
+`depends_on: ["portfolios"]`, which is what fills its `request.portfolio_ids`; `universe` declares
+nothing and starts immediately. The loader is then written for the batch it was handed and counts
+nothing:
 
 ```python
 async def holdings_from_api(request: LoadRequest, params: ApiParams) -> pd.DataFrame:
     client = build_client(params)
-
-    async def one(portfolio_id: PortfolioId) -> pd.DataFrame:
-        return await client.holdings(portfolio_id, as_of_date=request.as_of_date)
-
-    parts = await fan_out(request.portfolio_ids, one, limiter=request.rate_limiter)
-    return coerce_frame(pd.concat(parts, ignore_index=True), DATASET_SCHEMAS[request.dataset])
+    frame = await client.holdings(request.portfolio_ids, as_of_date=request.as_of_date)
+    return coerce_frame(frame, DATASET_SCHEMAS[request.dataset])
 ```
 
-`fan_out` starts every call at once and lets the limiter decide when each one runs; results come back
-in portfolio order, and one failure cancels the rest and surfaces as an `ExceptionGroup` — which the
-engine unwraps when it holds a single failure, so the log and the manifest record that error's own
-type and message rather than the group's. From a plain
-loader, wrap each call in `with request.rate_limiter.sync:` instead — it draws from the same pool. The
-shipped `load_holdings` is this pattern with a table read standing in for the client, and
-`load_details` is the blocking twin; copy whichever matches your source.
+Under `batch_size: 1` that is one account per call and the engine keeps 8 of them running; under
+`batch_size: 25` it is one query per 25 ids. A loader may still fan out privately — `asyncio.gather`
+over the batch's ids, as the shipped `load_holdings` does — but nothing bounds those calls, so keep
+the fan-out the engine's whenever the source needs bounding. One failure inside a private fan-out
+surfaces as an `ExceptionGroup`, which the engine unwraps when it holds a single failure so the log
+and the manifest record that error's own type and message rather than the group's.
 
-### Let the engine do the fan-out instead
-
-The loader above owns its partition: the engine calls it once with every id and gets one frame back
-when the last call returns. Hand the partition to the engine instead and it gains three things the
-loader cannot give it — a failed account fails alone, the batches are visible in the manifest, and the
-whole stage overlaps the global loaders:
-
-```json
-"holdings": {"loader": "holdings_from_api", "scope": "per_portfolio", "batch_size": 1, "rate_limit": "vendor_api"}
-```
-
-The shipped example does exactly this over a hundred accounts: `configs/example_run.json` loads
-`holdings` with `load_holdings`, `per_portfolio`, and `batch_size: 1` — a hundred calls, paced by a
-shared rate-limit pool — and `details` with `load_details`, `per_portfolio`, and `batch_size: 25` — four
-calls, each handed a list of ids — while its four other datasets stay global.
-
-`scope: "per_portfolio"` says the ids are the engine's to cut up; `batch_size` says how finely. `1` is
-a call per portfolio, a larger number suits a source that takes an id list, and omitting it puts the
-whole book in one call. The loader signature does not change — it still reads `request.portfolio_ids`
-and returns a frame, just for the batch it was given — so the same function works under either
-arrangement, and one written with `fan_out` keeps working with a fan-out of one.
+Letting the engine cut the book buys three things a private fan-out cannot: a failed account fails
+alone, the batches are visible in the manifest, and the whole stage overlaps the global loaders. The
+shipped example does exactly this over a hundred accounts — `holdings` with `batch_size: 1` and
+`max_in_flight: 8`, `details` with `batch_size: 25` and `max_in_flight: 4` — while its four other
+datasets stay global. `load_details` is the blocking twin, a plain `def` the engine runs in a worker
+thread; copy whichever matches your source.
 
 Two things follow from a per-portfolio dataset being loaded in pieces:
 

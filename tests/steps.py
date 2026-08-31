@@ -150,16 +150,22 @@ async def async_barrier_loader(request: LoadRequest) -> pd.DataFrame:
     return pd.DataFrame({"portfolio_id": pd.Series(list(request.portfolio_ids), dtype="string")})
 
 
-def pool_reporting_loader(request: LoadRequest) -> pd.DataFrame:
-    """Reports which rate-limit pool the engine handed it, and takes one turn from it."""
-    with request.rate_limiter.sync:
-        return pd.DataFrame({"pool": pd.Series([request.rate_limiter.name], dtype="string"), "limited": [request.rate_limiter.is_limited]})
+PEAK_IN_FLIGHT: dict[str, int] = {}
+"""The most calls of each dataset the engine had running at once; a test clears it first."""
+
+_IN_FLIGHT: dict[str, int] = {}
 
 
-async def async_pool_reporting_loader(request: LoadRequest) -> pd.DataFrame:
-    """The async twin of ``pool_reporting_loader``."""
-    async with request.rate_limiter:
-        return pd.DataFrame({"pool": pd.Series([request.rate_limiter.name], dtype="string"), "limited": [request.rate_limiter.is_limited]})
+async def in_flight_recording_holdings(request: LoadRequest) -> pd.DataFrame:
+    """Records how many of this dataset's calls the engine ran at once, and yields so they can overlap."""
+    dataset = request.dataset
+    _IN_FLIGHT[dataset] = _IN_FLIGHT.get(dataset, 0) + 1
+    PEAK_IN_FLIGHT[dataset] = max(PEAK_IN_FLIGHT.get(dataset, 0), _IN_FLIGHT[dataset])
+    try:
+        await asyncio.sleep(0.01)
+        return await load_holdings(request, ServiceParams(min_latency_s=0, max_latency_s=0))
+    finally:
+        _IN_FLIGHT[dataset] -= 1
 
 
 def invalid_input_loader(request: LoadRequest) -> pd.DataFrame:
@@ -181,12 +187,6 @@ BUY_LIST = FrameSchema(name="buy_list", columns=(ColumnSpec("portfolio_id", "str
 def load_buy_list(request: LoadRequest) -> pd.DataFrame:
     """The securities each account may buy, from its own source."""
     return coerce_frame(pd.read_csv(request.data_root / "buy_list.csv", dtype={"portfolio_id": "string", "security_id": "string"}), BUY_LIST)
-
-
-def limiter_naming_portfolios_loader(request: LoadRequest) -> pd.DataFrame:
-    """A portfolio list whose single id is the name of the limiter the engine handed this input."""
-    with request.rate_limiter.sync:
-        return pd.DataFrame({"portfolio_id": pd.Series([request.rate_limiter.name], dtype="string"), "solve_order": pd.Series([0], dtype="Int64")})
 
 
 def last_portfolio_id_first(data: PortfolioData) -> Decimal:

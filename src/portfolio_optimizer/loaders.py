@@ -7,9 +7,8 @@ the only place a network call, a database query, or a file read belongs; everyth
 The engine loads the datasets as the dependency DAG the config declares: each starts the moment the
 datasets its entry depends on have loaded, one with no dependencies starts immediately, and an
 ``async def`` loader runs as a task on the event loop while a plain one runs in a worker thread, so a
-blocking driver never stalls the loop. Every call to a source goes through that input's rate limit — ``async with
-request.rate_limiter:`` from a coroutine, ``with request.rate_limiter.sync:`` from a thread — and the
-pool is named per input in the run config.
+blocking driver never stalls the loop. A loader never counts its own requests: the config's
+``batch_size`` cuts the book into calls and ``max_in_flight`` bounds how many of them run at once.
 
 The six loaders here stand in for the services a desk actually has: a book of record, a custodian's
 position service, a security master, the account-master database, a compliance service, and a
@@ -35,7 +34,6 @@ from portfolio_optimizer.domain.data import LoadRequest
 from portfolio_optimizer.domain.frames import ColumnSpec, FrameSchema, coerce_frame, empty_frame
 from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, PORTFOLIOS, UNIVERSE
 from portfolio_optimizer.domain.types import Params, PortfolioId
-from portfolio_optimizer.ratelimit import fan_out
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,10 +122,9 @@ async def load_portfolios(request: LoadRequest, params: ServiceParams) -> pd.Dat
 async def load_holdings(request: LoadRequest, params: ServiceParams) -> pd.DataFrame:
     """What each account in the request owns: shares, average cost, and the date the lot was acquired.
 
-    The shape of a custodian that answers one account per call. :func:`~portfolio_optimizer.ratelimit.fan_out`
-    starts every call at once and the rate limiter decides how many actually run, so the loader is
-    right however the engine batches it — under the example's ``batch_size: 1`` it fans out over one
-    id, and over the whole book if that key were removed.
+    The shape of a custodian that answers one account per call: one request per id in the batch, run
+    together, so the loader is right however the engine batches it — under the example's
+    ``batch_size: 1`` and ``max_in_flight: 8`` that is eight accounts in flight across the book.
     """
     latency = params.latency(CUSTODIAN)
     positions = _table(request, "holdings.csv", HOLDINGS)  # the mock's store; a real client holds a connection here instead
@@ -136,7 +133,7 @@ async def load_holdings(request: LoadRequest, params: ServiceParams) -> pd.DataF
         await asyncio.sleep(latency.draw(f"{request.run_id}:{request.dataset}:{portfolio_id}"))
         return _rows_for(positions, (portfolio_id,))
 
-    parts = await fan_out(request.portfolio_ids, one, limiter=request.rate_limiter)
+    parts = await asyncio.gather(*(one(portfolio_id) for portfolio_id in request.portfolio_ids))
     return pd.concat(parts, ignore_index=True) if parts else empty_frame(HOLDINGS)
 
 
@@ -154,9 +151,9 @@ async def load_universe(request: LoadRequest, params: ServiceParams) -> pd.DataF
 def load_details(request: LoadRequest, params: ServiceParams) -> pd.DataFrame:
     """The account master for the accounts in the request: NAV, cash, tax rates, and the style limits.
 
-    A plain ``def`` because the driver blocks: the engine runs it in a worker thread, and it takes the
-    limiter's synchronous form, which draws from the same pool an async loader would. One query
-    however many ids it is given — the shape ``batch_size`` in the config exists for.
+    A plain ``def`` because the driver blocks: the engine runs it in a worker thread, and bounds how
+    many of those threads its calls occupy. One query however many ids it is given — the shape
+    ``batch_size`` in the config exists for.
     """
     _call_blocking(request, params.latency(ACCOUNT_MASTER))
     return _rows_for(_table(request, "details.csv", DETAILS), request.portfolio_ids)
@@ -202,15 +199,13 @@ async def load_parameters(request: LoadRequest, params: ParametersParams) -> pd.
 
 
 async def _call(request: LoadRequest, latency: Latency, key: str = "") -> None:
-    """Hold the input's rate limit for as long as the source would take to answer."""
-    async with request.rate_limiter:
-        await asyncio.sleep(latency.draw(f"{request.run_id}:{request.dataset}:{key}"))
+    """Wait as long as the source would take to answer."""
+    await asyncio.sleep(latency.draw(f"{request.run_id}:{request.dataset}:{key}"))
 
 
 def _call_blocking(request: LoadRequest, latency: Latency, key: str = "") -> None:
-    """The same wait from a worker thread; the bridge hands the acquisition to the engine's event loop."""
-    with request.rate_limiter.sync:
-        time.sleep(latency.draw(f"{request.run_id}:{request.dataset}:{key}"))
+    """The same wait from a worker thread, where a blocking driver's call would be."""
+    time.sleep(latency.draw(f"{request.run_id}:{request.dataset}:{key}"))
 
 
 def _rows_for(frame: pd.DataFrame, portfolio_ids: Sequence[PortfolioId]) -> pd.DataFrame:
