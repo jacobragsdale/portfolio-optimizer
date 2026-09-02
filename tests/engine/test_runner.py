@@ -1,10 +1,8 @@
 """Tier 2: on the real cluster — the golden orders, the line equals the overlap schedule, failures skip only what depended on them (or everything under fail_fast), and nothing partial is published."""
 
 import hashlib
-import json
 from pathlib import Path
 
-import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
@@ -12,10 +10,10 @@ from portfolio_optimizer.domain.results import PortfolioFailure, PortfolioResult
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError
 from tests.conftest import EXAMPLE_DATA, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
-from tests.engine.support import EXAMPLE_ORDERS_P1, GIT, details_csv, details_without, example_book, execute
+from tests.engine.support import BUY_ORDERS_P1, BUY_ORDERS_P2, GIT, details_csv, details_without, example_book, execute, uncoupled_book
 
 CAPPED_P1 = {"details.csv": details_csv(P1={"max_weight": "0.25"})}
-"""P1's cap at a quarter: three names cannot hold the 0.8 of NAV its cash bounds oblige it to invest, so its solve is infeasible."""
+"""P1's cap at a quarter: it holds A and B at 0.3 each, and a buy program cannot sell them down, so its solve is infeasible."""
 
 
 def test_the_run_reproduces_the_hand_checked_orders(tmp_path: Path, scheduler_address: str) -> None:
@@ -24,10 +22,11 @@ def test_the_run_reproduces_the_hand_checked_orders(tmp_path: Path, scheduler_ad
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioResult)
     assert isinstance(p2, PortfolioResult)
-    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == EXAMPLE_ORDERS_P1
-    assert len(p2.orders) == 0, "P2 wants C too, but P1 spent C's ADV budget, and A and B already sit symmetrically against the target"
-    assert p2.chain_state.traded_shares.tolist() == [0.0, 0.0, 25000.0], "only P1's buys reach P2; its sells of A and B do not"
+    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P1
+    assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P2, "P2 wants C too, but P1 spent C's ADV budget, so its cash goes to A"
+    assert p2.chain_state.traded_shares.tolist() == [1000.0, 0.0, 25000.0], "every buy P1 made reaches P2"
     assert p2.chain_state.predecessors == ("P1",)
+    assert "adv/cumulative_participation" in p2.report.active, "why P2 did not buy C, in the report"
     run_dir = tmp_path / "run-test" / "run-test"
     assert (run_dir / "manifest.json").exists()
     assert (run_dir / "orders" / "orders.parquet").exists()
@@ -57,7 +56,7 @@ def test_fail_fast_skips_every_lower_priority_portfolio_and_publishes_nothing(tm
     assert isinstance(p1, PortfolioFailure)
     assert p1.stage == "solve"
     assert p1.error_type == "InfeasibleError"
-    assert "upper bounds sum to 0.750000 < required investment 0.800000" in p1.message
+    assert "names whose cap is below their holding, which this side cannot trade out of: ['A', 'B']" in p1.message
     assert isinstance(p2, PortfolioFailure)
     assert p2.stage == "skipped"
     assert not (tmp_path / "run-test" / "run-test" / "orders").exists()
@@ -66,8 +65,8 @@ def test_fail_fast_skips_every_lower_priority_portfolio_and_publishes_nothing(tm
 
 
 def test_continue_isolates_a_failure_nothing_depended_on(tmp_path: Path, scheduler_address: str) -> None:
-    data_root = example_book(tmp_path, **CAPPED_P1)
-    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
+    data_root = uncoupled_book(tmp_path, **CAPPED_P1)
+    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
     assert report.exit_code == EXIT_PORTFOLIO_FAILED
     assert [type(o).__name__ for o in report.outcomes] == ["PortfolioFailure", "PortfolioResult"]
     assert (tmp_path / "run-test" / "run-test" / "orders" / "orders.parquet").exists()
@@ -85,9 +84,9 @@ def test_continue_skips_the_portfolios_that_depended_on_the_failure_and_names_it
 
 
 def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_path: Path, scheduler_address: str) -> None:
-    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P2,B,10000,40", "P2,Z,10000,40")
-    data_root = example_book(tmp_path, **{"holdings.csv": holdings})
-    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
+    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P2,B,6000,60", "P2,Z,6000,60")
+    data_root = uncoupled_book(tmp_path, **{"holdings.csv": holdings})
+    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioResult)
     assert isinstance(p2, PortfolioFailure)
@@ -96,7 +95,7 @@ def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_pa
 
 
 def test_a_failed_build_is_treated_as_overlapping_everything_after_it(tmp_path: Path, scheduler_address: str) -> None:
-    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P1,B,10000,40", "P1,Z,10000,40")
+    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P1,B,6000,60", "P1,Z,6000,60")
     data_root = example_book(tmp_path, **{"holdings.csv": holdings})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
     p1, p2 = report.outcomes
@@ -106,8 +105,8 @@ def test_a_failed_build_is_treated_as_overlapping_everything_after_it(tmp_path: 
 
 def test_a_portfolio_whose_bundle_is_inconsistent_fails_at_slice(tmp_path: Path, scheduler_address: str) -> None:
     new_york = {"state": "NEW YORK"}  # a string the frame schema types but the account model refuses
-    data_root = example_book(tmp_path, **{"details.csv": details_csv(P1=new_york, P2=new_york)})
-    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root, dependencies="none")
+    data_root = uncoupled_book(tmp_path, **{"details.csv": details_csv(P1=new_york, P2=new_york)})
+    report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
     assert [outcome.stage for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)] == ["slice", "slice"]
     assert "String should match pattern" in report.outcomes[0].message  # ty: ignore[unresolved-attribute]  # both outcomes are failures, asserted above
 
@@ -150,17 +149,21 @@ def test_manifest_records_provenance_for_every_stage(tmp_path: Path, scheduler_a
     assert manifest.git_sha == GIT.sha
     assert manifest.config.sha256 == resolved_example_real(sink="orders_to_parquet").config_sha256
     assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "constraints", "global_parameters", "buy_universe_parameters"}
+    assert [term["name"] for term in manifest.terms] == ["alpha", "transaction_cost"], "the terms as records, readable by verify without the config"
     p1 = manifest.portfolios[0]
     assert [r.qualname for r in p1.rules] == ["portfolio_optimizer.rules:restrict_low_liquidity"]
+    assert [record["kind"] for record in p1.constraints] == ["cash_limit", "cash_limit", "turnover_limit", "group_limit", "group_limit", "participation_limit"]
     assert p1.solve is not None
     assert p1.solve.status == "optimal"
+    assert p1.solve.duals["adv"] > 0.0, "the shadow price of the ADV budget: what P1 would gain from one more dollar of it"
     assert p1.check is not None
     assert p1.check.passed
+    assert "ub" in p1.check.active and "adv/participation" in p1.check.active
     assert p1.drift is not None
     assert p1.drift.max_weight_error <= 1e-6, "the example's deltas are whole shares, so what drift is left is the solver's own slack, not rounding"
     assert p1.orders is not None
-    assert p1.orders.count == 3
-    assert p1.orders.gross_notional == "500000"
+    assert p1.orders.count == 2
+    assert p1.orders.gross_notional == "350000"
     assert (p1.solve_order, p1.predecessors) == ("0", 0)
     assert len(manifest.manifest_sha256) == 64
     assert {a.path.rsplit("/", 1)[-1] for a in manifest.artifacts} >= {"P1.npz", "P2.npz", "orders.parquet", "trace.json"}
@@ -187,21 +190,21 @@ def test_two_runs_over_the_same_inputs_are_identical_except_for_identity(tmp_pat
     assert [d.content_sha256 for d in first.datasets] == [d.content_sha256 for d in second.datasets]
 
 
-def test_a_typed_only_book_derives_an_edge_free_schedule_that_still_matches_the_line(tmp_path: Path) -> None:
-    """No typed constraint reads the chain, and the engine can see that — so nothing waits, where the same book under function rows would couple through every shared name."""
-    book = example_book(tmp_path)
-    params = json.dumps({"direction": "<=", "bounds": "0.3"})  # inside both accounts' style caps: order rounding clamps a buy to the spec's ub, which a typed-only solve must therefore respect
-    typed = pd.DataFrame({"portfolio_id": ["P1", "P2"], "kind": ["weight_limit"] * 2, "label": ["cap"] * 2, "params": [params] * 2})
-    typed.to_csv(book / "constraints.csv", index=False)
-    overlap = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=book, run_id="narrow")
+def test_a_book_whose_rows_read_no_chain_is_told_so_before_any_build_and_still_matches_the_line(tmp_path: Path) -> None:
+    """Without the ADV rows nothing reads the chain, and the run can see that from the data alone: nothing waits, and the answer is the line's."""
+    book = uncoupled_book(tmp_path)
+    free = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=book, run_id="free")
     line = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=book, dependencies="all", run_id="line")
-    assert overlap.exit_code == EXIT_OK, [str(outcome) for outcome in overlap.outcomes]
-    schedule = overlap.manifest.schedule
-    assert schedule is not None and (schedule.edges, schedule.components, schedule.critical_path) == (0, 2, 1), "both accounts can buy every name, but neither reads the chain"
-    assert [record.predecessors for record in overlap.manifest.portfolios] == [0, 0]
-    for left, right in zip(overlap.solved, line.solved, strict=True):
+    assert free.exit_code == EXIT_OK, [str(outcome) for outcome in free.outcomes]
+    schedule = free.manifest.schedule
+    assert schedule is not None and (schedule.coupling, schedule.edges, schedule.components, schedule.critical_path) == ("none", 0, 2, 1), (
+        "both accounts can buy every name, but neither reads the chain"
+    )
+    assert [record.predecessors for record in free.manifest.portfolios] == [0, 0]
+    assert line.manifest.schedule is not None and line.manifest.schedule.coupling == "none", "the diagnostic line is moot when nothing reads the chain"
+    for left, right in zip(free.solved, line.solved, strict=True):
         assert left.orders.drop(columns=["run_id"]).equals(right.orders.drop(columns=["run_id"]))
-        assert left.chain_state.content_hash() == right.chain_state.content_hash(), "the line folded a predecessor, the graph folded none; the consume mask zeroes both to the same state"
+        assert left.chain_state.content_hash() == right.chain_state.content_hash()
 
 
 def test_a_worker_side_failure_carries_its_traceback_home_and_is_persisted(tmp_path: Path, scheduler_address: str) -> None:

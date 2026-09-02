@@ -7,17 +7,20 @@ order, stage by stage, see [the life of a run](explanation-run-lifecycle.md).
 ## One convention instead of a framework
 
 Quant developers who clone this repository want to write Python, not learn a plugin system. So the only
-mechanism for extending the engine is: write an ordinary function — in a designated module of this repository or in any installed
-package — and name it in JSON. The engine's resolver (`config/resolve.py`) does the work a framework would normally push onto the
-author — it imports the function, checks its signature against the contract for its kind (nine kinds:
-loader, assembly step, rule, solve-order step, term, constraint, solve step, sink),
-validates the JSON parameters against the function's own `Params` model, and detects the optional
-`chain` argument by name — and it does all of this before any data is loaded. It then checks the
-solver and constructs every term and constraint once, against a one-security dummy spec, under the
-run's side profile, so a step that raises or reads a side the run lacks is refused too. The same
-resolution runs in every process that will solve — at `validate-config`, at the start of `run`, and
-on every worker before it does any work — so all of them apply identical checks. A mistake surfaces
-as a config error with the function's qualified name, not as a traceback halfway through a run.
+mechanism for extending the engine is: write an ordinary function — in a designated module of this
+repository, or in any installed package, named by its qualified name or published as an entry point —
+and name it in JSON; or, for what the optimizer minimizes and respects, write a typed *kind* — a strict
+pydantic model that carries its own cvxpy rendering and its own numpy check — and name it the same
+way. The engine's resolver (`config/resolve.py`) does the work a framework would normally push onto the
+author — it imports the function, checks its signature against the contract for its kind (seven
+kinds: loader, assembly step, rule, solve-order step, build step, solve step, sink), validates the
+JSON parameters against the function's own `Params` model, and parses every objective term as the
+kind its record names — and it does all of this before any data is loaded. It then checks the solver
+and renders every term once, against a one-security dummy spec, under the run's side profile, so a
+term that raises, reads a side the run lacks, or is not convex is refused too. The same resolution
+runs in every process that will solve — at `validate-config`, at the start of `run`, and on every
+worker before it does any work — so all of them apply identical checks. A mistake surfaces as a
+config error with the function's qualified name, not as a traceback halfway through a run.
 
 The convention has a second purpose: auditability. Because every step is a named function, the manifest
 can record its qualified name and the hash of its source text. A run can be traced to the exact business
@@ -78,12 +81,19 @@ order is exactly quantity times price" a guarantee rather than a hope.
 
 ## The spec is pure data
 
-`ProblemSpec` holds every input the solver will see as plain numpy arrays — and the sector membership as a
-sparse matrix, one nonzero per security, since dense it was most of every large spec — aligned to a sorted list of
-securities, plus a content hash. cvxpy objects are created inside the `solvers.cvxpy` step — and, once,
-during the dry construction at resolve — and never leave the process that made them. This
-buys three things: the spec is built on a worker and stays there until it is solved; it can be persisted as an `.npz` file that an auditor can open without the solver stack; and the hash pins down
-exactly what was optimized, so a change in any input changes the hash and shows up in `diff-manifests`.
+`ProblemSpec` holds every input the solver will see as plain numpy arrays — six fixed vectors, then
+everything else *named*: per-security columns, boolean flags, every categorical universe column as a
+sparse membership matrix (one nonzero per security, since dense it was most of every large spec), and
+every number on the account's row as a scalar — aligned to a sorted list of securities, plus a content
+hash. A term or constraint reads any of them by name and refuses, by name, what the spec does not
+carry, which is what lets a constraint row name a limit the engine has never heard of. cvxpy objects
+are created inside the `solvers.cvxpy` step — and, once, during the dry rendering at resolve — and
+never leave the process that made them. This buys three things: the spec is built on a worker and
+stays there until it is solved; it can be persisted as an `.npz` file that an auditor can open without
+the solver stack; and the hash pins down exactly what was optimized, so a change in any input changes
+the hash and shows up in `diff-manifests`. The build that produces it is itself a configured step,
+`standard` by default, so a desk with tax lots or a factor block replaces the one function that turns
+a bundle into a problem and keeps everything downstream.
 
 ## The side a run trades is one object
 
@@ -94,22 +104,34 @@ split, names the tradable set the dependency graph and the chain state are built
 solved portfolio to what a dependent receives, says which starting books the side cannot trade out of,
 and hands the verifier the identity's numpy twin. Nothing else branches on the side.
 
-There are three profiles. `both` is the two-sided problem: `w`, `buy`, and `sell` are all variables,
-bound by `w = w0 + buy − sell`, and portfolios couple through buys. `buy` and `sell` are one-sided:
-`w` is the only variable, the trade is an affine expression of it (`buy = w − w0` under `w ≥ w0`, or
-`sell = w0 − w` under `w ≤ w0`), and the other side does not exist — a term that reads it fails at
-`validate-config`, not on a worker. That is why the side is a config value rather than a pair of
-bounds: bounding `sell` to zero would keep three vectors and the identity in the KKT system, while
-removing it makes the problem a third the size and leaves no way to express a wash trade. Measured at
-100,000 names, Clarabel takes 2.1 s under `buy` and 3.6 s under `sell` against 7.5 s under `both`
-(`IDEAS.md`). The shipped terms that mean "the amount traded" read `x.trade` — `buy + sell`, `buy`, or
-`sell` — and the ADV constraint's chain half reads `x.coupled`, the amount traded on the side the run
-couples through; both exist under every profile, so a term written against them runs anywhere.
-`coupled` exists because without it that constraint would have to say `buy ≤ remaining` under `both`
-and `sell ≤ remaining` under `sell`, and its numpy twin would need the same quantity — which is why the
-verifier's twins receive the profile and read `profile.coupled(solution)`.
+There are two profiles, `buy` and `sell`. Either has one variable per name, `w`, with the trade an
+affine expression of it: `buy = w − w0` under `w ≥ w0`, or `sell = w0 − w` under `w ≤ w0`. The other
+side does not exist — a term that reads it fails at `validate-config`, not on a worker. One variable
+is the whole of the design: no name can be bought and sold in one solve, so a term that *rewards*
+selling — a harvestable loss, a negative `tax_per_dollar` — is exact rather than an invitation to a
+round trip. It is also why the side is a config value rather than a pair of bounds: bounding a `sell`
+variable to zero would keep three vectors and a trade identity in the KKT system, while removing it
+makes the problem a third the size. A desk's buy program and its sell program are two runs over one
+snapshot, each a pure function of its inputs with its own manifest; nothing crosses between them
+inside the engine.
 
-The two one-sided profiles are exact mirrors, and that is testable: the reflection `w' = 1 − w` maps a
+The two-sided problem — `w`, `buy`, and `sell` all variables, bound by `w = w0 + buy − sell` — is
+what the engine started with, and it was removed on 2026-09-01. With `buy` and `sell` independent, a
+rewarded sale makes the split loose: the solver can sell and rebuy a name in one solve, and the
+engine's answer to that was a refusal, not a policy for what such a round trip should mean; the desks
+run one side at a time in any case. Measured at 100,000 names before its removal, Clarabel took 2.1 s
+under `buy` and 3.6 s under `sell` against 7.5 s under `both` (`IDEAS.md`), which is the size of the
+win one variable buys. If it returns it is a third profile in `domain/sides.py` and `cvx/sides.py`
+plus that policy; the profile protocol, `Solution.buy`/`sell`, the vector names, and the tests
+parameterized over `sides` were kept for it. The shipped kinds that mean "the amount traded" read
+`x.trade` — `buy` or `sell`, whichever the run has — and `participation_limit`'s chain half reads
+`x.coupled`, the amount traded on the side the run couples through; both exist under every profile,
+so a kind written against them runs anywhere. `coupled` exists because without it that constraint
+would have to say `buy ≤ remaining` under `buy` and `sell ≤ remaining` under `sell`, and its numpy
+twin would need the same quantity — which is why the verifier's twins receive the profile and read
+`profile.coupled(solution)`.
+
+The two profiles are exact mirrors, and that is testable: the reflection `w' = 1 − w` maps a
 buy-only book onto a sell-only one — bounds, cash, sector bounds, ADV budget, the chain, all of it —
 so `tests/engine/test_solve.py` solves a book under `buy` and its reflection under `sell` and asserts
 the answers coincide. That symmetry test is what the design asked for, and it is cheap because the
@@ -119,24 +141,26 @@ A one-sided run can move cash one way only — a buy-only run lowers it, a sell-
 The cash bounds keep their meaning as the cash after the run, so a book that starts on the wrong side of
 its bound is infeasible, and the infeasibility diagnosis says so in words. The same holds for a name
 held past a bound the side cannot move it back inside (over its cap in a buy-only run, under its floor
-in a sell-only one): the profile lists the names, and a per-constraint policy for accepting such a
-start is the recorded next step.
+in a sell-only one): the profile lists the names. The box `lb ≤ w ≤ ub` is part of every profile's
+identity — the schedule's buyable set and the order rounding already assume it — so a start outside it
+is the data's to fix; a typed constraint *row* carries its own start policy, `allow_current_weight`,
+which holds a bound the book already breaches where it is instead of failing the portfolio.
 
 ## The solve step is the interpreter
 
-What the engine knows about a constraint is deliberately little: it is a strict model in the config
-with a unique label, it declares whether it reads the chain (which is what the dependency graph is
-derived from), and the verifier may know how to check it. What a *solver* does with it is not the
-engine's business. So the solve is a configured step — `solve`, `cvxpy` by default — that receives
-everything a solver could want (the spec, the chain, the side profile, the resolved terms and
-constraints, the cvxpy options) and returns weights. The shipped cvxpy step builds and solves the
-problem; the shipped `pro_rata_fill` is a numpy function with no objective at all; a firm's own
-library that builds the problem from the constraint models its own way fits the same contract. The
-engine treats every answer identically: the side profile turns weights into a trade, the verifier
-re-checks the shipped constraints, and the manifest records what solved it. This is what keeps the
-engine agnostic to the shape of a constraint and to whether cvxpy is involved — the guarantees are
-the verifier's, not the step's — and it is the seam the next constraint models will be interpreted
-through.
+What the engine knows about a constraint is deliberately little: it is a typed row in the
+`constraints` dataset — a strict model with a unique name that declares whether it reads the chain
+and, through its scope, which securities it couples through (which is what the dependency graph is
+derived from) — and it carries its own numpy `residual` for the verifier. What a *solver* does with it
+is not the engine's business. So the solve is a configured step — `solve`, `cvxpy` by default — that
+receives everything a solver could want (the spec, the chain, the side profile, the typed terms, the
+constraint rows, the run's extra datasets) and returns weights. The shipped cvxpy step renders each
+term and row through the model's own `to_cvxpy` and solves; the shipped `pro_rata_fill` is a numpy
+function with no objective at all; a firm's own library that builds the problem from the constraint
+models its own way fits the same contract. The engine treats every answer identically: the side
+profile turns weights into a trade, the verifier re-checks every constraint the step reported, and the
+manifest records what solved it. This is what keeps the engine agnostic to the shape of a constraint
+and to whether cvxpy is involved — the guarantees are the verifier's, not the step's.
 
 ## Verification is independent of the solver
 
@@ -145,25 +169,30 @@ numpy and compares the total with the solver's reported objective. It does not i
 enforces that — and its tolerances are a hundred times looser than the solver's, so a pass is a genuine
 statement about the solution rather than a restatement of the solver's own convergence check. One
 violation tolerance bounds every residual, the side profile's identity checks and the constraints alike;
-the objective comparison has its own pair. Custom terms and constraints have no numpy twin unless the
-author adds one; they are listed as `unverified` in the manifest rather than silently trusted, and a
-solve step that minimized nothing reports no objective, so that comparison is skipped for it.
+the objective comparison has its own pair. Every kind carries its own numpy half — `value` for a term,
+`residual` for a constraint — so a kind a package publishes is checked exactly like a shipped one and
+nothing typed is ever unverified; a solve step that reports no constraints has none checked, which is
+the honest answer rather than a silent pass, and one that minimized nothing reports no objective, so
+that comparison is skipped for it. The same pass says which checks *bind* — where the answer sits
+against a limit — which the run prints per portfolio and the manifest records beside the solver's
+duals.
 
-One consequence surfaced during development: with no term charging for trading, an interior-point solver
-may return a buy/sell split that nets to the right trade but is not minimal — a free "wash trade". The
-weights were right; the split was not. So under `both` the engine reports the minimal split for the
-solver's weights — `buy = max(w − w0, 0)`, `sell = max(w0 − w, 0)` — and the verifier's complementarity
-check confirms it. That tidy-up is harmless only while no term *rewards* a round trip; the shipped
-`tax_cost` does, on a loss position, and then the solver's optimum carries round trips the minimal
-split strips out, the recomputed objective no longer matches the reported one, and the verifier fails
-the portfolio without saying why. That is a known defect of the two-sided profile, recorded with its fix
-in [`IDEAS.md`](../IDEAS.md#the-canonical-split-can-move-the-objective-and-the-verifier-then-refuses-the-portfolio);
-the one-sided profiles have one vector and cannot contain a round trip.
+One consequence shaped the design. With `buy` and `sell` as independent variables and no term charging
+for trading, an interior-point solver may return a split that nets to the right trade but is not
+minimal — a free "wash trade" — and a term that *rewards* a sale, a tax cost on a loss position, makes
+such round trips part of the optimum, so the recomputed objective never matches the reported one. That
+is a property of the two-sided formulation, not of the verifier, and it is why the engine no longer
+has one: either profile has one vector, the trade is an expression of it, and a round trip cannot be
+written. What the verifier holds instead is the profile's own identity, each a named residual reported
+like any constraint's: under `buy`, `no_sells` (`w ≥ w0`), `trade_balance` (the reported buy is
+`w − w0`), `nonneg_buy`, and `sell_absent`; under `sell`, `no_buys`, `trade_balance`, `nonneg_sell`,
+and `buy_absent`; under either, the box as `lb` and `ub`.
 
 ## Rounding
 
 Whole-share rounding is the point where a mathematically feasible answer meets reality. The engine rounds
-to the nearest share, then down to lot multiples, then clamps sells to what is held. Rounding toward zero
+to the nearest share, then down to lot multiples, then clamps a sell to what is held and a buy to the
+room under its upper bound. Rounding toward zero
 was considered — it can never breach a cap — but solver noise of about 1e-8 in weight space turns an
 exact 1,250-share answer into 1,249, which is worse in practice. Instead the rounding drift is measured
 against the solved weights and bounded by what one lot and one dust-filtered trade can cost; exceeding the
@@ -174,9 +203,9 @@ bound fails the portfolio.
 Portfolios in one run often depend on each other: the second portfolio to trade a thinly traded name
 should see how much of its daily volume the first already used. The engine allows exactly this kind of
 dependency and no other — **what a higher-priority portfolio traded on the side the run couples
-through may limit what a later one trades there; nothing else reaches anyone.** Under `both` and `buy`
-that side is buys, under `sell` it is sells; a two-sided run's sells reach no one. That is a product
-decision (2026-08-29), and it is what makes the schedule derivable instead of configured.
+through may limit what a later one trades there; nothing else reaches anyone.** Under `buy` that side
+is buys, under `sell` it is sells, and a run has no other side. That is a product decision
+(2026-08-29), and it is what makes the schedule derivable instead of configured.
 
 ![Eight accounts: the line dependencies-all forces, and the graph overlap derives — three components, critical path three, identical orders either way](images/derived-schedule.svg)
 
@@ -186,10 +215,11 @@ sellable (held, `lb < w0`) — and its solve-order key, a priority from an optio
 the portfolios frame's column, ties broken on `portfolio_id`. From those the engine derives the
 dependency graph (`engine/schedule.py`), and the edge test is directional: portfolio *j* depends on
 every higher-priority *i* whose tradable set intersects what *j*'s own chain readers *consume* — the
-scopes of *j*'s typed chain constraints (`domain/constraints.py`), the whole tradable set when
-anything opaque might read the chain (a function-convention row, a chain-aware term, a solve step
-other than the shipped one), and nothing at all when nothing does, in which case *j* waits for
-nobody; with no chain-aware step anywhere there are no edges. The
+scopes of *j*'s chain-reading constraint rows (`domain/constraints.py`), the whole tradable set when
+anything opaque might read the chain (a constraint frame with no `kind` column, a chain-aware term, a
+solve step other than the shipped one), and nothing at all when nothing does, in which case *j* waits
+for nobody; when nothing in the whole run reads the chain, the engine knows it before any build and
+there are no edges at all. The
 graph is never transitively reduced — a solve folds its *direct* predecessors' own trades, so every
 overlapping earlier portfolio stays a direct dependency. Every predecessor is earlier in the order, so
 the graph is grown a portfolio at a time as builds report rather than derived once they all have: a
@@ -211,8 +241,11 @@ the tradable set. `execution.dependencies: "all"` keeps the total order availabl
 Dask enforces the graph: a solve is submitted with its predecessors' contributions — their order rows
 on the coupled side — as dependencies and runs where its build lives. Outcomes are classified in solve
 order whatever finished first, so the number of workers and the order in which they finish never affect
-the output. Coupling across sides in one run — a two-sided run's sells limiting someone's buys, wash
-sales, internal crossing — is a recorded non-goal; `IDEAS.md` says what it would cost.
+the output. Coupling across sides — a sell program's sells limiting a buy program's buys, wash sales,
+internal crossing — is a recorded non-goal; `IDEAS.md` says what it would cost. What a desk can do
+today is hand the buy program a boolean universe column (`sold_at_loss`, from a rule or a loader),
+which the build exports as a flag, and close buys on those names with one constraint row:
+`{"kind": "weight_limit", "vector": "buy", "direction": "<=", "bounds": "0", "scope": "sold_at_loss"}`.
 
 The shape this produces is measured, not assumed (`benchmarks/run_book.py`, 2026-08-30, 8 local
 workers). A book of 100 accounts across 10 disjoint mandates derives 450 edges, 10 components,
@@ -227,22 +260,27 @@ degenerate case (its manifest records `edges 4950, critical_path 100`). Two cons
 stating. The win belongs to books partitioned by mandate, universe, or restriction list — and to
 books whose constraints *declare* their coupling: a typed constraint row says whether it reads the
 chain and, through its scope, which securities it couples through, so a portfolio with no chain
-reader waits for nobody and only opaque rows keep the widest reading (generalizing the grouping
-column and demonstrating the narrowing at scale are what remain open in `IDEAS.md`). And the graph's per-link cost — a contribution round-trip of ~40–120ms under
+reader waits for nobody and only opaque rows keep the widest reading; the spec carries every string
+universe column as a grouping, so the narrowing is tied to no particular column, and
+`benchmarks/run_book.py` runs typed rows. And the graph's per-link cost — a contribution round-trip of ~40–120ms under
 load — means it pays once solves dominate that, which a 100,000-name book's multi-second solves do
 by two orders of magnitude; a book of many sub-second solves is bounded by the scheduler, not the
 chain, whatever the graph looks like.
 
 ## Where the work runs is a setting, and the run owns its cluster
 
-The graph says which portfolios wait for which; it says nothing about machines. Which
-cluster the run provisions — worker processes on this machine, pods a Dask Gateway creates, or a scheduler
-someone else runs — and how many workers, are settings, so the same config hashes identically on a
-laptop and on a cluster and `diff-manifests` never blames the wiring for where a run happened to
-execute. There is one execution path whatever the answer: the runner starts the cluster before the load
-stage so its start-up hides under the slow part, waits for the first worker only after assembly, hands
-it the assembled datasets once, submits tasks that carry a portfolio id and nothing else, and closes it
-in a `finally`. A laptop run and a gateway run differ in two settings and exercise the same code.
+The graph says which portfolios wait for which; it says nothing about machines. Where the work runs —
+this process, the default, or a cluster the run provisions for itself: worker processes on this
+machine, pods a Dask Gateway creates, or a scheduler someone else runs — and how many workers, are
+settings, so the same config hashes identically on a laptop and on a cluster and `diff-manifests`
+never blames the wiring for where a run happened to execute. There is one execution path whatever the
+answer: the runner starts the backend before the load stage so a cluster's start-up hides under the
+slow part, waits for the first worker only after assembly, hands it the assembled datasets once,
+submits tasks that carry a portfolio id and nothing else, and closes it in a `finally`. The inline
+backend is the same seam with no worker in it — every task runs the moment it is submitted, a
+dependency's failure reaches its dependents as a raised handle — which needs nothing beyond the
+locked environment and is where a rule is stepped through under a debugger. A laptop run and a
+gateway run differ in a few settings and exercise the same code.
 
 ![Where each stage runs](images/execution-stages.svg)
 

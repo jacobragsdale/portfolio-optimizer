@@ -4,6 +4,11 @@ Money and weights are written as JSON strings and validated in JSON mode so they
 ``Decimal`` values; solver tolerances are floats because that is the solver's domain. Every field's
 ``description`` is emitted into the published JSON Schema (``configs/run-config.schema.json``), so
 this module is also the schema's documentation.
+
+The config is the *wiring* of a run: which inputs, combined how, filtered by which rules, minimized
+against which terms, solved with what, checked how tightly, delivered where. What it is *as of* is a
+run argument, and the run's name and tags are identity for people — none of that is in the config
+hash, so two runs of one wiring hash the same whatever day they ran.
 """
 
 import hashlib
@@ -11,7 +16,7 @@ from collections import Counter
 from collections.abc import Mapping
 from typing import Literal, Self
 
-from pydantic import AwareDatetime, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from portfolio_optimizer.domain.schemas import REQUIRED_DATASETS
 from portfolio_optimizer.domain.sides import Sides
@@ -20,11 +25,12 @@ from portfolio_optimizer.domain.types import PortfolioId, StrictModel
 STEP_NAME_PATTERN = r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$"
 
 type OnError = Literal["fail_fast", "continue"]
-type Dependencies = Literal["overlap", "all", "none"]
+type Dependencies = Literal["overlap", "all"]
 type DatasetScope = Literal["global", "per_portfolio"]
 
 STEP_NAME_DESCRIPTION = (
-    "A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process."
+    "A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, "
+    "or a qualified `package.module:function` importable by the engine and by any worker process."
 )
 
 
@@ -56,10 +62,9 @@ class StepSpec(StrictModel):
 
 
 class RunMeta(StrictModel):
-    """Identity of the run, recorded in the manifest."""
+    """Identity of the run, recorded in the manifest and kept out of the config hash."""
 
     name: str = Field(min_length=1, description="Human-readable run name, e.g. `daily_rebalance`.")
-    as_of_date: AwareDatetime = Field(description="The timestamp the run is as of, timezone-aware (`2026-08-28T00:00:00Z`). Holding periods and the manifest use it; naive timestamps are rejected.")
     tags: dict[str, str] = Field(default_factory=dict, description='Free-form string labels copied into the manifest, e.g. `{"desk": "tax-aware"}`.')
 
 
@@ -184,30 +189,6 @@ def dataset_order(datasets: Mapping[str, DatasetSpec]) -> tuple[str, ...]:
     return tuple(order)
 
 
-class ObjectiveConfig(StrictModel):
-    """The objective as a list of named terms; the engine minimizes their sum."""
-
-    sense: Literal["minimize"] = Field(default="minimize", description="Only minimization is supported; express a reward as a negative term (see `alpha`).")
-    terms: tuple[StepSpec, ...] = Field(min_length=1, description='Objective-term steps from `terms.py`; every shipped term takes a non-negative `weight` (default "1").')
-
-
-class SolverConfig(StrictModel):
-    """Which cvxpy solver runs and with what options."""
-
-    name: str = Field(
-        default="CLARABEL",
-        min_length=1,
-        description="A solver the adapter knows and cvxpy has installed: `CLARABEL`, `OSQP`, `SCS`, `HIGHS` (installed with cvxpy) or `PIQP` (the `piqp` extra). Checked when the config resolves — by `validate-config`, at the start of `run`, and on every worker before it does any work; there is no automatic fallback.",
-    )
-    options: dict[str, float | int | bool | str] = Field(default_factory=dict, description='Passed verbatim to `Problem.solve(**options)`, e.g. `{"max_iter": 200}`.')
-    time_limit_s: float | None = Field(
-        default=None,
-        gt=0,
-        description="Wall-clock limit per solve in seconds, translated to the solver's own option; omit for no limit. Rejected at resolve for a solver with no such option (`PIQP`).",
-    )
-    verbose: bool = Field(default=False, description="Let the solver print its iteration log.")
-
-
 class PostSolveConfig(StrictModel):
     """Tolerances for the independent, cvxpy-free verification of every solution."""
 
@@ -232,21 +213,29 @@ class ExecutionConfig(StrictModel):
     )
     dependencies: Dependencies = Field(
         default="overlap",
-        description="Whether portfolios wait for each other, and which. `overlap` (default): a portfolio waits only for higher-priority portfolios that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `sell`). `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis. `none`: nothing waits and the whole book solves at once, which is right when no constraint reads what others traded. Under `overlap` the edge test also reads what each portfolio's constraints *declare*: a typed constraint row (a `kind` column) says whether it reads the chain and — through its `scope` — which securities it couples through, so a portfolio whose rows read no chain waits for nobody and a scoped `participation_limit` couples only through its scope. An opaque row (the function convention, or a desk's own vocabulary), a chain-aware objective term, or a solve step other than the shipped `cvxpy` one couples conservatively through the whole tradable set.",
+        description="Which higher-priority portfolios a portfolio waits for. `overlap` (default): those that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `sell`) — and only what its own constraints *declare* they read: a typed constraint row says whether it reads the chain and, through its `scope`, which securities it couples through, so a portfolio whose rows read no chain waits for nobody. A chain-aware objective term or a solve step other than the shipped `cvxpy` one couples conservatively through the whole tradable set; with nothing anywhere reading the chain, nothing waits. `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis.",
     )
+
+
+TERM_DESCRIPTION = (
+    'Objective terms, each an object whose `kind` names a typed term model — the shipped `linear` (`{"kind": "linear", "name": "alpha", "column": "alpha", "weight": "-1"}`), '
+    "or a kind an installed package publishes. The engine minimizes their sum; a reward is a negative weight. Every term is validated against its model when the config resolves, "
+    "and its `name` must be unique. Empty is a run whose solve step minimizes nothing."
+)
 
 
 class RunConfig(StrictModel):
     """A portfolio-optimizer run: what to load, how to combine it, which rules and terms apply, and how to execute.
 
-    Validated strictly: unknown keys are errors, money is written as strings, timestamps carry a zone.
-    Step names are resolved and their parameters validated before any data is loaded.
+    Validated strictly: unknown keys are errors, money is written as strings. Step names are
+    resolved and their parameters validated — and every objective term is validated against its kind —
+    before any data is loaded.
     """
 
     schema_ref: str | None = Field(default=None, alias="$schema", description="Optional pointer to the JSON Schema for editor validation; ignored by the engine.")
-    run: RunMeta = Field(description="Run identity.")
+    run: RunMeta = Field(description="Run identity: a name and tags for people, recorded in the manifest and kept out of the config hash.")
     datasets: dict[str, DatasetSpec] = Field(
-        description="Named datasets, every one a frame. `portfolios` is required — the list of portfolio ids and their `solve_order` priorities (lower solves first, ties break on `portfolio_id`), loaded like any dataset or written inline as a list of ids — and is consumed by the engine rather than passed to assembly. `holdings`, `universe`, and `details` must be declared unless an assembly step produces them; `constraints` is engine-known but optional, and a run that omits it constrains nothing beyond the trade identity. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Each dataset's loader starts the moment its `depends_on` dependencies have loaded — with none, the moment the load stage does."
+        description="Named datasets, every one a frame. `portfolios` is required — the list of portfolio ids and their `solve_order` priorities (lower solves first, ties break on `portfolio_id`), loaded like any dataset or written inline as a list of ids — and is consumed by the engine rather than passed to assembly. `holdings`, `universe`, and `details` must be declared unless an assembly step produces them; `constraints` is engine-known but optional, and a run that omits it constrains nothing beyond the trade identity and the spec's own bounds. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Each dataset's loader starts the moment its `depends_on` dependencies have loaded — with none, the moment the load stage does."
     )
     assembly: tuple[StepSpec, ...] = Field(
         default=(),
@@ -258,18 +247,30 @@ class RunConfig(StrictModel):
         description="Optional solve-order step from `solve_order.py`: `(data: PortfolioData[, params]) -> Decimal`, evaluated on each portfolio's ruled bundle. Lower keys solve first; ties break on `portfolio_id`. Replaces the portfolios frame's `solve_order` column.",
     )
     sides: Sides = Field(
-        default="both",
-        description="Which side the run trades. `both`: buys and sells in one problem, portfolios coupling through buys only. `buy`: buys alone — one variable per name, `w >= w0`, no sell vector, so a term that reads `sell` is refused at validate-config; portfolios couple through buys. `sell`: the mirror — `w <= w0`, no buy vector, portfolios couple through sells. The value selects the side profile that supplies the decision variables, the trade identity, the tradable set the dependency graph is built from, and the chain.",
+        description="Which side the run trades: `buy` — one variable per name, `w >= w0`, no sell vector, portfolios coupling through buys — or `sell`, the mirror, coupling through sells. A term or row that reads the other side is refused. A desk's buy program and its sell program are two runs over one snapshot."
     )
-    objective: ObjectiveConfig = Field(description="What the optimizer minimizes.")
+    build: StepSpec = Field(
+        default_factory=lambda: StepSpec(name="standard"),
+        description="The build step: `(data: PortfolioData[, params]) -> ProblemSpec`, run per portfolio after its rules. `standard` (default, in `engine/build.py`) aligns the bundle to the sorted universe, computes weights and tax per dollar exactly, derives the bounds, and exports every extra column, flag, grouping, and account scalar by name; a qualified name plugs in a build that reads the bundle its own way — tax lots, a factor block, a different bounds policy.",
+    )
+    objective: tuple[dict[str, object], ...] = Field(default=(), description=TERM_DESCRIPTION)
     solve: StepSpec = Field(
         default_factory=lambda: StepSpec(name="cvxpy"),
-        description="The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`. `cvxpy` (default) builds and solves the cvxpy problem from the terms and constraints; a qualified name plugs in a firm's own library or a pure function for one side.",
+        description='The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`. `cvxpy` (default) renders the terms and the typed constraint rows and solves with the solver its params name (`{"name": "cvxpy", "params": {"solver": "CLARABEL", "time_limit_s": 60}}`); a qualified name plugs in a firm\'s own library or a pure function for one side.',
     )
-    solver: SolverConfig = Field(default_factory=SolverConfig, description="cvxpy solver selection and options, read by the `cvxpy` solve step.")
     post_solve: PostSolveConfig = Field(default_factory=PostSolveConfig, description="Verification tolerances.")
     sink: StepSpec = Field(description="Sink step from `sinks.py`, called once with every solved portfolio's orders.")
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig, description="Failure semantics and how dependencies between portfolios are derived.")
+
+    @field_validator("objective")
+    @classmethod
+    def _terms_name_a_kind(cls, value: tuple[dict[str, object], ...]) -> tuple[dict[str, object], ...]:
+        for index, term in enumerate(value):
+            kind = term.get("kind")
+            if not isinstance(kind, str) or not kind:
+                msg = f"objective[{index}]: a term is an object with a `kind` naming its model"
+                raise ValueError(msg)
+        return value
 
     @model_validator(mode="after")
     def _datasets_are_consistent(self) -> Self:
@@ -310,6 +311,10 @@ def load_run_config(text: str) -> RunConfig:
     return RunConfig.model_validate_json(text)
 
 
+HASH_EXCLUDES: frozenset[str] = frozenset({"schema_ref", "run"})
+"""What the config hash leaves out: the schema pointer, and the run's name and tags, which are identity for people rather than wiring."""
+
+
 def config_sha256(config: RunConfig) -> str:
-    """Hash of the validated config's canonical JSON form; source whitespace and the `$schema` pointer do not matter."""
-    return hashlib.sha256(config.model_dump_json(exclude={"schema_ref"}).encode()).hexdigest()
+    """Hash of the validated config's canonical JSON form: the wiring, so whitespace, the `$schema` pointer, and the `run` block do not matter."""
+    return hashlib.sha256(config.model_dump_json(exclude=set(HASH_EXCLUDES)).encode()).hexdigest()

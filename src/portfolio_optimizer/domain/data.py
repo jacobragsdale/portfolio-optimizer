@@ -70,20 +70,26 @@ class Frames(Mapping[str, pd.DataFrame]):
         return {name: len(frame) for name, frame in self._frames.items()}
 
 
-class PortfolioDetails(StrictModel):
-    """One row of the ``details`` dataset: the account's facts and its management-style limits.
+type DetailValue = Decimal | int | str | bool | None
+"""What a column of ``details`` beyond the schema may hold on one account's row."""
 
-    The limits are fractions of NAV and are what every bounded constraint reads: ``max_weight`` is
-    the single-name cap, ``max_turnover`` is two-way (buys plus sells), ``cash_lb``/``cash_ub`` bound
-    the uninvested fraction, and ``max_adv_participation`` caps a day's share of each name's volume.
+
+class PortfolioDetails(StrictModel):
+    """One row of the ``details`` dataset: the account's facts, its management-style limits, and whatever else the row carried.
+
+    The limits are fractions of NAV and reach the spec as scalars the typed constraints read by name:
+    ``max_weight`` is the single-name cap the build folds into the per-security bounds,
+    ``max_turnover`` is two-way (buys plus sells), ``cash_lb``/``cash_ub`` bound the uninvested
+    fraction, and ``max_adv_participation`` caps a day's share of each name's volume.
     ``min_trade_notional`` is not a constraint at all — the order step drops trades below it after the
-    solve. A limit that does not fit a row — a per-sector band, say — belongs in the account's
-    ``constraints`` rows, where the constraint that reads it also lives.
+    solve. ``extra`` holds every column the schema does not declare — an issuer cap, a benchmark id —
+    and the build exports each numeric one as a spec scalar too, so a constraint row can bound against
+    ``{"scalar": "max_issuer_weight"}`` without the engine knowing what an issuer is.
     """
 
     portfolio_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    state: str = Field(pattern=r"^[A-Z]{2}$")
+    state: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     st_tax_rate: Decimal = Field(ge=0, lt=1)
     lt_tax_rate: Decimal = Field(ge=0, lt=1)
     cash: Decimal = Field(ge=0)
@@ -94,6 +100,7 @@ class PortfolioDetails(StrictModel):
     min_trade_notional: Decimal = Field(ge=0)
     cash_lb: Decimal = Field(ge=0, le=1)
     cash_ub: Decimal = Field(ge=0, le=1)
+    extra: dict[str, DetailValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _cash_bounds_are_ordered(self) -> Self:
@@ -101,6 +108,23 @@ class PortfolioDetails(StrictModel):
             msg = f"cash_lb must not exceed cash_ub, got {self.cash_lb} > {self.cash_ub}"
             raise ValueError(msg)
         return self
+
+    def scalars(self) -> dict[str, Decimal]:
+        """Every number on the row a spec can carry as a scalar: the style limits, the facts, and the numeric extras."""
+        declared: dict[str, Decimal] = {
+            "cash": self.cash,
+            "nav": self.nav,
+            "st_tax_rate": self.st_tax_rate,
+            "lt_tax_rate": self.lt_tax_rate,
+            "max_weight": self.max_weight,
+            "max_turnover": self.max_turnover,
+            "max_adv_participation": self.max_adv_participation,
+            "min_trade_notional": self.min_trade_notional,
+            "cash_lb": self.cash_lb,
+            "cash_ub": self.cash_ub,
+        }
+        numeric = {name: Decimal(value) for name, value in self.extra.items() if isinstance(value, Decimal | int) and not isinstance(value, bool)}
+        return {**numeric, **declared}
 
 
 def json_default(value: object) -> str:
@@ -112,13 +136,24 @@ def json_default(value: object) -> str:
 
 
 def details_from_frame(frame: pd.DataFrame, portfolio_id: PortfolioId) -> PortfolioDetails:
-    """Pick ``portfolio_id``'s row from a validated ``details`` frame and type it."""
+    """Pick ``portfolio_id``'s row from a validated ``details`` frame and type it; columns the model does not declare become its ``extra``."""
     rows = frame[frame["portfolio_id"] == portfolio_id]
     if len(rows) != 1:
         msg = f"details for portfolio {portfolio_id!r}: expected exactly one row, found {len(rows)}"
         raise PortfolioDataError(portfolio_id, [msg])
-    record = {str(column): value for column, value in rows.iloc[0].items()}
-    return PortfolioDetails.model_validate(record)
+    declared = set(PortfolioDetails.model_fields) - {"extra"}
+    record = {str(column): _plain(value) for column, value in rows.iloc[0].items()}
+    return PortfolioDetails.model_validate({**{name: value for name, value in record.items() if name in declared}, "extra": {name: value for name, value in record.items() if name not in declared}})
+
+
+def _plain(value: object) -> object:
+    """A frame cell as the plain Python value a strict model accepts: nulls to ``None``, numpy scalars to theirs."""
+    if value is pd.NA or value is pd.NaT or (isinstance(value, float) and value != value):  # noqa: PLR0124  # NaN is the one float unequal to itself
+        return None
+    item = getattr(value, "item", None)
+    if item is not None and not isinstance(value, Decimal | str | bytes):
+        return item()
+    return value
 
 
 PREVALIDATED_FRAMES: frozenset[str] = frozenset({"holdings", "universe", "constraints"})

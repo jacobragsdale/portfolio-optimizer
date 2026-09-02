@@ -104,8 +104,8 @@ both.
 Check the config resolves, then run and read the manifest:
 
 ```bash
-uv run --env-file .env portfolio-optimizer validate-config configs/my_run.json
-uv run --env-file .env portfolio-optimizer run configs/my_run.json
+uv run portfolio-optimizer validate-config configs/my_run.json
+uv run portfolio-optimizer run configs/my_run.json --as-of 2026-08-28T00:00:00Z
 ```
 
 Each assembly step's record in `manifest.json` lists `columns_added` per dataset and row counts before
@@ -206,12 +206,15 @@ casting in the consumer.
 ## 7. Feed the shipped optimizer, if you use it
 
 The shipped build (`engine/build.py`) is aligned to the universe: it exports every numeric universe
-column the schema does not declare into `spec.columns`, where a term reads it with
-`spec.column("score_z")`, and every boolean column into `spec.flags`, where a term reads it as a real
-boolean mask with `spec.flag("mandate_excluded")` (see [how to add a term](how-to-add-a-term.md)).
-Holdings' analytics columns are not exported, because the build has no row for a name that is not in
-the universe. A custom build
-that consumes `optimizer_frame()` directly sees both tables' columns and is not subject to this.
+column the schema does not declare into `spec.columns`, where a `linear` term or an `exposure_limit`
+row reads it by name (`"column": "score_z"`); every boolean column into `spec.flags`, where a
+constraint row names it as its `scope` (`"scope": "mandate_excluded"`) and a custom kind reads it as
+a real boolean mask with `spec.flag(...)`; and every string column — `liquidity_bucket` here, `sector`
+in the example — into `spec.groups` as a sparse membership matrix, where a `group_limit` row bounds
+each of its values (see [how to add a term or constraint kind](how-to-add-a-term.md)). Holdings'
+analytics columns are not exported, because the build has no row for a name that is not in the
+universe. A custom build that consumes `optimizer_frame()` directly sees both tables' columns and is
+not subject to this.
 
 ## Verify
 

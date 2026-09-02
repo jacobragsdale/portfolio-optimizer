@@ -1,9 +1,6 @@
 {
-  "run": {
-    "name": "example_rebalance",
-    "as_of_date": "2026-08-28T00:00:00Z",
-    "tags": {"desk": "template"}
-  },
+  "run": {"name": "example_sell", "tags": {"desk": "template"}},
+  "sides": "sell",
   "datasets": {
     "portfolios": {"loader": "load_portfolios"},
     "holdings": {
@@ -24,19 +21,19 @@
     "buy_universe_parameters": {"loader": "load_parameters"}
   },
   "rules": ["restrict_low_liquidity"],
-  "objective": {
-    "sense": "minimize",
-    "terms": [
-      {"name": "alpha", "params": {"weight": "1.0"}},
-      {"name": "tax_cost", "params": {"weight": "1.0"}},
-      {"name": "transaction_cost", "params": {"weight": "1.0"}}
-    ]
-  },
-  "solver": {
-    "name": "CLARABEL",
-    "options": {"max_iter": 200},
-    "time_limit_s": 60.0,
-    "verbose": false
+  "objective": [
+    {"kind": "linear", "name": "alpha", "column": "alpha", "weight": "-1"},
+    {"kind": "linear", "name": "tax_cost", "column": "tax_per_dollar", "vector": "sell"},
+    {
+      "kind": "linear",
+      "name": "transaction_cost",
+      "column": "tcost_per_dollar",
+      "vector": "trade"
+    }
+  ],
+  "solve": {
+    "name": "cvxpy",
+    "params": {"solver": "CLARABEL", "options": {"max_iter": 200}, "time_limit_s": 60.0}
   },
   "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9},
   "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},

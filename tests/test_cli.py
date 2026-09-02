@@ -8,9 +8,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from portfolio_optimizer.cli import run_cli
-from tests.conftest import EXAMPLE_CONFIG, example_body
-from tests.engine.support import EXAMPLE_ORDERS_P1, details_csv, example_book, fixed_clock
+from portfolio_optimizer.cli import parse_as_of, run_cli
+from tests import steps
+from tests.conftest import AS_OF, EXAMPLE_CONFIG, example_body
+from tests.engine.support import BUY_ORDERS_P1, BUY_ORDERS_P2, details_csv, example_book, fixed_clock
+
+AS_OF_TEXT = "2026-08-28T00:00:00Z"
 
 
 def cli(argv: Sequence[str], env: dict[str, str] | None = None, run_id: str = "run-smoke") -> tuple[int, str, str]:
@@ -22,7 +25,7 @@ def cli(argv: Sequence[str], env: dict[str, str] | None = None, run_id: str = "r
 @pytest.fixture
 def config(tmp_path: Path) -> Path:
     """The shipped config with the mock services' latency removed: the file a smoke test can afford to run."""
-    path = tmp_path / "example_run.json"
+    path = tmp_path / "example_buy.json"
     path.write_text(json.dumps(example_body()))
     return path
 
@@ -42,20 +45,32 @@ def env(tmp_path: Path, scheduler_address: str) -> dict[str, str]:
 
 
 def test_run_produces_the_golden_orders_and_a_manifest(tmp_path: Path, env: dict[str, str], config: Path) -> None:
-    code, out, err = cli(["run", str(config)], env)
+    code, out, err = cli(["run", str(config), "--as-of", AS_OF_TEXT], env)
     assert code == 0, err
     assert "run run-smoke" in out
-    assert "P1: solved, 3 order(s)" in out
-    assert "P2: solved, 0 order(s)" in out
+    assert "P1: solved, 2 order(s); binding: " in out and "ub" in out.split("P1: solved")[1].split("\n")[0], "the cap on A binds, and the run says so"
+    assert "P2: solved, 1 order(s); binding: " in out and "adv/cumulative_participation" in out.split("P2: solved")[1], "why P2 did not buy C: P1 spent its budget"
     run_dir = tmp_path / "out" / "run-smoke"
     orders = pd.read_parquet(run_dir / "orders" / "orders.parquet")
-    assert orders[["portfolio_id", "security_id", "side", "quantity"]].to_dict("records") == [{"portfolio_id": "P1", **order} for order in EXAMPLE_ORDERS_P1]
-    assert (run_dir / "manifest.json").exists()
+    assert orders[["portfolio_id", "security_id", "side", "quantity"]].to_dict("records") == [
+        *({"portfolio_id": "P1", **order} for order in BUY_ORDERS_P1),
+        *({"portfolio_id": "P2", **order} for order in BUY_ORDERS_P2),
+    ]
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["as_of_date"] == AS_OF.isoformat().replace("+00:00", "Z") and manifest["tags"] == {"desk": "template"}
+
+
+def test_the_default_settings_run_the_example_inline_with_no_environment_at_all(tmp_path: Path, config: Path) -> None:
+    code, out, err = cli(["run", str(config), "--as-of", AS_OF_TEXT, "--data-root", str(example_book(tmp_path)), "--output", str(tmp_path / "out")])
+    assert code == 0, err
+    assert "P1: solved, 2 order(s)" in out
+    manifest = json.loads((tmp_path / "out" / "run-smoke" / "manifest.json").read_text())
+    assert manifest["cluster"]["kind"] == "inline" and manifest["settings"]["cluster"] == "inline"
 
 
 def test_rerun_diffs_clean_and_verify_passes_without_cvxpy_objects(tmp_path: Path, env: dict[str, str], config: Path) -> None:
-    assert cli(["run", str(config)], env, run_id="one")[0] == 0
-    assert cli(["run", str(config)], env, run_id="two")[0] == 0
+    assert cli(["run", str(config), "--as-of", AS_OF_TEXT], env, run_id="one")[0] == 0
+    assert cli(["run", str(config), "--as-of", AS_OF_TEXT], env, run_id="two")[0] == 0
     left = tmp_path / "out" / "one" / "manifest.json"
     right = tmp_path / "out" / "two" / "manifest.json"
     code, out, _ = cli(["diff-manifests", str(left), str(right)])
@@ -65,45 +80,69 @@ def test_rerun_diffs_clean_and_verify_passes_without_cvxpy_objects(tmp_path: Pat
     assert code == 0, err
     assert "VERIFIED P1" in out
     assert "ok   trade_balance" in out
-    assert "ok   tech/sector_lb" in out and "ok   health/sector_lb" in out, "two rows of one constraint produce residuals of the same name; the label tells them apart"
+    assert "ok   sector_floor/group_limit" in out and "ok   sector_cap/group_limit" in out, "two rows of one kind produce residuals of the same name; the label tells them apart"
+    assert "ub " in out and "[binding]" in out.split("ub ")[1].split("\n")[0], "the verifier says where the answer sits against a limit"
     code, _, err = cli(["verify", "--manifest", str(left), "--portfolio", "P9"])
     assert code == 2
     assert "was not solved" in err
 
 
 def test_run_writes_the_recorded_spans_as_a_chrome_trace(tmp_path: Path, env: dict[str, str], config: Path) -> None:
-    assert cli(["run", str(config)], env)[0] == 0
+    assert cli(["run", str(config), "--as-of", AS_OF_TEXT], env)[0] == 0
     trace = tmp_path / "out" / "run-smoke" / "trace.json"
     assert trace.exists(), "the manifest's spans are written beside it in the Chrome trace format"
     assert "solve" in {str(event["name"]) for event in json.loads(trace.read_text())["traceEvents"]}
 
 
-def test_validate_config_lists_every_resolved_step() -> None:
+def test_validate_config_lists_every_resolved_step_and_term() -> None:
     code, out, _ = cli(["validate-config", str(EXAMPLE_CONFIG)])
     assert code == 0
     assert "config ok" in out
     assert "dependencies overlap" in out
     assert "rule                portfolio_optimizer.rules:restrict_low_liquidity" in out
-    assert "term                portfolio_optimizer.terms:alpha" in out
+    assert "build               portfolio_optimizer.engine.build:standard" in out
+    assert "solve               portfolio_optimizer.solvers:cvxpy" in out
+    assert "term                alpha (Linear)" in out
     assert "loader              portfolio_optimizer.loaders:load_constraints" in out
-    assert "constraint          " not in out, "constraints are loaded data now, so validate-config has none to list"
+    assert "constraint          " not in out, "constraints are loaded data, so validate-config has none to list"
 
 
-def test_validate_config_constructs_every_term_before_saying_ok(tmp_path: Path) -> None:
-    body = example_body() | {"objective": {"terms": ["tests.steps:lying_term"]}}
+def test_validate_config_renders_every_term_before_saying_ok(tmp_path: Path) -> None:
+    assert steps.Lying is not None  # imported for its side effect: the `lying` kind is registered in this process
+    body = example_body() | {"objective": [{"kind": "lying", "name": "lie"}]}
     config = tmp_path / "lying.json"
     config.write_text(json.dumps(body))
     code, _, err = cli(["validate-config", str(config)])
-    assert code == 2 and "objective.terms[0]: tests.steps:lying_term: returned ConstraintSet, expected ObjectiveTerm" in err
+    assert code == 2 and "objective[0]: lie: rendered ConstraintSet, expected ObjectiveTerm" in err
 
 
 def test_validate_config_rejects_a_solver_the_adapter_does_not_know(tmp_path: Path) -> None:
-    body = example_body() | {"solver": {"name": "SCIPY"}}  # cvxpy ships it; the adapter has no record for it, so its version could not be fingerprinted
+    body = example_body() | {"solve": {"name": "cvxpy", "params": {"solver": "SCIPY"}}}  # cvxpy ships it; the adapter has no record for it, so its version could not be fingerprinted
     config = tmp_path / "scipy.json"
     config.write_text(json.dumps(body))
     code, out, err = cli(["validate-config", str(config)])
     assert code == 2 and out == ""
-    assert "config rejected" in err and "solver: solver 'SCIPY' is not one the adapter knows" in err
+    assert "config rejected" in err and "solve: solver 'SCIPY' is not one the adapter knows" in err
+
+
+def test_steps_lists_what_this_environment_can_name() -> None:
+    code, out, _ = cli(["steps"])
+    assert code == 0
+    assert "rule (portfolio_optimizer.rules)" in out and "  restrict_low_liquidity (dataset, key)" in out
+    assert "build (portfolio_optimizer.engine.build)" in out and "  standard" in out
+    assert "  cvxpy (solver, options, time_limit_s, verbose)" in out
+    assert "term kinds" in out and "  linear (" in out
+    assert "constraint kinds" in out and "  participation_limit (" in out
+    assert "parameter" not in out.split("rule (")[1].split("solve_order")[0], "a helper in a template module is not a step"
+
+
+def test_the_as_of_argument_must_be_an_aware_instant(tmp_path: Path, config: Path) -> None:
+    assert parse_as_of("2026-08-28T09:30:00-04:00").isoformat() == "2026-08-28T13:30:00+00:00", "normalized to UTC"
+    code, _, err = cli(["run", str(config), "--as-of", "2026-08-28T00:00:00"], {"PORTFOLIO_OPTIMIZER_OUTPUT_DIR": str(tmp_path)})
+    assert code == 2 and "must carry a time zone" in err
+    code, _, err = cli(["run", str(config), "--as-of", "yesterday"], {"PORTFOLIO_OPTIMIZER_OUTPUT_DIR": str(tmp_path)})
+    assert code == 2 and "ISO 8601" in err
+    assert cli(["run", str(config)])[0] == 2, "the as-of date is required"
 
 
 def test_exit_code_contract(tmp_path: Path, env: dict[str, str], config: Path) -> None:
@@ -111,26 +150,26 @@ def test_exit_code_contract(tmp_path: Path, env: dict[str, str], config: Path) -
     bad_json.write_text('{"run": {}}')
     assert cli(["validate-config", str(bad_json)])[0] == 2
     assert cli(["validate-config", str(tmp_path / "missing.json")])[0] == 3
-    assert cli(["run", str(config)], {})[0] == 2  # settings missing
-    code, _, err = cli(["run", str(config)], env | {"PORTFOLIO_OPTIMIZER_DATA_ROOT": str(tmp_path / "nowhere")})
+    assert cli(["run", str(config), "--as-of", AS_OF_TEXT], {"PORTFOLIO_OPTIMIZER_TYPO": "1"})[0] == 2  # an unknown setting
+    code, _, err = cli(["run", str(config), "--as-of", AS_OF_TEXT], env | {"PORTFOLIO_OPTIMIZER_DATA_ROOT": str(tmp_path / "nowhere")})
     assert code == 3
     assert "infrastructure failure" in err
     assert cli(["no-such-command"])[0] == 2
 
 
 def test_run_flags_override_settings(tmp_path: Path, env: dict[str, str], config: Path) -> None:
-    code, out, _ = cli(["run", str(config), "--output", str(tmp_path / "elsewhere"), "--max-workers", "1"], env)
+    code, out, _ = cli(["run", str(config), "--as-of", AS_OF_TEXT, "--output", str(tmp_path / "elsewhere"), "--max-workers", "1"], env)
     assert code == 0
     manifest = json.loads((tmp_path / "elsewhere" / "run-smoke" / "manifest.json").read_text())
     assert "elsewhere" in out
     assert manifest["settings"]["max_workers"] == "1"
     assert manifest["cluster"]["kind"] == "address"
-    assert cli(["run", str(config), "--max-workers", "0"], env)[0] == 2
+    assert cli(["run", str(config), "--as-of", AS_OF_TEXT, "--max-workers", "0"], env)[0] == 2
 
 
 def test_a_failed_run_points_at_the_traceback_it_wrote(tmp_path: Path, env: dict[str, str], config: Path) -> None:
     env["PORTFOLIO_OPTIMIZER_DATA_ROOT"] = str(example_book(tmp_path, **{"details.csv": details_csv(P1={"max_weight": "0.25"})}))
-    code, out, err = cli(["run", str(config)], env)
+    code, out, err = cli(["run", str(config), "--as-of", AS_OF_TEXT], env)
     assert code == 1, err
     report_path = tmp_path / "out" / "run-smoke" / "failures" / "P1.txt"
     assert "P1: FAILED at solve: InfeasibleError" in out

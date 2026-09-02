@@ -52,7 +52,7 @@ def test_the_custodian_answers_only_for_the_accounts_asked_for_with_money_as_dec
     holdings = asyncio.run(load_holdings(request("holdings", "P2"), INSTANT))
     validate_frame(holdings, HOLDINGS)
     assert holdings["portfolio_id"].unique().tolist() == ["P2"]
-    assert holdings["avg_cost"].tolist() == [Decimal(100), Decimal(40)]
+    assert holdings["avg_cost"].tolist() == [Decimal(100), Decimal(60)]
     assert str(holdings["acquired_on"].dtype) == "datetime64[ns, UTC]"
 
 
@@ -72,12 +72,12 @@ def test_the_account_master_takes_a_batch_of_ids_and_returns_a_row_each() -> Non
     assert details["max_weight"].tolist() == [Decimal("0.4"), Decimal("0.6")]
 
 
-def test_compliance_returns_the_desks_own_columns_untouched() -> None:
+def test_compliance_returns_typed_rows_the_engine_reads_the_declaration_of() -> None:
     constraints = asyncio.run(load_constraints(request("constraints", "P1"), INSTANT))
     validate_frame(constraints, CONSTRAINTS)
-    assert set(constraints.columns) == {"portfolio_id", "name", "label", "params"}, "the schema declares only portfolio_id; the rest arrive as the desk wrote them"
-    band = constraints.loc[constraints["label"] == "tech", "params"].iloc[0]
-    assert json.loads(str(band)) == {"sector": "TECH", "lower": "0.5", "upper": "1"}
+    assert set(constraints.columns) == {"portfolio_id", "kind", "label", "params"}, "the schema declares only portfolio_id; the rest is the typed-row convention"
+    band = constraints.loc[constraints["label"] == "sector_floor", "params"].iloc[0]
+    assert json.loads(str(band)) == {"direction": ">=", "column": "sector", "bounds": {"TECH": "0.5", "HEALTH": "0"}}
 
 
 def test_compliance_answers_the_mandate_for_the_accounts_asked_for(tmp_path: Path) -> None:

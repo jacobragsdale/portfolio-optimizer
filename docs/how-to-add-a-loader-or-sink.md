@@ -18,7 +18,10 @@ dependency.
 ### 1. Write the function in `src/portfolio_optimizer/loaders.py` — or in your package
 
 A loader shared across desks belongs in a package installed in the environment and is named
-`my_firm.loaders:holdings_from_sql` in the config; the manifest records the package's version.
+`my_firm.loaders:holdings_from_sql` in the config — or published as an entry point in the group
+`portfolio_optimizer.loader` and named bare; the manifest records the package's version either way.
+When `PORTFOLIO_OPTIMIZER_STEP_PACKAGES` names an allowlist, a qualified name must come from one of
+those packages.
 
 ```python
 class SqlParams(Params):
@@ -89,7 +92,7 @@ and the manifest record that error's own type and message rather than the group'
 Letting the engine cut the book buys three things a private fan-out cannot: a failed account fails
 alone, the batches are visible in the manifest, and the whole stage overlaps the global loaders. The
 shipped example does exactly this over a hundred accounts — `holdings` with `batch_size: 1` and
-`max_in_flight: 8`, `details` with `batch_size: 25` and `max_in_flight: 4` — while its four other
+`max_in_flight: 8`, `details` with `batch_size: 25` and `max_in_flight: 4` — while its five other
 datasets stay global. `load_details` is the blocking twin, a plain `def` the engine runs in a worker
 thread; copy whichever matches your source.
 
@@ -104,9 +107,8 @@ Two things follow from a per-portfolio dataset being loaded in pieces:
 
 The manifest records how long each dataset took (`load_time_s`), when it started and what it waited on
 (`started_s`, `depends_on`), how many calls it was cut into
-(`batches`), how many portfolios a failed batch cost (`rejected`), and the run log reports each pool's
-request count and total time spent waiting, so a slow run can be traced to the dataset and the limit
-that paced it.
+(`batches`), and how many portfolios a failed batch cost (`rejected`), and the `timing` block times
+each dataset, so a slow run can be traced to the dataset and the bound that paced it.
 
 ### 2. Name it in the config
 
@@ -131,6 +133,9 @@ uses — shape only, never values.
 ## Add a sink
 
 ### 1. Write the function in `src/portfolio_optimizer/sinks.py` — or in your package
+
+A sink in a package is named `my_firm.sinks:orders_to_gateway`, or published in the group
+`portfolio_optimizer.sink` and named bare.
 
 ```python
 class GatewaySinkParams(Params):

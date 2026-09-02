@@ -1,4 +1,4 @@
-"""Tier 1: the problem spec's invariants, hashing, persistence, the buyable set, and chain-state derivation from predecessors' buys."""
+"""Tier 1: the problem spec's invariants, its named columns, scalars, and groupings, hashing, persistence, the buyable set, and chain-state derivation from predecessors' buys."""
 
 from pathlib import Path
 
@@ -6,7 +6,18 @@ import numpy as np
 import pytest
 from scipy.sparse import csr_array
 
-from portfolio_optimizer.domain.results import TRACEBACK_LIMIT, ChainState, Contribution, MissingSpecColumnError, PortfolioFailure, ProblemSpecError, Solution, SolveStatus, derive_chain_state
+from portfolio_optimizer.domain.results import (
+    TRACEBACK_LIMIT,
+    ChainState,
+    Contribution,
+    Grouping,
+    MissingSpecColumnError,
+    PortfolioFailure,
+    ProblemSpecError,
+    Solution,
+    SolveStatus,
+    derive_chain_state,
+)
 from tests.conftest import Factories, Frames
 
 
@@ -26,10 +37,11 @@ def test_spec_arrays_are_read_only_float64(make: Factories) -> None:
         ({"lb": np.array([0.5, 0.0, 0.0]), "ub": np.array([0.4, 1.0, 1.0])}, "lb > ub"),
         ({"security_ids": ("S1", "S0", "S2")}, "not sorted"),
         ({"security_ids": ("S0", "S0", "S2")}, "not unique"),
-        ({"cash_lb": 0.5, "cash_ub": 0.1}, "cash_lb > cash_ub"),
         ({"columns": {"alpha": np.ones(2)}}, "column 'alpha' has shape"),
+        ({"columns": {"ub": np.ones(3)}}, "columns \\['ub'\\] shadow the spec's own vectors"),
         ({"flags": {"esg": np.ones(2, dtype=bool)}}, "flag 'esg' has shape"),
         ({"columns": {"esg": np.ones(3)}, "flags": {"esg": np.ones(3, dtype=bool)}}, "both a column and a flag"),
+        ({"scalars": {"cash_ub": float("inf")}}, "scalar 'cash_ub' is not finite"),
         ({"nav": float("inf")}, "nav is not finite"),
     ],
 )
@@ -54,64 +66,79 @@ def test_hash_normalizes_negative_zero(make: Factories) -> None:
     assert make.spec(tax_per_dollar=np.array([0.0, -0.0, 0.0])).content_hash() == make.spec().content_hash()
 
 
-def test_hash_covers_metadata_and_extra_columns(make: Factories) -> None:
+def test_hash_covers_metadata_extra_columns_scalars_and_groupings(make: Factories) -> None:
     spec = make.spec()
     assert make.spec(portfolio_id="P2").content_hash() != spec.content_hash()
     assert make.spec(columns={"alpha": np.zeros(3)}).content_hash() != spec.content_hash()
+    assert make.spec(scalars={"cash_ub": 0.5}).content_hash() != spec.content_hash()
+    assert make.spec(sector_names=("A", "B"), sector_matrix=np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]])).content_hash() != spec.content_hash()
     flagged = make.spec(flags={"esg": np.array([True, False, True])})
     assert flagged.content_hash() != spec.content_hash()
     assert flagged.content_hash() != make.spec(flags={"esg": np.array([True, True, True])}).content_hash()
 
 
 def test_npz_round_trip_preserves_hash(make: Factories, tmp_path: Path) -> None:
-    spec = make.spec(columns={"alpha": np.array([0.1, 0.2, 0.3])}, flags={"esg": np.array([True, False, True])}, cash_ub=0.05)
+    spec = make.spec(columns={"alpha": np.array([0.1, 0.2, 0.3])}, flags={"esg": np.array([True, False, True])}, cash_ub=0.05, scalars={"max_issuer_weight": 0.1})
     path = tmp_path / "spec.npz"
     spec.to_npz(path)
     loaded = spec.from_npz(path)
     assert loaded.content_hash() == spec.content_hash()
     assert loaded.flag("esg").dtype == np.bool_
     assert not loaded.flag("esg").flags.writeable
-    assert isinstance(loaded.sector_matrix, csr_array) and not loaded.sector_matrix.data.flags.writeable
+    assert isinstance(loaded.group("sector").matrix, csr_array) and not loaded.group("sector").matrix.data.flags.writeable
+    assert loaded.scalars == spec.scalars and loaded.scalar("max_issuer_weight") == 0.1
     assert loaded.security_ids == spec.security_ids
     assert loaded.as_of_date == spec.as_of_date
 
 
-def test_sector_matrix_is_stored_sparse_whatever_form_it_arrives_in(make: Factories) -> None:
+def test_a_grouping_is_stored_sparse_whatever_form_it_arrives_in(make: Factories) -> None:
     membership = np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
     dense = make.spec(sector_names=("A", "B"), sector_matrix=membership)
     sparse = make.spec(sector_names=("A", "B"), sector_matrix=csr_array(membership))
-    assert isinstance(dense.sector_matrix, csr_array) and dense.sector_matrix.nnz == 3
+    assert isinstance(dense.group("sector").matrix, csr_array) and dense.group("sector").matrix.nnz == 3
     assert dense.content_hash() == sparse.content_hash()
     assert dense.content_hash() != make.spec(sector_names=("A", "B"), sector_matrix=membership[::-1]).content_hash()
-    with pytest.raises(ProblemSpecError, match="sector_matrix has shape"):
-        make.spec(sector_names=("A", "B"), sector_matrix=membership[:1])
+    with pytest.raises(ValueError, match=r"grouping has 2 name\(s\) but a matrix of 1 row\(s\)"):
+        Grouping(("A", "B"), csr_array(membership[:1]))
+    with pytest.raises(ProblemSpecError, match="grouping 'sector' has shape"):
+        make.spec(sector_names=("A", "B"), sector_matrix=membership[:, :2])
 
 
-def test_one_sector_row_comes_back_sparse_and_an_unknown_name_is_refused(make: Factories) -> None:
+def test_one_group_row_comes_back_sparse_and_an_unknown_name_is_refused(make: Factories) -> None:
     spec = make.spec(sector_names=("A", "B"), sector_matrix=np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]]))
-    row = spec.sector("B")
-    assert isinstance(row, csr_array) and row.shape == (1, 3) and row.nnz == 1, "a dense row per sector is what made the old spec enormous"
+    row = spec.group("sector").row("B")
+    assert isinstance(row, csr_array) and row.shape == (1, 3) and row.nnz == 1, "a dense row per group is what made the old spec enormous"
     np.testing.assert_array_equal(row.toarray(), [[0.0, 1.0, 0.0]])
-    with pytest.raises(MissingSpecColumnError, match=r"spec has no sector 'ENERGY'; available: \['A', 'B'\]"):
-        spec.sector("ENERGY")
+    with pytest.raises(MissingSpecColumnError, match=r"spec has no group 'ENERGY'; available: \['A', 'B'\]"):
+        spec.group("sector").row("ENERGY")
+    with pytest.raises(MissingSpecColumnError, match=r"spec has no grouping 'country'; available: \['sector'\]"):
+        spec.group("country")
 
 
-def test_missing_column_names_what_is_available(make: Factories) -> None:
+def test_missing_names_say_what_is_available(make: Factories) -> None:
     spec = make.spec(columns={"alpha": np.zeros(3)}, flags={"esg": np.ones(3, dtype=bool)})
     np.testing.assert_array_equal(spec.column("alpha"), np.zeros(3))
+    np.testing.assert_array_equal(spec.column("ub"), np.ones(3)), "the spec's own vectors are readable by name too"
     with pytest.raises(MissingSpecColumnError, match="spec has no flag 'liquid'; available: \\['esg'\\]"):
         spec.flag("liquid")
-    with pytest.raises(MissingSpecColumnError, match="available: \\['alpha'\\]"):
+    with pytest.raises(
+        MissingSpecColumnError,
+        match=r"spec has no column 'momentum'; available: \['w0', 'price', 'shares_held', 'lot_size', 'lb', 'ub', 'adv_capacity', 'alpha', 'tax_per_dollar', 'tcost_per_dollar'\]",
+    ):
         spec.column("momentum")
+    with pytest.raises(MissingSpecColumnError, match=r"spec has no scalar 'max_names'; available: \["):
+        spec.scalar("max_names")
 
 
-def test_solution_round_trips_through_npz(make: Factories, tmp_path: Path) -> None:
-    solution = make.solution(make.spec(n=2), objective=1.5, solver="CLARABEL", solver_version="0.11", solve_time_s=0.01, iterations=7)
+def test_solution_round_trips_through_npz_with_its_constraints_and_duals(make: Factories, tmp_path: Path) -> None:
+    record = {"kind": "cash_limit", "name": "floor", "direction": ">=", "bounds": "0", "scope": None, "allow_current_weight": False, "tolerance": "0"}
+    solution = make.solution(make.spec(n=2), objective=1.5, solver="CLARABEL", solver_version="0.11", solve_time_s=0.01, iterations=7, constraints=(record,), duals={"floor": 0.25})
     path = tmp_path / "solution.npz"
     solution.to_npz(path)
     loaded = Solution.from_npz(path)
     assert loaded.status is SolveStatus.OPTIMAL
     assert loaded.iterations == 7
+    assert loaded.constraints == (record,) and loaded.duals == {"floor": 0.25}
     np.testing.assert_array_equal(loaded.w, solution.w)
 
 

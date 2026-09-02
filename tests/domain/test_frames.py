@@ -59,11 +59,11 @@ def test_wrong_dtype_is_rejected_before_value_checks(frames: Frames) -> None:
 
 
 def test_missing_and_unexpected_columns_are_both_reported(frames: Frames) -> None:
-    frame = frames.details().drop(columns=["cash"]).assign(extra=1)
+    frame = frames.portfolios().drop(columns=["portfolio_id"]).assign(extra=1)
     with pytest.raises(FrameSchemaError) as info:
-        validate_frame(frame, DETAILS)
+        validate_frame(frame, PORTFOLIOS)
     assert len(info.value.failures) == 2
-    assert "missing columns ['cash']" in info.value.failures[0]
+    assert "missing columns ['portfolio_id']" in info.value.failures[0]
     assert "unexpected columns ['extra']" in info.value.failures[1]
 
 
@@ -84,10 +84,14 @@ def test_analytics_tables_accept_columns_beyond_their_schema(frames: Frames, sch
     validate_frame(frames.for_schema(schema)().assign(score=pd.Series([0.5], dtype="Float64")), schema)
 
 
-@pytest.mark.parametrize("schema", [PORTFOLIOS, DETAILS], ids=["portfolios", "details"])
-def test_other_engine_frames_reject_unexpected_columns(frames: Frames, schema: FrameSchema) -> None:
+def test_the_portfolio_list_rejects_unexpected_columns(frames: Frames) -> None:
     with pytest.raises(FrameSchemaError, match="unexpected columns \\['score'\\]"):
-        validate_frame(frames.for_schema(schema)().assign(score=pd.Series([0.5], dtype="Float64")), schema)
+        validate_frame(frames.portfolios().assign(score=pd.Series([0.5], dtype="Float64")), PORTFOLIOS)
+
+
+def test_details_keep_extra_columns_for_the_build_to_export(frames: Frames) -> None:
+    frame = frames.details().assign(max_issuer_weight=pd.Series([Decimal("0.1")], dtype="object"))
+    assert "max_issuer_weight" in validate_frame(frame, DETAILS).columns
 
 
 def test_solve_order_is_a_priority_that_may_repeat_or_be_absent(frames: Frames) -> None:

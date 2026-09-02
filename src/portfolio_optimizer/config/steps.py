@@ -11,10 +11,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 from portfolio_optimizer.domain.data import LoadRequest
-from portfolio_optimizer.domain.results import ChainState
 from portfolio_optimizer.domain.types import Params
 
-type StepKind = Literal["loader", "assembly", "rule", "solve_order", "term", "constraint", "solve", "sink"]
+type StepKind = Literal["loader", "assembly", "rule", "solve_order", "build", "solve", "sink"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +25,6 @@ class ResolvedStep:
     qualname: str
     fn: Callable[..., object]
     params: Params | None
-    reads_chain: bool
     source_sha256: str
     params_sha256: str
     is_external: bool
@@ -34,24 +32,19 @@ class ResolvedStep:
 
     @property
     def params_json(self) -> dict[str, object]:
-        """This step's validated params as JSON-safe values, the form a :class:`StepRef` and the manifest carry."""
+        """This step's validated params as JSON-safe values, the form the manifest carries."""
         if self.params is None:
             return {}
         return {str(key): value for key, value in self.params.model_dump(mode="json").items()}
 
-    def invoke(self, *, chain: ChainState | None = None, **engine_args: object) -> object:
-        """Call the function with the engine arguments, its validated params, and — when it declared ``chain`` — the chain.
+    def invoke(self, **engine_args: object) -> object:
+        """Call the function with the engine arguments and its validated params.
 
         For an async step this returns the coroutine; :meth:`invoke_async` awaits it.
         """
         kwargs: dict[str, object] = dict(engine_args)
         if self.params is not None:
             kwargs["params"] = self.params
-        if self.reads_chain:
-            if chain is None:
-                msg = f"step {self.qualname!r} reads the chain but none was supplied"
-                raise ValueError(msg)
-            kwargs["chain"] = chain
         return self.fn(**kwargs)
 
     async def invoke_async(self, *, request: LoadRequest) -> object:

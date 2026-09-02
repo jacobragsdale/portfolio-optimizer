@@ -1,11 +1,11 @@
 {
   "$defs": {
     "AssemblyStep": {
-      "$comment": "Shipped steps: ['drop', 'join', 'select', 'union']",
+      "$comment": "Steps this environment can name: ['drop', 'join', 'select', 'union']",
       "anyOf": [
         {
-          "$comment": "These shipped steps have required parameters and must use the object form: ['drop', 'join', 'select', 'union']",
-          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+          "$comment": "These steps have required parameters and must use the object form: ['drop', 'join', 'select', 'union']",
+          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
           "not": {
             "enum": [
               "drop",
@@ -292,12 +292,12 @@
           "description": "A step with parameters.",
           "properties": {
             "name": {
-              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
               "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
               "type": "string"
             },
             "params": {
-              "description": "Parameters validated against the function's `params` model; for shipped steps the exact shape is given below.",
+              "description": "Parameters validated against the function's `params` model; for the steps this environment can name the exact shape is given below.",
               "type": "object"
             }
           },
@@ -309,6 +309,61 @@
       ],
       "description": "An assembly step from `assembly.py`: `(frames: Frames[, params]) -> Frames`, run once over every loaded dataset.",
       "title": "AssemblyStep"
+    },
+    "BuildStep": {
+      "$comment": "Steps this environment can name: ['standard']",
+      "anyOf": [
+        {
+          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
+          "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "const": "standard"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "`standard` takes no parameters.",
+                    "maxProperties": 0,
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          ],
+          "description": "A step with parameters.",
+          "properties": {
+            "name": {
+              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
+              "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            "params": {
+              "description": "Parameters validated against the function's `params` model; for the steps this environment can name the exact shape is given below.",
+              "type": "object"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "The build step from `engine/build.py`: `(data: PortfolioData[, params]) -> ProblemSpec`; `standard` is the default.",
+      "title": "BuildStep"
     },
     "DatasetConfig": {
       "additionalProperties": false,
@@ -390,8 +445,7 @@
       "description": "Which higher-priority portfolios a portfolio waits for; see `execution.dependencies`.",
       "enum": [
         "overlap",
-        "all",
-        "none"
+        "all"
       ],
       "type": "string"
     },
@@ -402,7 +456,7 @@
         "dependencies": {
           "$ref": "#/$defs/Dependencies",
           "default": "overlap",
-          "description": "Whether portfolios wait for each other, and which. `overlap` (default): a portfolio waits only for higher-priority portfolios that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `sell`). `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis. `none`: nothing waits and the whole book solves at once, which is right when no constraint reads what others traded. Under `overlap` the edge test also reads what each portfolio's constraints *declare*: a typed constraint row (a `kind` column) says whether it reads the chain and — through its `scope` — which securities it couples through, so a portfolio whose rows read no chain waits for nobody and a scoped `participation_limit` couples only through its scope. An opaque row (the function convention, or a desk's own vocabulary), a chain-aware objective term, or a solve step other than the shipped `cvxpy` one couples conservatively through the whole tradable set."
+          "description": "Which higher-priority portfolios a portfolio waits for. `overlap` (default): those that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `sell`) — and only what its own constraints *declare* they read: a typed constraint row says whether it reads the chain and, through its `scope`, which securities it couples through, so a portfolio whose rows read no chain waits for nobody. A chain-aware objective term or a solve step other than the shipped `cvxpy` one couples conservatively through the whole tradable set; with nothing anywhere reading the chain, nothing waits. `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis."
         },
         "on_error": {
           "$ref": "#/$defs/OnError",
@@ -451,10 +505,10 @@
       "type": "string"
     },
     "LoaderStep": {
-      "$comment": "Shipped steps: ['load_constraints', 'load_details', 'load_holdings', 'load_mandates', 'load_parameters', 'load_portfolios', 'load_universe']",
+      "$comment": "Steps this environment can name: ['load_constraints', 'load_details', 'load_holdings', 'load_mandates', 'load_parameters', 'load_portfolios', 'load_universe']",
       "anyOf": [
         {
-          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
           "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -836,12 +890,12 @@
           "description": "A step with parameters.",
           "properties": {
             "name": {
-              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
               "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
               "type": "string"
             },
             "params": {
-              "description": "Parameters validated against the function's `params` model; for shipped steps the exact shape is given below.",
+              "description": "Parameters validated against the function's `params` model; for the steps this environment can name the exact shape is given below.",
               "type": "object"
             }
           },
@@ -853,33 +907,6 @@
       ],
       "description": "A dataset loader from `loaders.py`: `(request: LoadRequest[, params]) -> DataFrame`, plain or `async def`.",
       "title": "LoaderStep"
-    },
-    "ObjectiveConfig": {
-      "additionalProperties": false,
-      "description": "The objective as a list of named terms; the engine minimizes their sum.",
-      "properties": {
-        "sense": {
-          "const": "minimize",
-          "default": "minimize",
-          "description": "Only minimization is supported; express a reward as a negative term (see `alpha`).",
-          "title": "Sense",
-          "type": "string"
-        },
-        "terms": {
-          "description": "Objective-term steps from `terms.py`; every shipped term takes a non-negative `weight` (default \"1\").",
-          "items": {
-            "$ref": "#/$defs/TermStep"
-          },
-          "minItems": 1,
-          "title": "Terms",
-          "type": "array"
-        }
-      },
-      "required": [
-        "terms"
-      ],
-      "title": "ObjectiveConfig",
-      "type": "object"
     },
     "OnError": {
       "description": "What happens after a portfolio fails.",
@@ -919,11 +946,11 @@
       "type": "object"
     },
     "RuleStep": {
-      "$comment": "Shipped steps: ['add_zero_alpha', 'attach_universe_columns', 'cap_single_name', 'parameter', 'restrict_low_liquidity', 'restrict_to_mandate']",
+      "$comment": "Steps this environment can name: ['add_zero_alpha', 'attach_universe_columns', 'cap_single_name', 'restrict_low_liquidity', 'restrict_to_mandate']",
       "anyOf": [
         {
-          "$comment": "These shipped steps have required parameters and must use the object form: ['cap_single_name']",
-          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+          "$comment": "These steps have required parameters and must use the object form: ['cap_single_name']",
+          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
           "not": {
             "enum": [
               "cap_single_name"
@@ -1036,28 +1063,6 @@
               "if": {
                 "properties": {
                   "name": {
-                    "const": "parameter"
-                  }
-                },
-                "required": [
-                  "name"
-                ]
-              },
-              "then": {
-                "properties": {
-                  "params": {
-                    "additionalProperties": false,
-                    "description": "`parameter` takes no parameters.",
-                    "maxProperties": 0,
-                    "type": "object"
-                  }
-                }
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "name": {
                     "const": "restrict_low_liquidity"
                   }
                 },
@@ -1122,12 +1127,12 @@
           "description": "A step with parameters.",
           "properties": {
             "name": {
-              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
               "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
               "type": "string"
             },
             "params": {
-              "description": "Parameters validated against the function's `params` model; for shipped steps the exact shape is given below.",
+              "description": "Parameters validated against the function's `params` model; for the steps this environment can name the exact shape is given below.",
               "type": "object"
             }
           },
@@ -1142,14 +1147,8 @@
     },
     "RunMeta": {
       "additionalProperties": false,
-      "description": "Identity of the run, recorded in the manifest.",
+      "description": "Identity of the run, recorded in the manifest and kept out of the config hash.",
       "properties": {
-        "as_of_date": {
-          "description": "The timestamp the run is as of, timezone-aware (`2026-08-28T00:00:00Z`). Holding periods and the manifest use it; naive timestamps are rejected.",
-          "format": "date-time",
-          "title": "As Of Date",
-          "type": "string"
-        },
         "name": {
           "description": "Human-readable run name, e.g. `daily_rebalance`.",
           "minLength": 1,
@@ -1166,26 +1165,24 @@
         }
       },
       "required": [
-        "name",
-        "as_of_date"
+        "name"
       ],
       "title": "RunMeta",
       "type": "object"
     },
     "Sides": {
-      "description": "Which side the run trades: `both`, `buy`, or `sell`; see `sides`.",
+      "description": "Which side the run trades: `buy` or `sell`; see `sides`.",
       "enum": [
-        "both",
         "buy",
         "sell"
       ],
       "type": "string"
     },
     "SinkStep": {
-      "$comment": "Shipped steps: ['orders_to_csv', 'orders_to_parquet']",
+      "$comment": "Steps this environment can name: ['orders_to_csv', 'orders_to_parquet']",
       "anyOf": [
         {
-          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
           "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -1254,12 +1251,12 @@
           "description": "A step with parameters.",
           "properties": {
             "name": {
-              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
               "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
               "type": "string"
             },
             "params": {
-              "description": "Parameters validated against the function's `params` model; for shipped steps the exact shape is given below.",
+              "description": "Parameters validated against the function's `params` model; for the steps this environment can name the exact shape is given below.",
               "type": "object"
             }
           },
@@ -1273,10 +1270,10 @@
       "title": "SinkStep"
     },
     "SolveOrderStep": {
-      "$comment": "Shipped steps: ['most_uninvested_first']",
+      "$comment": "Steps this environment can name: ['most_uninvested_first']",
       "anyOf": [
         {
-          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
           "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -1309,12 +1306,12 @@
           "description": "A step with parameters.",
           "properties": {
             "name": {
-              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
               "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
               "type": "string"
             },
             "params": {
-              "description": "Parameters validated against the function's `params` model; for shipped steps the exact shape is given below.",
+              "description": "Parameters validated against the function's `params` model; for the steps this environment can name the exact shape is given below.",
               "type": "object"
             }
           },
@@ -1328,10 +1325,10 @@
       "title": "SolveOrderStep"
     },
     "SolveStep": {
-      "$comment": "Shipped steps: ['cvxpy', 'interpret_constraints', 'pro_rata_fill', 'render_typed', 'replace_constraints', 'typed_ref']",
+      "$comment": "Steps this environment can name: ['cvxpy', 'pro_rata_fill']",
       "anyOf": [
         {
-          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
           "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -1353,30 +1350,57 @@
                 "properties": {
                   "params": {
                     "additionalProperties": false,
-                    "description": "`cvxpy` takes no parameters.",
-                    "maxProperties": 0,
-                    "type": "object"
-                  }
-                }
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "name": {
-                    "const": "interpret_constraints"
-                  }
-                },
-                "required": [
-                  "name"
-                ]
-              },
-              "then": {
-                "properties": {
-                  "params": {
-                    "additionalProperties": false,
-                    "description": "`interpret_constraints` takes no parameters.",
-                    "maxProperties": 0,
+                    "description": "Which cvxpy solver runs and with what options.\n\n``solver`` must be one the adapter knows and cvxpy has installed — `CLARABEL`, `OSQP`, `SCS`,\n`HIGHS` (installed with cvxpy) or `PIQP` (the `piqp` extra) — checked when the config resolves,\nby `validate-config`, at the start of `run`, and on every worker before it does any work; there is\nno automatic fallback.",
+                    "properties": {
+                      "options": {
+                        "additionalProperties": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "description": "Passed verbatim to `Problem.solve(**options)`, e.g. `{\"max_iter\": 200}`.",
+                        "title": "Options",
+                        "type": "object"
+                      },
+                      "solver": {
+                        "default": "CLARABEL",
+                        "description": "The cvxpy solver: `CLARABEL` (default), `OSQP`, `SCS`, `HIGHS`, or `PIQP`.",
+                        "minLength": 1,
+                        "title": "Solver",
+                        "type": "string"
+                      },
+                      "time_limit_s": {
+                        "anyOf": [
+                          {
+                            "exclusiveMinimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Wall-clock limit per solve in seconds, translated to the solver's own option; omit for no limit. Rejected at resolve for a solver with no such option (`PIQP`).",
+                        "title": "Time Limit S"
+                      },
+                      "verbose": {
+                        "default": false,
+                        "description": "Let the solver print its iteration log.",
+                        "title": "Verbose",
+                        "type": "boolean"
+                      }
+                    },
                     "type": "object"
                   }
                 }
@@ -1403,83 +1427,17 @@
                   }
                 }
               }
-            },
-            {
-              "if": {
-                "properties": {
-                  "name": {
-                    "const": "render_typed"
-                  }
-                },
-                "required": [
-                  "name"
-                ]
-              },
-              "then": {
-                "properties": {
-                  "params": {
-                    "additionalProperties": false,
-                    "description": "`render_typed` takes no parameters.",
-                    "maxProperties": 0,
-                    "type": "object"
-                  }
-                }
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "name": {
-                    "const": "replace_constraints"
-                  }
-                },
-                "required": [
-                  "name"
-                ]
-              },
-              "then": {
-                "properties": {
-                  "params": {
-                    "additionalProperties": false,
-                    "description": "`replace_constraints` takes no parameters.",
-                    "maxProperties": 0,
-                    "type": "object"
-                  }
-                }
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "name": {
-                    "const": "typed_ref"
-                  }
-                },
-                "required": [
-                  "name"
-                ]
-              },
-              "then": {
-                "properties": {
-                  "params": {
-                    "additionalProperties": false,
-                    "description": "`typed_ref` takes no parameters.",
-                    "maxProperties": 0,
-                    "type": "object"
-                  }
-                }
-              }
             }
           ],
           "description": "A step with parameters.",
           "properties": {
             "name": {
-              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
+              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
               "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
               "type": "string"
             },
             "params": {
-              "description": "Parameters validated against the function's `params` model; for shipped steps the exact shape is given below.",
+              "description": "Parameters validated against the function's `params` model; for the steps this environment can name the exact shape is given below.",
               "type": "object"
             }
           },
@@ -1492,230 +1450,21 @@
       "description": "The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`; `cvxpy` is the default.",
       "title": "SolveStep"
     },
-    "SolverConfig": {
-      "additionalProperties": false,
-      "description": "Which cvxpy solver runs and with what options.",
-      "properties": {
-        "name": {
-          "default": "CLARABEL",
-          "description": "A solver the adapter knows and cvxpy has installed: `CLARABEL`, `OSQP`, `SCS`, `HIGHS` (installed with cvxpy) or `PIQP` (the `piqp` extra). Checked when the config resolves — by `validate-config`, at the start of `run`, and on every worker before it does any work; there is no automatic fallback.",
-          "minLength": 1,
-          "title": "Name",
-          "type": "string"
-        },
-        "options": {
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "integer"
-              },
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "string"
-              }
-            ]
-          },
-          "description": "Passed verbatim to `Problem.solve(**options)`, e.g. `{\"max_iter\": 200}`.",
-          "title": "Options",
-          "type": "object"
-        },
-        "time_limit_s": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Wall-clock limit per solve in seconds, translated to the solver's own option; omit for no limit. Rejected at resolve for a solver with no such option (`PIQP`).",
-          "title": "Time Limit S"
-        },
-        "verbose": {
-          "default": false,
-          "description": "Let the solver print its iteration log.",
-          "title": "Verbose",
-          "type": "boolean"
-        }
-      },
-      "title": "SolverConfig",
-      "type": "object"
-    },
-    "TermStep": {
-      "$comment": "Shipped steps: ['alpha', 'tax_cost', 'transaction_cost']",
-      "anyOf": [
-        {
-          "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
-          "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
-          "type": "string"
-        },
-        {
-          "additionalProperties": false,
-          "allOf": [
-            {
-              "if": {
-                "properties": {
-                  "name": {
-                    "const": "alpha"
-                  }
-                },
-                "required": [
-                  "name"
-                ]
-              },
-              "then": {
-                "properties": {
-                  "params": {
-                    "additionalProperties": false,
-                    "description": "Which per-security column holds the expected return.",
-                    "properties": {
-                      "column": {
-                        "default": "alpha",
-                        "title": "Column",
-                        "type": "string"
-                      },
-                      "weight": {
-                        "anyOf": [
-                          {
-                            "minimum": 0.0,
-                            "type": "number"
-                          },
-                          {
-                            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-                            "type": "string"
-                          }
-                        ],
-                        "default": "1",
-                        "title": "Weight"
-                      }
-                    },
-                    "type": "object"
-                  }
-                }
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "name": {
-                    "const": "tax_cost"
-                  }
-                },
-                "required": [
-                  "name"
-                ]
-              },
-              "then": {
-                "properties": {
-                  "params": {
-                    "additionalProperties": false,
-                    "description": "A non-negative weight multiplying the term.",
-                    "properties": {
-                      "weight": {
-                        "anyOf": [
-                          {
-                            "minimum": 0.0,
-                            "type": "number"
-                          },
-                          {
-                            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-                            "type": "string"
-                          }
-                        ],
-                        "default": "1",
-                        "title": "Weight"
-                      }
-                    },
-                    "type": "object"
-                  }
-                }
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "name": {
-                    "const": "transaction_cost"
-                  }
-                },
-                "required": [
-                  "name"
-                ]
-              },
-              "then": {
-                "properties": {
-                  "params": {
-                    "additionalProperties": false,
-                    "description": "A flat cost in basis points added to any per-security ``tcost_bps`` column.",
-                    "properties": {
-                      "cost_bps": {
-                        "anyOf": [
-                          {
-                            "minimum": 0.0,
-                            "type": "number"
-                          },
-                          {
-                            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-                            "type": "string"
-                          }
-                        ],
-                        "default": "0",
-                        "title": "Cost Bps"
-                      },
-                      "weight": {
-                        "anyOf": [
-                          {
-                            "minimum": 0.0,
-                            "type": "number"
-                          },
-                          {
-                            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-                            "type": "string"
-                          }
-                        ],
-                        "default": "1",
-                        "title": "Weight"
-                      }
-                    },
-                    "type": "object"
-                  }
-                }
-              }
-            }
-          ],
-          "description": "A step with parameters.",
-          "properties": {
-            "name": {
-              "description": "A bare function name (`cap_single_name`), resolved in the template module for this kind of step, or a qualified `package.module:function` importable by the engine and by any worker process.",
-              "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
-              "type": "string"
-            },
-            "params": {
-              "description": "Parameters validated against the function's `params` model; for shipped steps the exact shape is given below.",
-              "type": "object"
-            }
-          },
-          "required": [
-            "name"
-          ],
-          "type": "object"
-        }
+    "Vector": {
+      "description": "The decision quantity a term or constraint reads: the target weight `w`, the `buy` or `sell` split, or `trade`, the amount traded on the sides the run has.",
+      "enum": [
+        "w",
+        "buy",
+        "sell",
+        "trade"
       ],
-      "description": "An objective term from `terms.py`: `(x: DecisionVars, spec: ProblemSpec[, params][, chain: ChainState]) -> ObjectiveTerm`.",
-      "title": "TermStep"
+      "type": "string"
     }
   },
   "$id": "https://raw.githubusercontent.com/jacobragsdale/portfolio-optimizer/main/configs/run-config.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "A portfolio-optimizer run: what to load, how to combine it, which rules and terms apply, and how to execute.\n\nValidated strictly: unknown keys are errors, money is written as strings, timestamps carry a zone.\nStep names are resolved and their parameters validated before any data is loaded.",
+  "description": "A portfolio-optimizer run: what to load, how to combine it, which rules and terms apply, and how to execute.\n\nValidated strictly: unknown keys are errors, money is written as strings. Step names are\nresolved and their parameters validated — and every objective term is validated against its kind —\nbefore any data is loaded.",
   "else": {
     "$comment": "Without assembly steps, nothing can produce the engine-known frames, so every one must be loaded.",
     "properties": {
@@ -1761,12 +1510,16 @@
       "title": "Assembly",
       "type": "array"
     },
+    "build": {
+      "$ref": "#/$defs/BuildStep",
+      "description": "The build step: `(data: PortfolioData[, params]) -> ProblemSpec`, run per portfolio after its rules. `standard` (default, in `engine/build.py`) aligns the bundle to the sorted universe, computes weights and tax per dollar exactly, derives the bounds, and exports every extra column, flag, grouping, and account scalar by name; a qualified name plugs in a build that reads the bundle its own way — tax lots, a factor block, a different bounds policy."
+    },
     "datasets": {
       "$comment": "`portfolios` is always required; ['holdings', 'universe', 'details'] are required unless an assembly step produces them. `constraints` is engine-known but optional. Any other key is an extra dataset, available to assembly steps and carried into each portfolio's bundle.",
       "additionalProperties": {
         "$ref": "#/$defs/DatasetConfig"
       },
-      "description": "Named datasets, every one a frame. `portfolios` is required — the list of portfolio ids and their `solve_order` priorities (lower solves first, ties break on `portfolio_id`), loaded like any dataset or written inline as a list of ids — and is consumed by the engine rather than passed to assembly. `holdings`, `universe`, and `details` must be declared unless an assembly step produces them; `constraints` is engine-known but optional, and a run that omits it constrains nothing beyond the trade identity. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Each dataset's loader starts the moment its `depends_on` dependencies have loaded — with none, the moment the load stage does.",
+      "description": "Named datasets, every one a frame. `portfolios` is required — the list of portfolio ids and their `solve_order` priorities (lower solves first, ties break on `portfolio_id`), loaded like any dataset or written inline as a list of ids — and is consumed by the engine rather than passed to assembly. `holdings`, `universe`, and `details` must be declared unless an assembly step produces them; `constraints` is engine-known but optional, and a run that omits it constrains nothing beyond the trade identity and the spec's own bounds. Any other name is an extra dataset: available to every assembly step by name and carried into each portfolio's bundle as `data.extras` (reduced to the portfolio's rows when it has a `portfolio_id` column). Each dataset's loader starts the moment its `depends_on` dependencies have loaded — with none, the moment the load stage does.",
       "properties": {
         "constraints": {
           "$ref": "#/$defs/DatasetConfig"
@@ -1823,8 +1576,73 @@
       "description": "Failure semantics and how dependencies between portfolios are derived."
     },
     "objective": {
-      "$ref": "#/$defs/ObjectiveConfig",
-      "description": "What the optimizer minimizes."
+      "$comment": "Term kinds this environment can name: ['linear']",
+      "default": [],
+      "description": "Objective terms, each an object whose `kind` names a typed term model — the shipped `linear` (`{\"kind\": \"linear\", \"name\": \"alpha\", \"column\": \"alpha\", \"weight\": \"-1\"}`), or a kind an installed package publishes. The engine minimizes their sum; a reward is a negative weight. Every term is validated against its model when the config resolves, and its `name` must be unique. Empty is a run whose solve step minimizes nothing.",
+      "items": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "``weight · cᵀv``: a per-security column against a decision vector — ``alpha`` against ``w`` with a negative weight is the expected-return reward, ``tax_per_dollar`` against ``sell`` the tax cost, ``tcost_per_dollar`` against ``trade`` the trading cost.\n\nOmit ``column`` and every name counts once, so ``trade`` alone is a turnover penalty.",
+            "properties": {
+              "column": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "A per-security column of the spec — `alpha`, `tax_per_dollar`, `tcost_per_dollar`, any exported universe column; omitted, every name counts once.",
+                "title": "Column"
+              },
+              "kind": {
+                "const": "linear",
+                "default": "linear",
+                "description": "The kind: a per-security column against a decision vector.",
+                "title": "Kind",
+                "type": "string"
+              },
+              "name": {
+                "description": "What the report and the manifest key on; unique among the run's terms.",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "title": "Name",
+                "type": "string"
+              },
+              "vector": {
+                "$ref": "#/$defs/Vector",
+                "default": "w",
+                "description": "The decision vector the column multiplies."
+              },
+              "weight": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                    "type": "string"
+                  }
+                ],
+                "default": "1",
+                "description": "Multiplies the term; negative for a reward, since the sum is minimized. A string, so the manifest records it exactly.",
+                "title": "Weight"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "title": "linear term",
+            "type": "object"
+          }
+        ],
+        "description": "One objective term: an object whose `kind` names its model."
+      },
+      "title": "Objective",
+      "type": "array"
     },
     "post_solve": {
       "$ref": "#/$defs/PostSolveConfig",
@@ -1841,12 +1659,11 @@
     },
     "run": {
       "$ref": "#/$defs/RunMeta",
-      "description": "Run identity."
+      "description": "Run identity: a name and tags for people, recorded in the manifest and kept out of the config hash."
     },
     "sides": {
       "$ref": "#/$defs/Sides",
-      "default": "both",
-      "description": "Which side the run trades. `both`: buys and sells in one problem, portfolios coupling through buys only. `buy`: buys alone — one variable per name, `w >= w0`, no sell vector, so a term that reads `sell` is refused at validate-config; portfolios couple through buys. `sell`: the mirror — `w <= w0`, no buy vector, portfolios couple through sells. The value selects the side profile that supplies the decision variables, the trade identity, the tradable set the dependency graph is built from, and the chain."
+      "description": "Which side the run trades: `buy` — one variable per name, `w >= w0`, no sell vector, portfolios coupling through buys — or `sell`, the mirror, coupling through sells. A term or row that reads the other side is refused. A desk's buy program and its sell program are two runs over one snapshot."
     },
     "sink": {
       "$ref": "#/$defs/SinkStep",
@@ -1854,7 +1671,7 @@
     },
     "solve": {
       "$ref": "#/$defs/SolveStep",
-      "description": "The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`. `cvxpy` (default) builds and solves the cvxpy problem from the terms and constraints; a qualified name plugs in a firm's own library or a pure function for one side."
+      "description": "The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`. `cvxpy` (default) renders the terms and the typed constraint rows and solves with the solver its params name (`{\"name\": \"cvxpy\", \"params\": {\"solver\": \"CLARABEL\", \"time_limit_s\": 60}}`); a qualified name plugs in a firm's own library or a pure function for one side."
     },
     "solve_order": {
       "anyOf": [
@@ -1867,16 +1684,12 @@
       ],
       "default": null,
       "description": "Optional solve-order step from `solve_order.py`: `(data: PortfolioData[, params]) -> Decimal`, evaluated on each portfolio's ruled bundle. Lower keys solve first; ties break on `portfolio_id`. Replaces the portfolios frame's `solve_order` column."
-    },
-    "solver": {
-      "$ref": "#/$defs/SolverConfig",
-      "description": "cvxpy solver selection and options, read by the `cvxpy` solve step."
     }
   },
   "required": [
     "run",
     "datasets",
-    "objective",
+    "sides",
     "sink"
   ],
   "title": "Portfolio optimizer run config",

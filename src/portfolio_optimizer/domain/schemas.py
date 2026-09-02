@@ -1,7 +1,11 @@
 """The concrete frame schemas every dataset and output must satisfy.
 
 Column conventions: identifiers are ``string``; share counts are ``Int64``; money, prices, and
-weights are ``decimal``; statistical estimates (alpha, scores, loadings) are ``Float64``.
+weights are ``decimal``; statistical estimates (alpha, scores, loadings) are ``Float64``. The
+engine-known frames declare what the shipped build reads and leave the rest open: ``holdings``,
+``universe``, and ``details`` all accept columns beyond their schemas, and the build exports every
+one of them by name — a universe column as a per-security column, flag, or grouping; a details
+column as a per-account scalar.
 """
 
 from decimal import Decimal
@@ -41,13 +45,13 @@ DETAILS = FrameSchema(
     columns=(
         ColumnSpec("portfolio_id", "string"),
         ColumnSpec("name", "string"),
-        ColumnSpec("state", "string"),
+        ColumnSpec("state", "string", required=False),
         ColumnSpec("st_tax_rate", "decimal", ge=ZERO, lt=ONE),
         ColumnSpec("lt_tax_rate", "decimal", ge=ZERO, lt=ONE),
         ColumnSpec("cash", "decimal", ge=ZERO),
         ColumnSpec("nav", "decimal", gt=ZERO),
-        # The account's management-style limits. A constraint reads its numbers from here or from its
-        # own row in `constraints`, so what a run permits is data that changes daily, not config.
+        # The account's management-style limits. The build exports every one as a spec scalar the
+        # typed constraints read by name, so what a run permits is data that changes daily, not config.
         ColumnSpec("max_weight", "decimal", gt=ZERO, le=ONE),
         ColumnSpec("max_turnover", "decimal", ge=ZERO, le=TWO),
         ColumnSpec("max_adv_participation", "decimal", ge=ZERO, le=ONE),
@@ -57,6 +61,7 @@ DETAILS = FrameSchema(
     ),
     key=("portfolio_id",),
     checks=(FrameCheck("cash_bounds_ordered", _cash_bounds_ordered),),
+    allow_extra=True,  # any further column rides along on the account's details; a numeric one becomes a spec scalar a constraint can bound against
 )
 
 HOLDINGS = FrameSchema(
@@ -77,18 +82,19 @@ UNIVERSE = FrameSchema(
     columns=(
         ColumnSpec("security_id", "string"),
         ColumnSpec("price", "decimal", gt=ZERO),
-        ColumnSpec("sector", "string"),
-        ColumnSpec("adv_shares", "Int64", ge=ZERO),
-        ColumnSpec("lot_size", "Int64", ge=ONE),
-        ColumnSpec("restricted", "bool"),
+        ColumnSpec("sector", "string", required=False),
+        ColumnSpec("adv_shares", "Int64", required=False, ge=ZERO),
+        ColumnSpec("lot_size", "Int64", required=False, ge=ONE),
+        ColumnSpec("restricted", "bool", required=False),
         ColumnSpec("alpha", "Float64", required=False),
         ColumnSpec("tcost_bps", "decimal", required=False, ge=ZERO),
         ColumnSpec("min_weight", "decimal", required=False, nullable=True, ge=ZERO, le=ONE),
         ColumnSpec("max_weight", "decimal", required=False, nullable=True, ge=ZERO, le=ONE),
     ),
     key=("security_id",),
-    allow_extra=True,  # analytics columns joined or computed per security; build exports every numeric extra by name
+    allow_extra=True,  # analytics columns joined or computed per security; the build exports every extra by name
 )
+"""Every security the book may trade. Only ``security_id`` and ``price`` are required: ``sector`` is one grouping among any string column, ``adv_shares`` enables the participation constraints, ``lot_size`` defaults to one share, ``restricted`` to false."""
 
 ORDER_SIDES = frozenset({"BUY", "SELL"})
 
@@ -112,13 +118,14 @@ ORDERS = FrameSchema(
 )
 
 CONSTRAINTS = FrameSchema(name="constraints", columns=(ColumnSpec("portfolio_id", "string"),), key=(), allow_extra=True)
-"""One portfolio's constraints, in whatever shape the desk writes them.
+"""One portfolio's constraints, one typed row each.
 
-The engine knows two things about a constraint row: which portfolio it belongs to, and — when a
-``kind`` column names a typed model (``domain/constraints.py``) — the declaration it schedules by:
-whether the row reads the chain, and what it couples through. Everything else is the desk's own
-vocabulary, carried from the loader, through the rules that adjust it, to the solve step that
-interprets it. There is no key, because the engine does not know what identifies a row.
+The engine knows two things about a constraint row: which portfolio it belongs to, and — through
+its ``kind`` column, which names a typed model (``domain/constraints.py``) — the declaration it
+schedules by: whether the row reads the chain, and what it couples through. The model's fields
+travel in ``params`` as JSON, its name in ``label``, and the shipped cvxpy step renders it from the
+model. A frame in another vocabulary, with no ``kind`` column, is a custom solve step's to read.
+There is no key, because the engine does not know what identifies a row.
 
 Optional: a run whose solve step needs no constraints declares no such dataset, and every portfolio
 gets the empty frame.

@@ -1,9 +1,12 @@
-"""Process configuration from the environment; loaded once at startup, never defaulted.
+"""Process configuration from the environment; every setting has a default a laptop can run with.
 
 Two kinds of setting live here. Where data is read from, where runs are written, and how loudly to
 log are the run's surroundings. Which cluster the run provisions for itself and how big it is are the
 run's *execution mechanics* — deliberately not part of the run config, so a laptop run and a cluster
-run of one config hash identically and differ only in the manifest's ``settings`` block.
+run of one config hash identically and differ only in the manifest's ``settings`` block. The default
+cluster is ``inline``: every task runs in this process, one after another, which needs nothing
+beyond the locked environment and is where a rule is debugged. A gateway needs the image its pods
+run and the password it authenticates with, and those two have no defaults.
 """
 
 from collections.abc import Mapping
@@ -16,19 +19,20 @@ from pydantic_settings import BaseSettings, EnvSettingsSource, PydanticBaseSetti
 
 ENV_PREFIX = "PORTFOLIO_OPTIMIZER_"
 
-type ClusterKind = Literal["local", "gateway", "address"]
+type ClusterKind = Literal["inline", "local", "gateway", "address"]
 
-CLUSTER_PATTERN = r"^(local|https?://\S+|tcp://\S+|tls://\S+)$"
-"""A cluster is provisioned here (``local``), asked of a Dask Gateway (its ``http(s)://`` address), or already running (a ``tcp://`` or ``tls://`` scheduler address)."""
+CLUSTER_PATTERN = r"^(inline|local|https?://\S+|tcp://\S+|tls://\S+)$"
+"""A cluster is this process (``inline``), provisioned here (``local``), asked of a Dask Gateway (its ``http(s)://`` address), or already running (a ``tcp://`` or ``tls://`` scheduler address)."""
 
 
 @dataclass(frozen=True, slots=True)
 class ExecutionSettings:
     """Which cluster the run provisions and how big it is; the runner's view of the settings.
 
-    ``cluster`` is ``local``, the address of a Dask Gateway the run asks for a cluster, or the address
-    of a scheduler someone else runs. ``min_workers`` is what is provisioned before the load stage and
-    ``max_workers`` what the run scales to after assembly.
+    ``cluster`` is ``inline``, ``local``, the address of a Dask Gateway the run asks for a cluster, or
+    the address of a scheduler someone else runs. ``min_workers`` is what is provisioned before the
+    load stage and ``max_workers`` what the run scales to after assembly. ``step_packages`` names the
+    top-level packages a qualified step name may import from; ``None`` allows any importable module.
     """
 
     cluster: str
@@ -38,12 +42,14 @@ class ExecutionSettings:
     worker_image: str | None = None
     gateway_password: SecretStr | None = None
     gateway_proxy_address: str | None = None
+    step_packages: tuple[str, ...] | None = None
 
     @property
     def cluster_kind(self) -> ClusterKind:
-        """``local``, ``gateway`` for a Dask Gateway address, or ``address`` for a scheduler's."""
-        if self.cluster == "local":
-            return "local"
+        """``inline``, ``local``, ``gateway`` for a Dask Gateway address, or ``address`` for a scheduler's."""
+        if self.cluster in ("inline", "local"):
+            kind: ClusterKind = "inline" if self.cluster == "inline" else "local"
+            return kind
         if self.cluster.startswith(("http://", "https://")):
             return "gateway"
         return "address"
@@ -54,16 +60,18 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix=ENV_PREFIX, strict=True, extra="forbid", frozen=True, validate_default=True, revalidate_instances="always", allow_inf_nan=False)
 
-    output_dir: Path
-    data_root: Path
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"]
-    cluster: str = Field(pattern=CLUSTER_PATTERN)
-    min_workers: int = Field(ge=1)
-    max_workers: int = Field(ge=1)
-    cluster_timeout_s: float = Field(gt=0)
+    output_dir: Path = Path("out")
+    data_root: Path = Path()
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    cluster: str = Field(default="inline", pattern=CLUSTER_PATTERN)
+    min_workers: int = Field(default=1, ge=1)
+    max_workers: int = Field(default=1, ge=1)
+    cluster_timeout_s: float = Field(default=120.0, gt=0)
     worker_image: str | None = Field(default=None, min_length=1)
     gateway_password: SecretStr | None = Field(default=None, min_length=1)
     gateway_proxy_address: str | None = Field(default=None, min_length=1)
+    step_packages: str | None = Field(default=None, min_length=1)
+    """Comma-separated top-level packages a qualified step name (``pkg.module:function``) may import from; unset, any importable module is allowed. Steps a package publishes as entry points and the template's own modules are always allowed."""
 
     @classmethod
     @override
@@ -103,7 +111,14 @@ class Settings(BaseSettings):
             worker_image=self.worker_image,
             gateway_password=self.gateway_password,
             gateway_proxy_address=self.gateway_proxy_address,
+            step_packages=self.packages(),
         )
+
+    def packages(self) -> tuple[str, ...] | None:
+        """The step-package allowlist as names, or ``None`` for no restriction."""
+        if self.step_packages is None:
+            return None
+        return tuple(name.strip() for name in self.step_packages.split(",") if name.strip())
 
     def shown(self) -> dict[str, str]:
         """Every setting as text, for the manifest; a setting that does not apply is omitted."""
@@ -115,7 +130,7 @@ def _variable(field: str) -> str:
 
 
 class SettingsError(ValueError):
-    """Required configuration is missing or invalid; startup must stop."""
+    """Configuration is invalid; startup must stop."""
 
 
 class _MappingEnvSource(EnvSettingsSource):
@@ -133,8 +148,8 @@ class _MappingEnvSource(EnvSettingsSource):
 def load_settings(env: Mapping[str, str]) -> Settings:
     """Build settings from an explicit environment mapping (a seam for tests; production passes ``os.environ``).
 
-    Every ``PORTFOLIO_OPTIMIZER_*`` variable must correspond to a field, and every field must be
-    present: a typo in a variable name is an error, not a silently ignored value.
+    Every ``PORTFOLIO_OPTIMIZER_*`` variable must correspond to a field: a typo in a variable name is an
+    error, not a silently ignored value. A field the environment does not set takes its default.
     """
     known = {_variable(name) for name in Settings.model_fields}
     unknown = sorted(key for key in env if key.upper().startswith(ENV_PREFIX) and key.upper() not in known)

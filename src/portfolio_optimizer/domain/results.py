@@ -33,8 +33,8 @@ RUN_SCOPED = "*"
 TRACEBACK_LIMIT = 32_768
 """Characters of a formatted traceback kept; anything longer is elided in the middle, never at the ends."""
 
-_SCALAR_FIELDS: tuple[str, ...] = ("nav", "max_turnover", "cash_lb", "cash_ub", "min_trade_notional")
-_VECTOR_FIELDS: tuple[str, ...] = ("w0", "price", "shares_held", "lot_size", "tax_per_dollar", "tcost_per_dollar", "lb", "ub", "adv_capacity")
+VECTOR_FIELDS: tuple[str, ...] = ("w0", "price", "shares_held", "lot_size", "lb", "ub")
+"""The per-security vectors every spec carries; ``spec.column`` reads these by name beside the exported columns."""
 
 
 class ProblemSpecError(ValueError):
@@ -42,7 +42,7 @@ class ProblemSpecError(ValueError):
 
 
 class MissingSpecColumnError(KeyError):
-    """A term asked for a per-security column or flag the spec does not carry."""
+    """A term or constraint asked for a column, flag, scalar, or grouping the spec does not carry."""
 
     def __init__(self, name: str, available: tuple[str, ...], kind: str = "column") -> None:
         self.name = name
@@ -79,48 +79,76 @@ def _readonly_sparse(matrix: csr_array | F64) -> csr_array:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class Grouping:
+    """One categorical universe column as a membership matrix: ``names`` are its distinct values, sorted, and ``matrix`` is *K*-by-*N* with one nonzero per security.
+
+    Sparse, so a grouping is a megabyte at 100,000 names however many groups it has; the dense form
+    was most of every large spec. A dense matrix is accepted on construction and converted.
+    """
+
+    names: tuple[str, ...]
+    matrix: csr_array
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "names", tuple(str(name) for name in self.names))
+        object.__setattr__(self, "matrix", _readonly_sparse(self.matrix))
+        if self.matrix.shape[0] != len(self.names):
+            msg = f"grouping has {len(self.names)} name(s) but a matrix of {self.matrix.shape[0]} row(s)"
+            raise ValueError(msg)
+
+    def row(self, name: str) -> csr_array:
+        """The one row that ``name`` selects — which securities belong to that group — kept sparse."""
+        try:
+            index = self.names.index(name)
+        except ValueError:
+            raise MissingSpecColumnError(name, self.names, kind="group") from None
+        return csr_array(self.matrix[[index], :])
+
+    def parts(self, prefix: str) -> Iterator[tuple[str, F64 | I64]]:
+        """The matrix as the three CSR arrays that define it, named under ``prefix``, in a fixed order."""
+        yield f"{prefix}__data", np.asarray(self.matrix.data, dtype=np.float64)
+        yield f"{prefix}__indices", np.asarray(self.matrix.indices, dtype=np.int64)
+        yield f"{prefix}__indptr", np.asarray(self.matrix.indptr, dtype=np.int64)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class ProblemSpec:
     """The optimization problem for one portfolio as pure numpy data.
 
     Every vector is aligned to ``security_ids`` and expressed as a fraction of NAV. The spec is
     independent of prior portfolios; chain-aware constraints combine it with a
-    :class:`ChainState` at solve time. ``columns`` are the numeric per-security columns the build
-    exported from the universe, ``flags`` the boolean ones; the two namespaces do not overlap.
-    :attr:`buyable` and :attr:`sellable` are the sets a side profile couples this portfolio through.
-
-    ``sector_matrix`` is the *K*-by-*N* membership matrix, one nonzero per security, held sparse: a
-    megabyte at 100,000 names, where the dense form is 128 MB at 160 groups and dominates every
-    pickle and ``.npz`` the run makes. A dense matrix is accepted on construction and converted.
+    :class:`ChainState` at solve time. Six vectors are fixed — the starting weights, price, shares
+    held, lot size, and the per-security bounds the build derived — and everything else is named:
+    ``columns`` are per-security numbers (a derived ``tax_per_dollar`` beside an exported ``alpha``),
+    ``flags`` are per-security booleans, ``groups`` are categorical columns as membership matrices,
+    and ``scalars`` are per-account numbers (``cash_ub``, ``max_turnover``, and whatever else the
+    account's row carried). A term or constraint reads any of them by name and refuses, by name,
+    what the spec does not carry. :attr:`buyable` and :attr:`sellable` are the sets a side profile
+    couples this portfolio through.
     """
 
     portfolio_id: str
     as_of_date: datetime
     security_ids: tuple[str, ...]
-    sector_names: tuple[str, ...]
     nav: float
     w0: F64
     price: F64
     shares_held: F64
     lot_size: F64
-    tax_per_dollar: F64
-    tcost_per_dollar: F64
     lb: F64
     ub: F64
-    adv_capacity: F64
-    sector_matrix: csr_array
-    max_turnover: float
-    cash_lb: float
-    cash_ub: float
-    min_trade_notional: float
     columns: Mapping[str, F64] = field(default_factory=dict)
     flags: Mapping[str, Flags] = field(default_factory=dict)
+    groups: Mapping[str, Grouping] = field(default_factory=dict)
+    scalars: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        for name in _VECTOR_FIELDS:
+        for name in VECTOR_FIELDS:
             object.__setattr__(self, name, _readonly(getattr(self, name), np.float64))
-        object.__setattr__(self, "sector_matrix", _readonly_sparse(self.sector_matrix))
         object.__setattr__(self, "columns", {name: _readonly(array, np.float64) for name, array in sorted(self.columns.items())})
         object.__setattr__(self, "flags", {name: _readonly(array, np.bool_) for name, array in sorted(self.flags.items())})
+        object.__setattr__(self, "groups", dict(sorted(self.groups.items())))
+        object.__setattr__(self, "scalars", {name: float(value) for name, value in sorted(self.scalars.items())})
         failures = list(self._failures())
         if failures:
             raise ProblemSpecError(f"portfolio {self.portfolio_id!r}: " + "; ".join(failures))
@@ -133,15 +161,16 @@ class ProblemSpec:
         for name, array in self._arrays():
             if not np.isfinite(array).all():
                 yield f"{name} contains non-finite values"
-        if not np.isfinite(np.asarray(self.sector_matrix.data, dtype=np.float64)).all():
-            yield "sector_matrix contains non-finite values"
-        for name in _SCALAR_FIELDS:
-            if not np.isfinite(getattr(self, name)):
-                yield f"{name} is not finite"
+        for name, grouping in self.groups.items():
+            if not np.isfinite(np.asarray(grouping.matrix.data, dtype=np.float64)).all():
+                yield f"grouping {name!r} contains non-finite values"
+        if not np.isfinite(self.nav):
+            yield "nav is not finite"
+        for name, value in self.scalars.items():
+            if not np.isfinite(value):
+                yield f"scalar {name!r} is not finite"
         if np.any(self.lb > self.ub):
             yield "lb > ub for some security"
-        if self.cash_lb > self.cash_ub:
-            yield "cash_lb > cash_ub"
         if self.nav <= 0.0:
             yield "nav must be positive"
         if np.any(self.price <= 0.0):
@@ -151,12 +180,11 @@ class ProblemSpec:
 
     def _structural_failures(self) -> Iterator[str]:
         n = len(self.security_ids)
-        k = len(self.sector_names)
         if len(set(self.security_ids)) != n:
             yield "security_ids are not unique"
         if list(self.security_ids) != sorted(self.security_ids):
             yield "security_ids are not sorted"
-        for name in _VECTOR_FIELDS:
+        for name in VECTOR_FIELDS:
             array = getattr(self, name)
             if array.shape != (n,):
                 yield f"{name} has shape {array.shape}, expected {(n,)}"
@@ -169,20 +197,23 @@ class ProblemSpec:
         shared = sorted(set(self.columns) & set(self.flags))
         if shared:
             yield f"names {shared} are both a column and a flag"
-        if self.sector_matrix.shape != (k, n):
-            yield f"sector_matrix has shape {self.sector_matrix.shape}, expected {(k, n)}"
+        fixed = sorted(set(self.columns) & set(VECTOR_FIELDS))
+        if fixed:
+            yield f"columns {fixed} shadow the spec's own vectors"
+        for name, grouping in self.groups.items():
+            if grouping.matrix.shape[1] != n:
+                yield f"grouping {name!r} has shape {grouping.matrix.shape}, expected {(len(grouping.names), n)}"
 
     def _arrays(self) -> Iterator[tuple[str, F64]]:
-        for name in _VECTOR_FIELDS:
+        for name in VECTOR_FIELDS:
             yield name, getattr(self, name)
         for name, array in self.columns.items():
             yield f"columns.{name}", array
 
     def _sparse_parts(self) -> Iterator[tuple[str, F64 | I64]]:
-        """The sector matrix as the three CSR arrays that define it, in a fixed order."""
-        yield "sector_matrix__data", np.asarray(self.sector_matrix.data, dtype=np.float64)
-        yield "sector_matrix__indices", np.asarray(self.sector_matrix.indices, dtype=np.int64)
-        yield "sector_matrix__indptr", np.asarray(self.sector_matrix.indptr, dtype=np.int64)
+        """Every grouping's matrix as its three CSR arrays, named ``group__<column>__<part>``, in a fixed order."""
+        for name, grouping in self.groups.items():
+            yield from grouping.parts(f"group__{name}")
 
     @property
     def n(self) -> int:
@@ -207,32 +238,41 @@ class ProblemSpec:
         """
         return (self.w0 > 0.0) & (self.lb < self.w0)
 
+    @property
+    def column_names(self) -> tuple[str, ...]:
+        """Every per-security vector a term or constraint may read by name: the fixed ones, then the exported columns."""
+        return (*VECTOR_FIELDS, *self.columns)
+
     def column(self, name: str) -> F64:
-        """Return a numeric per-security column exported from the universe frame."""
+        """A per-security numeric vector: one of the spec's own (``w0``, ``ub``, ...) or a column the build exported by name."""
+        if name in VECTOR_FIELDS:
+            vector: F64 = getattr(self, name)
+            return vector
         try:
             return self.columns[name]
         except KeyError as error:
-            raise MissingSpecColumnError(name, tuple(self.columns)) from error
+            raise MissingSpecColumnError(name, self.column_names) from error
 
     def flag(self, name: str) -> Flags:
-        """Return a boolean per-security column exported from the universe frame, as a real boolean mask."""
+        """A per-security boolean mask the build exported by name."""
         try:
             return self.flags[name]
         except KeyError as error:
             raise MissingSpecColumnError(name, tuple(self.flags), kind="flag") from error
 
-    def sector(self, name: str) -> csr_array:
-        """Return the one row of :attr:`sector_matrix` that ``name`` selects — which securities belong to that sector — kept sparse.
-
-        A constraint that bounds a sector reads its membership here and its numbers from its own
-        params, so the engine carries the grouping and the desk carries the limit. Sparse because a
-        dense row per sector is what made the old spec enormous.
-        """
+    def scalar(self, name: str) -> float:
+        """A per-account number: a style limit such as ``cash_ub``, or any numeric column the account's row carried."""
         try:
-            index = self.sector_names.index(name)
-        except ValueError:
-            raise MissingSpecColumnError(name, self.sector_names, kind="sector") from None
-        return csr_array(self.sector_matrix[[index], :])
+            return self.scalars[name]
+        except KeyError as error:
+            raise MissingSpecColumnError(name, tuple(self.scalars), kind="scalar") from error
+
+    def group(self, column: str) -> Grouping:
+        """A categorical column as a membership matrix; a constraint that bounds a group reads its members here and its numbers from its own row."""
+        try:
+            return self.groups[column]
+        except KeyError as error:
+            raise MissingSpecColumnError(column, tuple(self.groups), kind="grouping") from error
 
     def content_hash(self) -> str:
         """Deterministic sha256 of every input the solver will see."""
@@ -260,10 +300,11 @@ class ProblemSpec:
             "portfolio_id": self.portfolio_id,
             "as_of_date": self.as_of_date.isoformat(),
             "security_ids": list(self.security_ids),
-            "sector_names": list(self.sector_names),
+            "nav": repr(float(self.nav)),
             "column_names": list(self.columns),
             "flag_names": list(self.flags),
-            **{name: repr(float(getattr(self, name))) for name in _SCALAR_FIELDS},
+            "group_names": {name: list(grouping.names) for name, grouping in self.groups.items()},
+            "scalars": {name: repr(value) for name, value in self.scalars.items()},
         }
 
     def to_npz(self, path: Path) -> None:
@@ -278,27 +319,34 @@ class ProblemSpec:
         """Load a spec written by :meth:`to_npz`."""
         with np.load(path, allow_pickle=False) as data:
             meta = json.loads(str(data["__meta__"]))
-            loaded: dict[str, F64] = {
-                key: np.asarray(data[key], dtype=np.float64) for key in data.files if key != "__meta__" and not key.startswith("flag__") and not key.startswith("sector_matrix__")
-            }
+            loaded: dict[str, F64] = {key: np.asarray(data[key], dtype=np.float64) for key in data.files if key != "__meta__" and not key.startswith("flag__") and not key.startswith("group__")}
             flags: dict[str, Flags] = {key.removeprefix("flag__"): np.asarray(data[key], dtype=np.bool_) for key in data.files if key.startswith("flag__")}
-            parts = (np.asarray(data["sector_matrix__data"], dtype=np.float64), np.asarray(data["sector_matrix__indices"], dtype=np.int64), np.asarray(data["sector_matrix__indptr"], dtype=np.int64))
-        vectors = {name: loaded[name] for name in _VECTOR_FIELDS}
+            n = len(meta["security_ids"])
+            groups = {
+                name: Grouping(
+                    tuple(str(group) for group in names),
+                    csr_array(
+                        (
+                            np.asarray(data[f"group__{name}__data"], dtype=np.float64),
+                            np.asarray(data[f"group__{name}__indices"], dtype=np.int64),
+                            np.asarray(data[f"group__{name}__indptr"], dtype=np.int64),
+                        ),
+                        shape=(len(names), n),
+                    ),
+                )
+                for name, names in meta["group_names"].items()
+            }
+        vectors = {name: loaded[name] for name in VECTOR_FIELDS}
         columns = {key.removeprefix("col__"): array for key, array in loaded.items() if key.startswith("col__")}
-        shape = (len(meta["sector_names"]), len(meta["security_ids"]))
         return cls(
             portfolio_id=str(meta["portfolio_id"]),
             as_of_date=datetime.fromisoformat(str(meta["as_of_date"])),
             security_ids=tuple(str(s) for s in meta["security_ids"]),
-            sector_names=tuple(str(s) for s in meta["sector_names"]),
             nav=float(meta["nav"]),
-            max_turnover=float(meta["max_turnover"]),
-            cash_lb=float(meta["cash_lb"]),
-            cash_ub=float(meta["cash_ub"]),
-            min_trade_notional=float(meta["min_trade_notional"]),
-            sector_matrix=csr_array(parts, shape=shape),
             columns=columns,
             flags=flags,
+            groups=groups,
+            scalars={str(name): float(value) for name, value in meta["scalars"].items()},
             **vectors,
         )
 
@@ -340,18 +388,6 @@ class DriftReport:
         return self.max_weight_error <= self.tolerance
 
 
-class StepRef(StrictModel):
-    """A term or constraint as configured — qualified name, JSON-safe params, label — for cvxpy-free verification and the manifest.
-
-    The label is what the report and the manifest key on; for a term it is the bare name, for a
-    constraint whatever the config gave it.
-    """
-
-    qualname: str
-    params: dict[str, object]
-    label: str
-
-
 class Artifact(StrictModel):
     """A file the run wrote, with its hash for the manifest."""
 
@@ -370,6 +406,10 @@ class SolveStatus(StrEnum):
     SOLVER_ERROR = "solver_error"
 
 
+type ConstraintRecord = dict[str, object]
+"""A typed constraint as JSON-safe data — its ``kind`` and fields — the form a solution carries and the manifest records; the registry in ``domain/constraints.py`` parses it back."""
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class Solution:
     """The solver's answer for one spec, with enough provenance to reproduce it."""
@@ -384,23 +424,28 @@ class Solution:
     solve_time_s: float
     iterations: int | None
     spec_hash: str
-    constraints: tuple[StepRef, ...] = ()
-    """What the solve step made of this portfolio's constraint rows.
+    constraints: tuple[ConstraintRecord, ...] = ()
+    """The typed constraints the solve step applied, as records.
 
-    The engine does not interpret constraints, so the step says what it applied; the verifier re-checks
-    every ref it has a numpy twin for and reports the rest as ``unverified``. Persisted with the rest of
+    The step says what it made of this portfolio's constraint rows; the verifier parses each record
+    back into its model and re-checks it through the model's own residual. Persisted with the rest of
     the provenance so an offline ``verify`` from the ``.npz`` alone checks exactly what the run did.
     """
+
+    duals: Mapping[str, float] = field(default_factory=dict)
+    """Per constraint name, the largest dual value the solver reported for it — its shadow price, zero where it did not bind; empty for a step that reports none."""
 
     def __post_init__(self) -> None:
         for name in ("w", "buy", "sell"):
             object.__setattr__(self, name, _readonly(getattr(self, name), np.float64))
-        object.__setattr__(self, "constraints", tuple(self.constraints))
+        object.__setattr__(self, "constraints", tuple(dict(record) for record in self.constraints))
+        object.__setattr__(self, "duals", {str(name): float(value) for name, value in sorted(self.duals.items())})
 
     def to_npz(self, path: Path) -> None:
         """Persist the solution vectors and provenance without pickle."""
         meta: dict[str, object] = {name: getattr(self, name) for name in ("objective", "status", "solver", "solver_version", "solve_time_s", "iterations", "spec_hash")}
-        meta["constraints"] = [ref.model_dump(mode="json") for ref in self.constraints]
+        meta["constraints"] = list(self.constraints)
+        meta["duals"] = dict(self.duals)
         np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(meta, sort_keys=True)), w=self.w, buy=self.buy, sell=self.sell)
 
     @classmethod
@@ -420,7 +465,8 @@ class Solution:
             solve_time_s=float(meta["solve_time_s"]),
             iterations=None if meta["iterations"] is None else int(meta["iterations"]),
             spec_hash=str(meta["spec_hash"]),
-            constraints=tuple(StepRef.model_validate(ref) for ref in meta.get("constraints", ())),
+            constraints=tuple({str(key): value for key, value in record.items()} for record in meta.get("constraints", ())),
+            duals={str(name): float(value) for name, value in meta.get("duals", {}).items()},
         )
 
 
@@ -439,7 +485,11 @@ class Tolerances:
 
 @dataclass(frozen=True, slots=True)
 class ConstraintCheck:
-    """Maximum violation of one residual, compared with the tolerance; ``label`` names the constraint it belongs to."""
+    """Maximum violation of one residual, compared with the tolerance; ``label`` names the constraint it belongs to.
+
+    ``active`` says the residual sits within the tolerance of its bound — the constraint is binding,
+    or was breached — which is what answers "why did the solver stop here".
+    """
 
     name: str
     violation: float
@@ -447,6 +497,12 @@ class ConstraintCheck:
     passed: bool
     worst_security: str | None
     label: str
+    active: bool = False
+
+    @property
+    def display(self) -> str:
+        """The residual's name, qualified by the constraint's label where the two differ: two constraints of one kind produce residuals of the same name."""
+        return self.name if self.label in (self.name, "identity", "solution") else f"{self.label}/{self.name}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -459,7 +515,6 @@ class ConstraintReport:
     solver_objective: float | None
     objective_gap: float
     objective_passed: bool
-    unverified: tuple[str, ...]
 
     @property
     def passed(self) -> bool:
@@ -473,8 +528,13 @@ class ConstraintReport:
 
     @property
     def violated(self) -> tuple[str, ...]:
-        """Names of the checks that failed."""
-        return tuple(check.name for check in self.checks if not check.passed)
+        """The checks that failed, by display name."""
+        return tuple(check.display for check in self.checks if not check.passed)
+
+    @property
+    def active(self) -> tuple[str, ...]:
+        """The checks that bind, by display name, in report order: where the answer sits against a limit."""
+        return tuple(check.display for check in self.checks if check.active)
 
 
 class AssemblyAuditRecord(StrictModel):

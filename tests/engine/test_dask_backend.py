@@ -12,13 +12,14 @@ from portfolio_optimizer.engine.backends import ClusterError
 from portfolio_optimizer.engine.dask_backend import DaskBackend
 from portfolio_optimizer.engine.runner import EXIT_OK, RunContext, run
 from portfolio_optimizer.settings import ExecutionSettings
-from tests.conftest import resolved_example_real
-from tests.engine.support import EXAMPLE_ORDERS_P1, GIT, example_book, io_context
+from tests.conftest import AS_OF, resolved_example_real
+from tests.engine.support import BUY_ORDERS_P1, BUY_ORDERS_P2, GIT, example_book, io_context
 
 
 def test_a_run_owned_local_cluster_solves_the_example(tmp_path: Path) -> None:
     context = RunContext(
         io=io_context(tmp_path / "dask", data_root=example_book(tmp_path), run_id="dask"),
+        as_of_date=AS_OF,
         execution=ExecutionSettings(cluster="local", min_workers=1, max_workers=2, cluster_timeout_s=180.0),
         git=GIT,
         config_path="c.json",
@@ -27,8 +28,8 @@ def test_a_run_owned_local_cluster_solves_the_example(tmp_path: Path) -> None:
     report = run(resolved_example_real(sink="orders_to_parquet"), context)
     assert report.exit_code == EXIT_OK, [str(o) for o in report.outcomes]
     p1, p2 = report.solved
-    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == EXAMPLE_ORDERS_P1
-    assert len(p2.orders) == 0 and p2.chain_state.predecessors == ("P1",)
+    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P1
+    assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P2
     cluster = report.manifest.cluster
     assert cluster is not None
     assert (cluster.kind, cluster.min_workers, cluster.max_workers) == ("local", 1, 2)

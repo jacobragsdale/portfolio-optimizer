@@ -2,6 +2,8 @@
 
 import json
 import re
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -12,8 +14,8 @@ from pydantic import ValidationError
 
 from portfolio_optimizer.config.models import config_sha256, load_run_config
 from portfolio_optimizer.config.resolve import ConfigResolutionError, resolve_config
-from portfolio_optimizer.config.schema import SCHEMA_DIALECT, run_config_schema, schema_json
-from tests.conftest import EXAMPLE_CONFIG, REPO_ROOT, example_body, example_datasets
+from portfolio_optimizer.config.schema import SCHEMA_DIALECT, run_config_schema
+from tests.conftest import EXAMPLE_CONFIG, REPO_ROOT, SELL_CONFIG, example_body, example_datasets
 
 SCHEMA_PATH = REPO_ROOT / "configs" / "run-config.schema.json"
 
@@ -33,8 +35,10 @@ def errors(validator: Validator, instance: object) -> list[str]:
     return sorted(f"{'/'.join(str(part) for part in error.absolute_path) or '<root>'}: {error.message}" for error in validator.iter_errors(instance))
 
 
-def test_checked_in_schema_is_current(schema: dict[str, object]) -> None:
-    assert SCHEMA_PATH.read_text() == schema_json(schema), "regenerate with: uv run portfolio-optimizer schema > configs/run-config.schema.json"
+def test_checked_in_schema_is_current() -> None:
+    """Generated in a clean process: the file must carry the shipped and installed kinds, not the ones a test registered here."""
+    printed = subprocess.run([sys.executable, "-c", "from portfolio_optimizer.cli import main; raise SystemExit(main())", "schema"], capture_output=True, text=True, check=True).stdout
+    assert SCHEMA_PATH.read_text() == printed, "regenerate with: uv run portfolio-optimizer schema > configs/run-config.schema.json"
 
 
 def test_schema_declares_its_dialect_and_documents_every_property(schema: dict[str, object]) -> None:
@@ -58,10 +62,16 @@ def _undocumented(node: object, path: str) -> Iterator[str]:
             if isinstance(definition, dict) and "description" not in definition:
                 yield f"{path}/$defs/{name}"
             yield from _undocumented(definition, f"{path}/$defs/{name}")
+    items = node.get("items")
+    options = items.get("anyOf", []) if isinstance(items, dict) else []
+    if isinstance(options, list):
+        for option in options:
+            yield from _undocumented(option, f"{path}/items")
 
 
 def test_the_example_validates_against_the_schema(validator: Validator) -> None:
     assert errors(validator, example_body()) == []
+    assert errors(validator, json.loads(SELL_CONFIG.read_text())) == []
 
 
 REJECTED: list[tuple[str, dict[str, object], str]] = [
@@ -71,9 +81,14 @@ REJECTED: list[tuple[str, dict[str, object], str]] = [
     ("shipped rule with required params given as a string", {"rules": ["cap_single_name"]}, "rules/0"),
     ("shipped rule with a wrong param type", {"rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": "many"}}]}, "rules/0"),
     ("shipped rule with an unknown param", {"rules": [{"name": "add_zero_alpha", "params": {"fill": 0}}]}, "rules/0"),
-    ("shipped term with a negative weight", {"objective": {"terms": [{"name": "alpha", "params": {"weight": -1}}]}}, "objective/terms/0"),
+    ("a term of an unknown kind", {"objective": [{"kind": "no_such_kind", "name": "x"}]}, "objective/0"),
+    ("a term with an unknown field", {"objective": [{"kind": "linear", "name": "alpha", "colour": "alpha"}]}, "objective/0"),
+    ("a term without a name", {"objective": [{"kind": "linear", "column": "alpha"}]}, "objective/0"),
+    ("the cvxpy step with a wrong param type", {"solve": {"name": "cvxpy", "params": {"time_limit_s": "soon"}}}, "solve"),
+    ("the removed solver block", {"solver": {"name": "CLARABEL"}}, "<root>"),
     ("execution mechanics in the config", {"execution": {"on_error": "fail_fast", "max_workers": 2}}, "execution"),
     ("the removed execution mode", {"execution": {"mode": "sequential"}}, "execution"),
+    ("the removed dependencies none", {"execution": {"dependencies": "none"}}, "execution"),
     ("shipped assembly step missing a required param", {"assembly": [{"name": "join", "params": {"into": "universe", "source": "analytics", "on": ["security_id"]}}]}, "assembly/0"),
     ("batch size that is not a count", {"datasets": example_datasets(holdings={"loader": "load_holdings", "scope": "per_portfolio", "batch_size": 0})}, "datasets"),
     ("no book of record", {"datasets": {name: spec for name, spec in example_datasets().items() if name != "portfolios"}}, "datasets"),
@@ -92,7 +107,7 @@ def test_schema_and_models_agree_on_what_to_reject(validator: Validator, patch: 
         config = load_run_config(json.dumps(instance))
     except (ValidationError, ValueError):
         return  # the models refused it, as the schema did
-    with pytest.raises(ConfigResolutionError):  # params-level problems are the resolver's to refuse
+    with pytest.raises(ConfigResolutionError):  # params-level and kind-level problems are the resolver's to refuse
         resolve_config(config)
 
 
@@ -106,13 +121,17 @@ def as_object(value: object) -> dict[str, object]:
     return {str(key): item for key, item in value.items()}
 
 
-def test_every_shipped_step_is_described(schema: dict[str, object]) -> None:
+def test_every_shipped_step_and_term_kind_is_described(schema: dict[str, object]) -> None:
     defs = as_object(schema["$defs"])
     assert "cap_single_name" in str(as_object(defs["RuleStep"])["$comment"])
-    assert "transaction_cost" in str(as_object(defs["TermStep"])["$comment"])
     assert "orders_to_parquet" in str(as_object(defs["SinkStep"])["$comment"])
     assert "union" in str(as_object(defs["AssemblyStep"])["$comment"])
     assert "load_holdings" in str(as_object(defs["LoaderStep"])["$comment"])
+    assert "standard" in str(as_object(defs["BuildStep"])["$comment"])
+    assert "cvxpy" in str(as_object(defs["SolveStep"])["$comment"]) and "pro_rata_fill" in str(as_object(defs["SolveStep"])["$comment"])
+    objective = as_object(as_object(schema["properties"])["objective"])
+    assert "linear" in str(objective["$comment"]), "the objective's items are the union of every term kind this environment can name"
+    assert "Vector" in defs, "a term kind's own definitions are hoisted beside the config's"
 
 
 def test_schema_file_is_valid_json_with_sorted_keys() -> None:
@@ -143,4 +162,4 @@ def test_the_readme_annotated_config_is_the_real_one_with_comments() -> None:
     blocks = ANNOTATED_BLOCK.findall(README.read_text())
     assert len(blocks) == 1, "the README should carry exactly one annotated jsonc config block"
     stripped = "\n".join(line for line in blocks[0].splitlines() if not line.lstrip().startswith("//"))
-    assert json.loads(stripped) == json.loads(EXAMPLE_CONFIG.read_text()), "the README's annotated config has drifted from configs/example_run.json; update the annotated copy"
+    assert json.loads(stripped) == json.loads(EXAMPLE_CONFIG.read_text()), "the README's annotated config has drifted from configs/example_buy.json; update the annotated copy"

@@ -4,8 +4,6 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-
 from portfolio_optimizer.domain.data import IoContext
 from portfolio_optimizer.domain.types import Clock
 from portfolio_optimizer.engine.backends import BackendFactory
@@ -36,15 +34,21 @@ def execution_on(scheduler_address: str, *, max_workers: int = 2) -> ExecutionSe
 
 # --- the example book, and variations of it with a hand-checked answer each ---
 
-HAND_OPTIMUM = np.array([0.35, 0.4, 0.25])
-"""P1's optimal weights on the example book.
+BUY_ORDERS_P1: Orders = [{"security_id": "A", "side": "BUY", "quantity": 1000}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
+"""P1 under the buy program: 400,000 of cash on a NAV of 1,000,000, A 3,000 @100 and B 6,000 @50 held.
 
-C has the best alpha and is bought to its ADV budget, a quarter of NAV. The quarter is raised by
-selling A and B, and A goes first: B is at a 20% unrealized gain, so selling it costs 4 cents of tax
-per dollar against A's nothing. B still falls to P1's 40% single-name cap, which it starts above.
+C has the best alpha and is bought to its ADV budget, a quarter of NAV: 25,000 shares. A is next and
+goes to P1's 40% cap: 1,000 shares. B has turned negative, so the last 50,000 stays cash — the cash
+floor is 0, not a target.
 """
-EXAMPLE_ORDERS_P1: Orders = [{"security_id": "A", "side": "SELL", "quantity": 1500}, {"security_id": "B", "side": "SELL", "quantity": 2000}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
-"""P1's orders on the example book: from a half-and-half book at 100 and 50 to ``HAND_OPTIMUM`` on a NAV of 1,000,000."""
+BUY_ORDERS_P2: Orders = [{"security_id": "A", "side": "BUY", "quantity": 3000}]
+"""P2 under the buy program, behind P1: the same book with a 60% cap. P1 spent C's budget for the day, so the cash goes to A, up to the cap: 3,000 shares, and 100,000 stays cash."""
+SELL_ORDERS_P1: Orders = [{"security_id": "B", "side": "SELL", "quantity": 2000}]
+"""P1 under the sell program: B is held at 60 against a price of 50, a loss its long-term rate turns into 4 cents of tax refund per dollar sold, so it is harvested — down to where the ``TECH`` floor of 0.5 stops it, 2,000 shares. A is at cost and worth holding."""
+SELL_ORDERS_P2: Orders = [{"security_id": "B", "side": "SELL", "quantity": 2000}]
+"""P2 under the sell program: the same harvest at its short-term rate, to the same floor; B's budget of 250,000 shares a day is nowhere near spent by P1."""
+THIN_B_ORDERS_P2: Orders = [{"security_id": "B", "side": "SELL", "quantity": 1000}]
+"""P2 under the sell program over ``thin_b_book``: B trades 12,000 shares a day, a quarter of which is 3,000; P1 sold 2,000, so P2 may sell the 1,000 left."""
 
 
 def example_book(tmp_path: Path, **files: str) -> Path:
@@ -75,6 +79,12 @@ def details_without(*portfolio_ids: str) -> str:
     return "\n".join([header, *(row for row in rows if row.split(",")[0] not in portfolio_ids)]) + "\n"
 
 
+def constraints_without(*kinds: str) -> str:
+    """The example's ``constraints`` table with every row of the named kinds left out; without ``participation_limit``, nothing in the book reads the chain."""
+    header, rows = _table("constraints.csv")
+    return "\n".join([header, *(row for row in rows if row.split(",")[1] not in kinds)]) + "\n"
+
+
 def holdings_csv(**positions: Sequence[tuple[str, int, str, str]]) -> str:
     """The ``holdings`` table with the named accounts' positions replaced by ``(security_id, quantity, avg_cost, acquired_on)`` rows."""
     header, rows = _table("holdings.csv")
@@ -82,41 +92,15 @@ def holdings_csv(**positions: Sequence[tuple[str, int, str, str]]) -> str:
     return "\n".join([header, *replaced, *(row for row in rows if row.split(",")[0] not in positions)]) + "\n"
 
 
-HALF_CASH_ORDERS_P1: Orders = [{"security_id": "A", "side": "BUY", "quantity": 1500}, {"security_id": "B", "side": "BUY", "quantity": 2000}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
-HALF_CASH_ORDERS_P2: Orders = [{"security_id": "A", "side": "BUY", "quantity": 3500}, {"security_id": "B", "side": "BUY", "quantity": 3000}]
+def uncoupled_book(tmp_path: Path, **files: str) -> Path:
+    """The two-account book with the chain-aware ADV rows removed: a run over it has nothing reading the chain, so nothing waits."""
+    return example_book(tmp_path, **{"constraints.csv": constraints_without("participation_limit"), **files})
 
 
-def half_cash_book(tmp_path: Path) -> Path:
-    """The example data with each portfolio holding A 2500 @100 and B 5000 @50 and half its NAV in cash: what a buy-only run invests.
-
-    Half of NAV goes to work, best name first, net of what each costs to trade. For P1 that is C to its
-    ADV budget of 25,000 shares, then A and B to P1's 40% cap: buy 1,500 A, 2,000 B, 25,000 C. P2, with
-    C's budget spent by P1 and a 60% cap, puts the same half into A first: 3,500 A and 3,000 B.
-    ``HALF_CASH_ORDERS_P1`` and ``HALF_CASH_ORDERS_P2``.
-    """
-    holdings = holdings_csv(
-        P1=[("A", 2500, "100", "2024-01-15T00:00:00Z"), ("B", 5000, "50", "2024-01-15T00:00:00Z")], P2=[("A", 2500, "100", "2025-11-01T00:00:00Z"), ("B", 5000, "50", "2025-11-01T00:00:00Z")]
-    )
-    half = {"cash": "500000"}
-    return example_book(tmp_path, **{"details.csv": details_csv(P1=half, P2=half), "holdings.csv": holdings})
-
-
-SELL_BOOK_ORDERS_P1: Orders = [{"security_id": "A", "side": "SELL", "quantity": 1000}, {"security_id": "B", "side": "SELL", "quantity": 8000}]
-SELL_BOOK_ORDERS_P2: Orders = [{"security_id": "B", "side": "SELL", "quantity": 10000}]
-
-
-def sell_book(tmp_path: Path) -> Path:
-    """The example data allowed to raise cash (``cash_ub`` of ``1``) over a universe whose alphas have turned negative, with A's ADV cut to 4,000 shares: what a sell-only run trims.
-
-    Both held names are worth less than nothing now, so both are sold; B far enough underwater that even
-    P2's short-term rate on its gain does not hold it. A's ADV budget is 1,000 shares and P1 takes all of
-    it, which leaves A at the 40% cap and the ``TECH`` floor of 0.5 holding 0.1 of B back: P1 sells
-    1,000 A and 8,000 B. P2, with no A budget left, keeps A at 0.5 and so has the whole floor covered:
-    it sells all 10,000 B. ``SELL_BOOK_ORDERS_P1`` and ``SELL_BOOK_ORDERS_P2``.
-    """
-    raise_cash = {"cash_ub": "1"}
-    universe = "security_id,price,sector,adv_shares,lot_size,restricted,alpha,tcost_bps\nA,100,TECH,4000,1,false,-0.03,5\nB,50,TECH,1000000,1,false,-0.10,5\nC,10,HEALTH,100000,1,false,0.05,20\n"
-    return example_book(tmp_path, **{"details.csv": details_csv(P1=raise_cash, P2=raise_cash), "universe.csv": universe})
+def thin_b_book(tmp_path: Path) -> Path:
+    """The example data with B's daily volume cut to 12,000 shares: what makes the sell program's two accounts compete for a name's ADV budget (``THIN_B_ORDERS_P2``)."""
+    universe = "security_id,price,sector,adv_shares,lot_size,restricted,alpha,tcost_bps\nA,100,TECH,1000000,1,false,0.03,5\nB,50,TECH,12000,1,false,-0.01,5\nC,10,HEALTH,100000,1,false,0.05,20\n"
+    return example_book(tmp_path, **{"universe.csv": universe})
 
 
 # --- one run helper: a cluster run connects by address, a fake run supplies its backend ---
@@ -133,18 +117,20 @@ def execute(
     sink: str = "orders_to_parquet",
     on_error: str = "fail_fast",
     dependencies: str = "overlap",
+    as_of_date: datetime = AS_OF,
     **config_overrides: object,
 ) -> RunReport:
     """Run the real example config over ``data_root``, writing under ``tmp_path / run_id``.
 
     The book is the two-account one unless ``data_root`` names another. ``on_error`` and ``dependencies``
-    fill the config's ``execution`` section; any other section is replaced by ``config_overrides``. A run on a real cluster passes ``scheduler_address``; a run through
-    a fake passes ``backend_factory`` and the address is never dialled.
+    fill the config's ``execution`` section; any other section is replaced by ``config_overrides``. A run
+    on a real cluster passes ``scheduler_address``; a run through a fake passes ``backend_factory`` and the
+    address is never dialled; with neither, the run is inline in this process.
     """
     resolved = resolved_example_real(execution={"on_error": on_error, "dependencies": dependencies}, sink=sink, **config_overrides)
-    execution = execution_on(scheduler_address if scheduler_address is not None else "tcp://fake:8786", max_workers=max_workers)
+    execution = execution_on(scheduler_address if scheduler_address is not None else "inline", max_workers=max_workers)
     root = example_book(tmp_path) if data_root is None else data_root
-    context = RunContext(io=io_context(tmp_path / run_id, data_root=root, run_id=run_id), execution=execution, git=GIT, config_path="c.json", settings={})
+    context = RunContext(io=io_context(tmp_path / run_id, data_root=root, run_id=run_id), as_of_date=as_of_date, execution=execution, git=GIT, config_path="c.json", settings={})
     if backend_factory is None:
         return run(resolved, context)
     return run(resolved, context, backend_factory=backend_factory)

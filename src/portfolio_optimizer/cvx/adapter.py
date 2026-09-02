@@ -2,10 +2,11 @@
 
 Terms and constraints are written against the small typed surface here — decision variables,
 a handful of DCP atoms, and the result wrappers — so the rest of the engine never touches
-cvxpy objects and the post-solve verifier never needs cvxpy at all.
+cvxpy objects and the post-solve verifier never needs cvxpy at all. The atoms are affine or
+convex; a term that scales a convex atom by a negative weight is not DCP, which the dry
+construction at ``validate-config`` and the solve itself both refuse.
 """
 
-import importlib.metadata
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -15,39 +16,14 @@ import numpy as np
 from cvxpy.error import SolverError
 from scipy.sparse import csr_array
 
-from portfolio_optimizer.domain.results import F64, Flags, SolveStatus, Tolerances
+from portfolio_optimizer.domain.constraints import Vector
+from portfolio_optimizer.domain.results import F64, Flags, SolveStatus
 from portfolio_optimizer.domain.sides import Sides
-from portfolio_optimizer.solving import SolveResult
+from portfolio_optimizer.solving import SOLVERS, SolveResult, solver_failures, solver_version
 
 type Expr = cp.Expression
 type Constraint = cp.Constraint
 
-
-@dataclass(frozen=True, slots=True)
-class SolverSpec:
-    """What the engine knows about one cvxpy solver: the distribution that versions it and how it spells a time limit.
-
-    A solver cvxpy can see but this table does not name is refused when the config resolves: without
-    its distribution the environment fingerprint would record ``unknown`` for its version on every
-    process, and two different builds of it would compare equal.
-    """
-
-    name: str
-    distribution: str
-    time_limit_option: str | None
-
-
-SOLVERS: Mapping[str, SolverSpec] = {
-    spec.name: spec
-    for spec in (
-        SolverSpec("CLARABEL", "clarabel", "time_limit"),
-        SolverSpec("OSQP", "osqp", "time_limit"),
-        SolverSpec("SCS", "scs", "time_limit_secs"),
-        SolverSpec("HIGHS", "highspy", "time_limit"),
-        SolverSpec("PIQP", "piqp", None),
-    )
-}
-"""Every solver a config may name. cvxpy installs the first four; ``PIQP`` is the ``piqp`` extra. Adding one is a row here and an extra in ``pyproject.toml``."""
 
 _STATUS: Mapping[str, SolveStatus] = {
     cp.OPTIMAL: SolveStatus.OPTIMAL,
@@ -72,12 +48,12 @@ class SideUnavailableError(LookupError):
 class DecisionVars:
     """The decision variables of one solve, as fractions of NAV; what each is depends on the run's side.
 
-    ``w`` is always a variable, the target weight. ``buy`` and ``sell`` are what the side profile
-    made them — a variable each under ``both``, an affine expression of ``w`` on the side a one-sided
-    run has, and absent on the side it lacks, where reading them raises :class:`SideUnavailableError`
-    (dry construction at ``validate-config`` is where that surfaces). A term that means "the amount
-    traded" reads ``trade`` — ``buy + sell``, ``buy``, or ``sell`` — and one that means "the amount
-    traded on the side the run couples through" reads ``coupled``; both exist under every side.
+    ``w`` is always a variable, the target weight. ``buy`` or ``sell`` is what the side profile made
+    it — an affine expression of ``w`` on the side the run has — and absent on the side it lacks,
+    where reading it raises :class:`SideUnavailableError` (dry construction at ``validate-config`` is
+    where that surfaces). A term that means "the amount traded" reads ``trade``, and one that means
+    "the amount traded on the side the run couples through" reads ``coupled``; both exist under
+    every side, and under either they are the one side's vector.
     """
 
     w: cp.Variable
@@ -101,6 +77,16 @@ class DecisionVars:
         if self._sell is None:
             raise SideUnavailableError(side="sell", sides=self.sides)
         return self._sell
+
+    def vector(self, name: Vector) -> Expr:
+        """The decision quantity a typed term or constraint names: ``w``, ``buy``, ``sell``, or ``trade``."""
+        if name == "w":
+            return self.w
+        if name == "buy":
+            return self.buy
+        if name == "sell":
+            return self.sell
+        return self.trade
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -155,8 +141,13 @@ def matvec(matrix: F64 | csr_array, expr: Expr) -> Expr:
 
 
 def scale(factor: float, expr: Expr) -> Expr:
-    """``factor * expr``; a negative factor flips convexity, so callers keep factors non-negative."""
+    """``factor * expr``; a negative factor on a convex atom is not DCP, which the dry construction refuses."""
     return _expr(factor * expr)
+
+
+def weighted(vector: F64, expr: Expr) -> Expr:
+    """``vector ∘ expr`` elementwise for a constant vector, affine; ``sum_squares(weighted(√d, w))`` is a diagonal penalty."""
+    return _expr(cp.multiply(vector, expr))
 
 
 def masked(flags: Flags, expr: Expr) -> Expr:
@@ -184,6 +175,26 @@ def plus(left: Expr, right: Expr) -> Expr:
     return _expr(left + right)
 
 
+def sum_squares(expr: Expr) -> Expr:
+    """``Σ exprᵢ²``, convex: a diagonal risk penalty is ``sum_squares(multiply(√d, w))``, a factor one ``sum_squares(matvec(F½B, w))``."""
+    return _expr(cp.sum_squares(expr))
+
+
+def norm1(expr: Expr) -> Expr:
+    """``Σ |exprᵢ|``, convex: the shape of a tracking penalty against a target, ``norm1(shifted(w, target))``."""
+    return _expr(cp.norm1(expr))
+
+
+def absolute(expr: Expr) -> Expr:
+    """``|expr|`` elementwise, convex."""
+    return _expr(cp.abs(expr))
+
+
+def pos(expr: Expr) -> Expr:
+    """``max(expr, 0)`` elementwise, convex: the shape of a one-sided penalty."""
+    return _expr(cp.pos(expr))
+
+
 def equals(left: Expr, right: Expr) -> Constraint:
     """``left == right``."""
     return _constraint(left == right)
@@ -199,80 +210,6 @@ def at_least(expr: Expr, bound: F64 | float) -> Constraint:
     return _constraint(expr >= bound)
 
 
-def wash_overlap(x: DecisionVars) -> F64 | None:
-    """``min(buy, sell)`` per name after a solve — how much of NAV each name shows on both sides at once.
-
-    ``None`` for a one-sided run, whose trade is an expression of ``w`` and cannot round-trip by
-    construction, and for a problem the solver left without values. Negative interior-point slack is
-    clipped to zero: an overlap is only the part genuinely on both sides.
-    """
-    pair = _variable_pair(x)
-    if pair is None:
-        return None
-    bought, sold = _value(pair[0]), _value(pair[1])
-    if bought is None or sold is None:
-        return None
-    return np.clip(np.minimum(bought, sold), 0.0, None)
-
-
-def _variable_pair(x: DecisionVars) -> tuple[cp.Variable, cp.Variable] | None:
-    """The independent buy/sell variables of a two-sided problem, or ``None`` where no round trip can exist."""
-    if x.sides != "both":
-        return None
-    buy, sell = x.buy, x.sell
-    if isinstance(buy, cp.Variable) and isinstance(sell, cp.Variable):
-        return buy, sell
-    return None
-
-
-class WashTradeError(RuntimeError):
-    """The optimum buys and sells the same name at once, and stripping the round trip changes the objective: a term rewards a wash trade.
-
-    The orders would have been right regardless — they derive from ``w``, which a round trip does not
-    change — but the objective the solver reports includes the round trip's profit, the engine's
-    canonical split strips it, and verification would fail with a bare objective gap. This refusal is
-    the same failure with its cause and its names in the message. Overlap along a *flat* direction —
-    an objective with no cost on the trade leaves the pair degenerate, and an interior-point solver
-    parks in the middle of the optimal face — moves the objective by nothing and passes: the canonical
-    split tidies it harmlessly.
-    """
-
-
-_WASH_TOLERANCES = Tolerances()
-"""When a round trip is worth naming: overlap past ``violation`` and an objective moved past the ``obj_abs``/``obj_rel`` pair — the verifier's own defaults, so what is refused here is exactly what verification would have failed."""
-
-
-def _refuse_rewarded_round_trips(x: DecisionVars, objective: Expr, security_ids: tuple[str, ...]) -> None:
-    """Raise :class:`WashTradeError` when the solved pair round-trips a name *and* the round trip paid; see the error's docstring."""
-    overlap = wash_overlap(x)
-    pair = _variable_pair(x)
-    if overlap is None or pair is None or float(overlap.max(initial=0.0)) <= _WASH_TOLERANCES.violation:
-        return
-    reported = objective.value
-    if reported is None:
-        return
-    buy, sell = pair
-    held_buy, held_sell = buy.value, sell.value
-    try:
-        buy.value, sell.value = np.asarray(held_buy) - overlap, np.asarray(held_sell) - overlap
-        stripped = objective.value
-    finally:
-        buy.value, sell.value = held_buy, held_sell
-    if stripped is None:
-        return
-    delta = abs(float(stripped) - float(reported))
-    if delta <= _WASH_TOLERANCES.obj_abs + _WASH_TOLERANCES.obj_rel * abs(float(stripped)):
-        return
-    offending = np.flatnonzero(overlap > _WASH_TOLERANCES.violation)
-    worst = [security_ids[int(index)] for index in offending[np.argsort(-overlap[offending])][:10]]
-    msg = (
-        f"the optimum round-trips {offending.size} name(s) — bought and sold in one solve, up to {float(overlap.max()):.2e} of NAV — and the round trips improve the objective by {delta:.2e} "
-        f"(worst {worst}): a term rewards a wash trade (a harvestable loss whose tax saving beats the round trip's transaction costs is the shipped example); "
-        "fix the term or the data rather than trusting an objective the reported trades cannot reproduce"
-    )
-    raise WashTradeError(msg)
-
-
 class UnavailableSolverError(RuntimeError):
     """The configured solver cannot run in this environment."""
 
@@ -282,54 +219,8 @@ def installed_solvers() -> tuple[str, ...]:
     return tuple(str(name) for name in cp.installed_solvers())
 
 
-def solver_failures(name: str, time_limit_s: float | None, installed: Sequence[str]) -> list[str]:
-    """Why solver ``name`` cannot run against ``installed``, if it cannot; empty when it can.
-
-    Unknown to :data:`SOLVERS`, not installed, or asked for a time limit it has no option for. The
-    resolver runs this in every process that will solve, so a run fails before any data loads.
-    """
-    spec = SOLVERS.get(name)
-    if spec is None:
-        return [f"solver {name!r} is not one the adapter knows; known: {sorted(SOLVERS)}"]
-    failures: list[str] = []
-    if name not in installed:
-        failures.append(f"solver {name!r} is not installed in this environment; installed: {sorted(set(installed) & set(SOLVERS))}")
-    if time_limit_s is not None and spec.time_limit_option is None:
-        failures.append(f"solver {name!r} has no time-limit option; remove solver.time_limit_s")
-    return failures
-
-
-def solver_version(solver: str) -> str:
-    """Installed version of the distribution behind ``solver``, or ``"unknown"``."""
-    spec = SOLVERS.get(solver)
-    if spec is None:
-        return "unknown"
-    try:
-        return importlib.metadata.version(spec.distribution)
-    except importlib.metadata.PackageNotFoundError:
-        return "unknown"
-
-
-def solve_problem(
-    x: DecisionVars,
-    terms: Sequence[ObjectiveTerm],
-    constraints: Sequence[ConstraintSet],
-    *,
-    security_ids: tuple[str, ...],
-    solver: str,
-    options: Mapping[str, float | int | bool | str],
-    time_limit_s: float | None,
-    verbose: bool,
-) -> SolveResult:
-    """Build the cvxpy problem from the given terms and constraints and solve it once; what comes back is the solve step's result as is.
-
-    One refusal stands between the solver and the result: a two-sided optimum whose round trips
-    *improve* the objective raises :class:`WashTradeError` naming the securities (``security_ids``
-    aligns them to ``x``) instead of returning an answer the reported trades cannot reproduce.
-    """
-    failures = solver_failures(solver, time_limit_s, installed_solvers())
-    if failures:
-        raise UnavailableSolverError("; ".join(failures))
+def build_problem(terms: Sequence[ObjectiveTerm], constraints: Sequence[ConstraintSet]) -> cp.Problem:
+    """The cvxpy problem: minimize the terms' sum subject to every constraint set; refused when it is not DCP."""
     if not terms:
         msg = "an objective needs at least one term"
         raise ValueError(msg)
@@ -340,6 +231,21 @@ def solve_problem(
     if not problem.is_dcp():
         msg = "the objective and constraints are not DCP-compliant; every term must be convex and every constraint affine or convex"
         raise ValueError(msg)
+    return problem
+
+
+def solve_problem(
+    x: DecisionVars, terms: Sequence[ObjectiveTerm], constraints: Sequence[ConstraintSet], *, solver: str, options: Mapping[str, float | int | bool | str], time_limit_s: float | None, verbose: bool
+) -> SolveResult:
+    """Build the cvxpy problem from the given terms and constraints and solve it once; what comes back is the solve step's result as is.
+
+    The result carries, per constraint set, the largest dual value the solver reported: the shadow
+    price of each limit, zero where it did not bind.
+    """
+    failures = solver_failures(solver, time_limit_s, installed_solvers())
+    if failures:
+        raise UnavailableSolverError("; ".join(failures))
+    problem = build_problem(terms, constraints)
     kwargs: dict[str, float | int | bool | str] = dict(options)
     option = SOLVERS[solver].time_limit_option
     if time_limit_s is not None and option is not None:
@@ -352,8 +258,9 @@ def solve_problem(
         detail = str(error)
     elapsed = time.perf_counter() - started
     status = _STATUS.get(str(problem.status), SolveStatus.SOLVER_ERROR) if not detail else SolveStatus.SOLVER_ERROR
+    duals: dict[str, float] = {}
     if status in (SolveStatus.OPTIMAL, SolveStatus.OPTIMAL_INACCURATE):
-        _refuse_rewarded_round_trips(x, objective, security_ids)
+        duals = {group.name: _largest_dual(group) for group in constraints}
     stats = problem.solver_stats
     iterations = None if stats is None or stats.num_iters is None else int(stats.num_iters)
     value = problem.value
@@ -366,7 +273,18 @@ def solve_problem(
         solver=solver,
         solver_version=solver_version(solver),
         detail=detail or str(problem.status),
+        duals=duals,
     )
+
+
+def _largest_dual(group: ConstraintSet) -> float:
+    """The largest dual value across a set's constraints — how hard the limit bound; zero when the solver reported none."""
+    largest = 0.0
+    for constraint in group.constraints:
+        dual = constraint.dual_value
+        if dual is not None:
+            largest = max(largest, float(np.abs(np.asarray(dual, dtype=np.float64)).max(initial=0.0)))
+    return largest
 
 
 def _value(variable: cp.Variable) -> F64 | None:

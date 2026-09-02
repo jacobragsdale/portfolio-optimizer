@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError, details_from_frame
 from portfolio_optimizer.domain.types import PortfolioId
-from tests.conftest import AS_OF, Factories, Frames
+from tests.conftest import AS_OF, CASH_FLOOR, Factories, Frames
 
 
 def test_canonical_bundle_is_valid(make: Factories) -> None:
@@ -30,7 +30,7 @@ def test_holdings_of_another_portfolio_are_rejected(make: Factories, frames: Fra
 
 def test_constraints_for_another_portfolio_are_rejected(make: Factories, frames: Frames) -> None:
     with pytest.raises(PortfolioDataError, match="constraints contain other portfolios \\['P9'\\]"):
-        make.portfolio_data(constraints=frames.constraints("long_only", portfolio_id="P9"))
+        make.portfolio_data(constraints=frames.constraints(CASH_FLOOR, portfolio_id="P9"))
 
 
 def test_shared_analytics_column_must_agree_on_dtype_between_holdings_and_universe(make: Factories, frames: Frames) -> None:
@@ -127,9 +127,14 @@ def test_details_reject_unordered_cash_bounds(make: Factories) -> None:
         make.details(cash_lb=Decimal("0.5"), cash_ub=Decimal("0.1"))
 
 
-def test_details_from_frame_reads_money_exactly_and_rejects_unknown_columns(frames: Frames) -> None:
+def test_details_from_frame_reads_money_exactly_and_carries_every_other_column_as_an_extra(frames: Frames) -> None:
     details = details_from_frame(frames.details({"max_weight": Decimal("0.05"), "cash_lb": Decimal("0.01"), "cash_ub": Decimal("0.03")}), PortfolioId("P1"))
     assert details.max_weight == Decimal("0.05")
     assert (details.cash_lb, details.cash_ub) == (Decimal("0.01"), Decimal("0.03"))
-    with pytest.raises(ValidationError, match="extra_forbidden"):
-        details_from_frame(frames.details().assign(max_leverage=pd.Series([Decimal(2)], dtype="object")), PortfolioId("P1"))
+    frame = frames.details().assign(
+        max_leverage=pd.Series([Decimal(2)], dtype="object"), benchmark=pd.Series(["SPX"], dtype="string"), sleeves=pd.Series([3], dtype="Int64"), missing=pd.Series([None], dtype="Float64")
+    )
+    extra = details_from_frame(frame, PortfolioId("P1")).extra
+    assert extra == {"max_leverage": Decimal(2), "benchmark": "SPX", "sleeves": 3, "missing": None}, "typed as plain Python values, nulls as None"
+    assert details_from_frame(frame, PortfolioId("P1")).scalars()["max_leverage"] == Decimal(2), "a numeric extra is a scalar the spec will carry"
+    assert details_from_frame(frames.details().drop(columns=["state"]), PortfolioId("P1")).state is None, "the state code is optional"

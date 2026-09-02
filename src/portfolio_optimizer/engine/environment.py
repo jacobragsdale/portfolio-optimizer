@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from portfolio_optimizer.config.models import DatasetConfig, RunConfig
-from portfolio_optimizer.cvx.adapter import solver_version
 from portfolio_optimizer.domain.types import StrictModel
+from portfolio_optimizer.solving import configured_solver, solver_version
 
 IMAGE_DIGEST_VARIABLE = "PORTFOLIO_OPTIMIZER_IMAGE_DIGEST"
 """The variable an image or platform sets to the digest of the image a process runs in; part of the fingerprint when present.
@@ -70,18 +70,18 @@ class WorkerEnvironment(StrictModel):
 
 def environment_for(config: RunConfig, *, cwd: Path, image_digest: str | None) -> WorkerEnvironment:
     """The fingerprint of this process for ``config``: cached per process, since none of it changes while it runs."""
-    return _environment(config.solver.name, external_modules(config), str(cwd), image_digest)
+    return _environment(configured_solver(config), external_modules(config), str(cwd), image_digest)
 
 
 def external_modules(config: RunConfig) -> tuple[str, ...]:
     """The modules of every qualified step name in ``config``, sorted; what ``packages`` is computed over.
 
-    Constraints are not here: they are loaded data, so their step names are not in the config to read.
-    A desk's constraint functions are covered when they live in the package its ``solve`` step names,
-    which is the ordinary arrangement; ones in a package nothing else names are not fingerprinted, and
-    a worker missing them fails at stage ``solve`` rather than at the environment check.
+    Terms and constraints are kinds, not steps: a kind a package publishes is covered when that package
+    also supplies a step named here, which is the ordinary arrangement; one from a package nothing else
+    names is not fingerprinted, and a worker missing it fails at stage ``build`` or ``solve`` rather than
+    at the environment check.
     """
-    specs = [*(dataset.loader for dataset in config.datasets.values() if isinstance(dataset, DatasetConfig)), *config.assembly, *config.rules, *config.objective.terms, config.solve, config.sink]
+    specs = [*(dataset.loader for dataset in config.datasets.values() if isinstance(dataset, DatasetConfig)), *config.assembly, *config.rules, config.build, config.solve, config.sink]
     if config.solve_order is not None:
         specs.append(config.solve_order)
     return tuple(sorted({spec.name.partition(":")[0] for spec in specs if spec.is_qualified}))

@@ -66,10 +66,12 @@ def restrict_low_liquidity(data: PortfolioData, params: LiquidityParams) -> Port
     except KeyError:
         msg = f"no extra dataset {params.dataset!r} to read {params.key!r} from; the run carries {sorted(data.extras)}"
         raise ValueError(msg) from None
+    if "adv_shares" not in data.universe.columns:
+        msg = "restrict_low_liquidity needs the universe's adv_shares column, and this universe has none"
+        raise ValueError(msg)
     minimum = parameter(frame, params.key)
     illiquid = data.universe["adv_shares"] < minimum
-    universe = data.universe.assign(restricted=(data.universe["restricted"] | illiquid).astype("bool"))
-    return data.with_changes(universe=universe)
+    return data.with_changes(universe=data.universe.assign(restricted=(restricted_flags(data.universe) | illiquid).astype("bool")))
 
 
 class MandateParams(Params):
@@ -101,9 +103,18 @@ def restrict_to_mandate(data: PortfolioData, params: MandateParams) -> Portfolio
     if not allowed:
         msg = f"portfolio {data.portfolio_id!r} has no rows in {params.dataset!r}: an empty mandate would freeze every name"
         raise ValueError(msg)
+    if "sector" not in data.universe.columns:
+        msg = "restrict_to_mandate needs the universe's sector column, and this universe has none"
+        raise ValueError(msg)
     outside = ~data.universe["sector"].isin(sorted(allowed))
-    universe = data.universe.assign(restricted=(data.universe["restricted"] | outside).astype("bool"))
-    return data.with_changes(universe=universe)
+    return data.with_changes(universe=data.universe.assign(restricted=(restricted_flags(data.universe) | outside).astype("bool")))
+
+
+def restricted_flags(universe: pd.DataFrame) -> pd.Series:
+    """The universe's ``restricted`` column, or all-false where it carries none: what a rule that freezes names starts from."""
+    if "restricted" in universe.columns:
+        return universe["restricted"].astype("bool")
+    return pd.Series(False, index=universe.index, dtype="bool")
 
 
 def parameter(frame: pd.DataFrame, key: str) -> Decimal:

@@ -14,9 +14,11 @@ and tests it.
 ## 1. Write the function in `src/portfolio_optimizer/rules.py` — or in your package
 
 A rule shared across desks belongs in a package installed in the environment (`uv add my-firm-quant`)
-and is named `my_firm.rules:exclude_sector` in the config; everything below applies unchanged. A loose
-module next to the config is not on the console script's import path, so install it or run with
-`PYTHONPATH`.
+and is named `my_firm.rules:exclude_sector` in the config — or published as an entry point in the
+group `portfolio_optimizer.rule` and named bare, like a shipped one; everything below applies
+unchanged. A loose module next to the config is not on the console script's import path, so install it
+or run with `PYTHONPATH`; and when `PORTFOLIO_OPTIMIZER_STEP_PACKAGES` names an allowlist, a qualified
+name must come from one of those packages.
 
 ```python
 class ExcludeSectorParams(Params):
@@ -25,10 +27,18 @@ class ExcludeSectorParams(Params):
 
 def exclude_sector(data: PortfolioData, params: ExcludeSectorParams) -> PortfolioData:
     """Freeze every name in ``sector`` at its current weight so no new money flows into it."""
+    if "sector" not in data.universe.columns:
+        msg = "exclude_sector needs the universe's sector column, and this universe has none"
+        raise ValueError(msg)
     in_sector = data.universe["sector"] == params.sector
-    universe = data.universe.assign(restricted=(data.universe["restricted"] | in_sector).astype("bool"))
+    universe = data.universe.assign(restricted=(restricted_flags(data.universe) | in_sector).astype("bool"))
     return data.with_changes(universe=universe)
 ```
+
+`sector`, `adv_shares`, `lot_size`, and `restricted` are optional universe columns, so a rule that
+needs one checks and says so, as the shipped `restrict_low_liquidity` and `restrict_to_mandate` do;
+`restricted_flags` (in `rules.py`) is the `restricted` column, or all-false where the universe carries
+none — what every rule that freezes names starts from.
 
 The signature is the whole contract:
 
@@ -62,24 +72,26 @@ answering with different code.
 ## 3. Check it resolves
 
 ```bash
-uv run --env-file .env portfolio-optimizer validate-config configs/my_run.json
+uv run portfolio-optimizer validate-config configs/my_run.json
 ```
 
 A typo in the name, a parameter the model does not declare, a wrong annotation, or an unexpected
 argument is reported here, with the function's qualified name and the reason.
+`uv run portfolio-optimizer steps` lists every rule a bare name can resolve to, with its parameters.
 
 ## 4. If you want portfolios to solve concurrently, shrink the tradable set
 
 Portfolios wait on each other only when they can both *trade* the same security on the side the run
-couples through — buys under `sides: both` and `buy`, sells under `sell`. A rule that takes a name out
-of that set removes every dependency that ran through it: marking a name `restricted` freezes it at its
-current weight on both sides (as `restrict_low_liquidity` does); in a run that couples through buys,
-setting its `max_weight` to the current weight takes it out of the buyable set while the position stays
-sellable, and in a sell-only run a per-security `min_weight` at the current weight does the mirror. A
+couples through — buys under `sides: buy`, sells under `sell`. A rule that takes a name out of that
+set removes every dependency that ran through it: marking a name `restricted` freezes it at its
+current weight whichever side the run trades (as `restrict_low_liquidity` does); in a buy run, setting
+its `max_weight` to the current weight takes it out of the buyable set, and in a sell run a
+per-security `min_weight` at the current weight does the mirror. A
 book where every account holds the same bonds but nobody trades them solves as many independent groups
 once a rule says so; the manifest's `schedule` record shows how many. A rule that needs what other
-portfolios did is not a rule: that dependency belongs in a constraint that declares `chain` — see
-[how to add a term or constraint](how-to-add-a-term.md).
+portfolios did is not a rule: that dependency belongs in a chain-aware constraint kind —
+`participation_limit` is the shipped one — see
+[how to add a term or constraint kind](how-to-add-a-term.md).
 
 ## 5. Test it
 

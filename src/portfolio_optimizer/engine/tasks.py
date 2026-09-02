@@ -29,6 +29,7 @@ from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
 from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.constraints import ConstraintSpecError, check_against_spec, consumed_securities, parse_constraints
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError
+from portfolio_optimizer.domain.objective import TermSpecError
 from portfolio_optimizer.domain.results import (
     RUN_SCOPED,
     ChainState,
@@ -41,14 +42,13 @@ from portfolio_optimizer.domain.results import (
     PortfolioResult,
     ProblemSpec,
     RuleAuditRecord,
-    StepRef,
     Tolerances,
 )
 from portfolio_optimizer.domain.sides import SideProfile
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.backends import SharedRunData, TaskOutput
-from portfolio_optimizer.engine.build import build_problem_spec
-from portfolio_optimizer.engine.check import verify
+from portfolio_optimizer.engine.build import BuildError, order_inputs
+from portfolio_optimizer.engine.check import constraints_of, verify
 from portfolio_optimizer.engine.environment import IMAGE_DIGEST_VARIABLE, WorkerEnvironment, environment_for, host_name
 from portfolio_optimizer.engine.load import slice_portfolio
 from portfolio_optimizer.engine.orders import rounding_drift, solution_to_orders
@@ -61,9 +61,6 @@ log = logging.getLogger(__name__)
 type Outcome = PortfolioResult | PortfolioFailure
 
 SKIPPED_ERROR = "SkippedAfterFailure"
-
-SHIPPED_CVXPY_SOLVE = "portfolio_optimizer.solvers:cvxpy"
-"""The one solve step whose chain access is exactly the configured terms and constraints; any other step may read ``request.chain`` however it likes, so its runs couple conservatively."""
 
 
 class VerificationError(RuntimeError):
@@ -130,39 +127,58 @@ class BuildSummary:
 
 
 def build_portfolio(data: PortfolioData, resolved: ResolvedConfig, fallback_solve_order: Decimal, recorder: SpanRecorder) -> BuildResult:
-    """Apply rules, compute the solve-order key, build the spec, and read the constraint declarations, timing each phase onto ``recorder``.
+    """Apply rules, compute the solve-order key, run the build step, and read the constraint declarations, timing each phase onto ``recorder``.
 
-    Typed constraint rows are parsed here — a malformed one, or one naming a column the universe does
-    not carry, fails the portfolio at stage ``build``, before any solve is scheduled on it — and the
+    Typed constraint rows are parsed here — a malformed one, or one naming a column the spec does not
+    carry, fails the portfolio at stage ``build``, before any solve is scheduled on it, as does a term
+    that reads a column this spec lacks — and the
     consume set the schedule needs is derived from them: empty when nothing reads the chain, their
-    scopes when typed chain constraints are the only readers, the whole tradable set when anything
-    opaque (a function row, a chain-aware term, a solve step that is not the shipped one) might.
+    scopes when chain-reading constraints are the only readers, the whole tradable set when anything
+    opaque (a chain-aware term, a solve step that is not the shipped one) might.
     """
     with recorder.span("build:rules"):
         ruled, audit = apply_rules(data, resolved.rules)
     key = fallback_solve_order if resolved.solve_order is None else solve_order_key(resolved.solve_order, ruled)
     with recorder.span("build:spec"):
-        output = build_problem_spec(ruled)
+        spec = build_spec(resolved.build, ruled)
+        inputs = order_inputs(ruled, spec)
     parsed = parse_constraints(ruled.constraints)
+    if parsed is None and not ruled.constraints.empty and resolved.shipped_solve:
+        msg = f"the {len(ruled.constraints)} constraint row(s) carry no `kind` column; the shipped cvxpy step interprets typed rows only"
+        raise ConstraintSpecError(msg)
     if parsed is not None:
-        problems = list(check_against_spec(parsed.typed, output.spec))
+        problems = list(check_against_spec(parsed.typed, spec))
         if problems:
             msg = "typed constraint(s) cannot apply to this problem: " + "; ".join(problems)
             raise ConstraintSpecError(msg)
-    consumes = consumed_securities(
-        parsed, output.spec, resolved.profile, chain_aware_terms=bool(resolved.chain_aware_terms), opaque_solve=resolved.solve.qualname != SHIPPED_CVXPY_SOLVE, opaque_rows=len(ruled.constraints)
-    )
+    wanting = [f"{term.name}: {problem}" for term in resolved.terms for problem in term.requirements(spec)]
+    if wanting:
+        msg = "objective term(s) cannot apply to this problem: " + "; ".join(wanting)
+        raise TermSpecError(msg)
+    consumes = consumed_securities(parsed, spec, resolved.profile, chain_aware_terms=bool(resolved.chain_aware_terms), opaque_solve=not resolved.shipped_solve)
     return BuildResult(
         portfolio_id=data.portfolio_id,
-        spec=output.spec,
-        order_inputs=output.order_inputs,
+        spec=spec,
+        order_inputs=inputs,
         rule_audit=audit,
         solve_order=key,
-        tradable=tradable_ids(resolved.profile, output.spec),
+        tradable=tradable_ids(resolved.profile, spec),
         consumes=consumes,
         constraints=ruled.constraints,
         extras=ruled.extras,
     )
+
+
+def build_spec(step: ResolvedStep, data: PortfolioData) -> ProblemSpec:
+    """Run the build step and insist on a ``ProblemSpec`` for this portfolio."""
+    result = step.invoke(data=data)
+    if not isinstance(result, ProblemSpec):
+        msg = f"build step {step.qualname!r} returned {type(result).__name__}, expected ProblemSpec"
+        raise BuildError(msg)
+    if result.portfolio_id != data.portfolio_id:
+        msg = f"build step {step.qualname!r} returned a spec for {result.portfolio_id!r} while building {data.portfolio_id!r}"
+        raise BuildError(msg)
+    return result
 
 
 def solve_order_key(step: ResolvedStep, data: PortfolioData) -> Decimal:
@@ -188,8 +204,8 @@ def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainS
             built.spec,
             solution,
             chain,
-            step_refs(resolved.terms),
-            solution.constraints,
+            resolved.terms,
+            constraints_of(solution),
             profile=resolved.profile,
             tolerances=Tolerances(violation=post.violation_tol, obj_rel=post.objective_rel_tol, obj_abs=post.objective_abs_tol),
         )
@@ -223,11 +239,6 @@ def consume_flags(spec: ProblemSpec, consumes: Sequence[str]) -> Flags:
     """The build's consume set as a mask aligned to the spec, for the chain-state fold."""
     wanted = frozenset(consumes)
     return np.fromiter((security in wanted for security in spec.security_ids), dtype=np.bool_, count=spec.n)
-
-
-def step_refs(steps: Sequence[ResolvedStep]) -> tuple[StepRef, ...]:
-    """Reduce resolved term steps to the data the verifier and manifest need; a term's label is its bare name."""
-    return tuple(StepRef(qualname=step.qualname, params=step.params_json, label=step.name.rpartition(":")[2]) for step in steps)
 
 
 def skipped(portfolio_id: str, message: str) -> PortfolioFailure:
@@ -273,7 +284,7 @@ def resolved_for(shared: SharedRunData) -> ResolvedConfig:
     """
     resolved = _RESOLVED.get(shared.config_sha256)
     if resolved is None or resolved.config != shared.config:
-        resolved = _RESOLVED[shared.config_sha256] = resolve_config(shared.config)
+        resolved = _RESOLVED[shared.config_sha256] = resolve_config(shared.config, packages=shared.packages)
     return resolved
 
 
@@ -282,14 +293,14 @@ def worker_environment(shared: SharedRunData) -> WorkerEnvironment:
     return environment_for(shared.config, cwd=Path.cwd(), image_digest=os.environ.get(IMAGE_DIGEST_VARIABLE))
 
 
-def probe_task(config: RunConfig) -> TaskOutput[None]:
+def probe_task(config: RunConfig, packages: tuple[str, ...] | None = None) -> TaskOutput[None]:
     """Resolve the config in this process and report the fingerprint; a resolution failure is returned, never raised.
 
     The resolution is kept, so the first build on this worker does not repeat it.
     """
     environment = environment_for(config, cwd=Path.cwd(), image_digest=os.environ.get(IMAGE_DIGEST_VARIABLE))
     try:
-        resolved = resolve_config(config)
+        resolved = resolve_config(config, packages=packages)
     except Exception as error:  # noqa: BLE001  # a solver or step package missing on this worker is what the probe exists to report
         failed: TaskOutput[None] = TaskOutput(outcome=PortfolioFailure.from_exception(RUN_SCOPED, "worker", error), environment=environment, host=host_name())
         return failed

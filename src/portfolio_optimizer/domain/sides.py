@@ -1,12 +1,25 @@
 """Which side a run trades, as the one object that knows: the side profile.
 
-A run is buy-only, sell-only, or two-sided; ``sides`` in the run config selects one. Everything
-side-dependent lives here or in its cvxpy half, ``cvx/sides.py``: how a solver's weights become a
-trade, which securities the dependency graph and the chain state are built from, what a dependent
-solve receives, which starting books the side cannot trade out of, and which invariants the verifier
-adds. Nothing else in the engine asks which side a run is; it consumes what the profile hands it.
-This module is cvxpy-free so the verifier and the ``verify`` command can use it without the solver
-stack.
+A run buys or it sells; ``sides`` in the run config says which. A desk's buy program and its sell
+program are two runs over one snapshot, each a pure function of its inputs with its own manifest, and
+nothing crosses between them inside the engine. Everything side-dependent lives here or in its cvxpy
+half, ``cvx/sides.py``: how a solver's weights become a trade, which securities the dependency graph
+and the chain state are built from, what a dependent solve receives, which starting books the side
+cannot trade out of, and which invariants the verifier adds. Nothing else in the engine asks which
+side a run is; it consumes what the profile hands it. This module is cvxpy-free so the verifier and
+the ``verify`` command can use it without the solver stack.
+
+One variable per name is the whole of the design: the trade is an affine expression of the weight,
+so no name can be bought and sold in one solve, and a term that rewards selling — a harvestable
+loss — is exact rather than an invitation to a round trip. The two-sided problem, with ``buy`` and
+``sell`` as independent variables, is what that invitation looks like; it was removed on 2026-09-01
+and comes back as a third profile here and in ``cvx/sides.py`` if a desk ever settles how a rewarded
+round trip should be treated.
+
+The identity every profile adds includes the spec's own box, ``lb ≤ w ≤ ub``: the bounds the build
+derived from the style cap, the restricted flags, and any per-security floor or cap column. They are
+structural rather than a constraint row because the schedule and the order rounding already assume
+them — the buyable set is ``ub > w0``, and a buy is clamped to the room under ``ub``.
 """
 
 from collections.abc import Mapping, Sequence
@@ -18,8 +31,8 @@ import pandas as pd
 
 from portfolio_optimizer.domain.results import F64, ChainState, Contribution, Flags, ProblemSpec, Solution, derive_chain_state
 
-type Sides = Literal["both", "buy", "sell"]
-"""The sides a run may trade: buy-only, sell-only, or the two-sided problem."""
+type Sides = Literal["buy", "sell"]
+"""The side a run trades: buys alone, or sells alone."""
 
 TOLERANCE = 1e-12
 """Float noise, not policy: how far past a bound a starting weight may sit before the start is called infeasible."""
@@ -39,7 +52,7 @@ class SideProfile(Protocol):
         ...
 
     def tradable(self, spec: ProblemSpec) -> Flags:
-        """The securities this portfolio can trade on the side it couples through; the dependency graph and the chain are built from it."""
+        """The securities this portfolio can trade on its side; the dependency graph and the chain are built from it."""
         ...
 
     def split(self, w: F64, w0: F64) -> tuple[F64, F64]:
@@ -51,7 +64,7 @@ class SideProfile(Protocol):
         ...
 
     def identity_residuals(self, spec: ProblemSpec, solution: Solution) -> list[tuple[str, F64]]:
-        """Violations of the trade identity, one named residual vector per check; the verifier's twin of ``cvx/sides.py``."""
+        """Violations of the trade identity and the spec's box, one named residual vector per check; the verifier's twin of ``cvx/sides.py``."""
         ...
 
     def infeasible_starts(self, spec: ProblemSpec) -> list[str]:
@@ -72,62 +85,19 @@ class SideProfile(Protocol):
         ...
 
 
-@dataclass(frozen=True, slots=True)
-class TwoSided:
-    """Buys and sells in one problem, ``w = w0 + buy - sell``; portfolios couple through buys only.
-
-    A sell reaches no other portfolio, so the tradable set is the buyable set and a contribution is the
-    BUY rows. The reported split is the minimal one — the solver's own pair may carry slack on both
-    sides, which the split tidies; a round trip a term *rewards* is refused by the shipped cvxpy step
-    (``cvx/adapter.py``) rather than silently stripped.
-    """
-
-    sides: Sides = "both"
-    order_sides: frozenset[str] = frozenset({"BUY", "SELL"})
-
-    def tradable(self, spec: ProblemSpec) -> Flags:
-        """The buyable set: ``ub > w0``."""
-        return spec.buyable
-
-    def split(self, w: F64, w0: F64) -> tuple[F64, F64]:
-        """``buy = max(w - w0, 0)``, ``sell = max(w0 - w, 0)``."""
-        delta = w - w0
-        return np.maximum(delta, 0.0), np.maximum(-delta, 0.0)
-
-    def coupled(self, solution: Solution) -> F64:
-        """The buys."""
-        return solution.buy
-
-    def identity_residuals(self, spec: ProblemSpec, solution: Solution) -> list[tuple[str, F64]]:
-        """``w - w0 = buy - sell`` (an equality), both non-negative, ``sell ≤ w0``, and no name both bought and sold."""
-        return [
-            ("trade_balance", np.abs(solution.w - spec.w0 - solution.buy + solution.sell)),
-            ("nonneg_buy", -solution.buy),
-            ("nonneg_sell", -solution.sell),
-            ("sell_le_w0", solution.sell - spec.w0),
-            ("complementarity", np.minimum(solution.buy, solution.sell)),
-        ]
-
-    def infeasible_starts(self, spec: ProblemSpec) -> list[str]:
-        """Nothing side-specific: a two-sided run can move any weight either way."""
-        del spec
-        return []
-
-    def contribution(self, portfolio_id: str, orders: pd.DataFrame) -> Contribution:
-        """The BUY rows; sells never reach a later portfolio."""
-        return Contribution.from_orders(portfolio_id, orders, "BUY")
-
-    def chain_state(self, spec: ProblemSpec, contributions: Sequence[Contribution], consumes: Flags) -> ChainState:
-        """Predecessors' buys, masked to this portfolio's buyable set and to what its chain readers consume."""
-        return derive_chain_state(spec.security_ids, self.tradable(spec) & consumes, contributions)
+def _box_residuals(spec: ProblemSpec, solution: Solution) -> list[tuple[str, F64]]:
+    """``lb ≤ w ≤ ub``: the spec's own bounds, which every profile holds."""
+    return [("lb", spec.lb - solution.w), ("ub", solution.w - spec.ub)]
 
 
 @dataclass(frozen=True, slots=True)
 class BuyOnly:
-    """Buys alone: ``w ≥ w0`` and ``buy = w - w0``; there is no ``sell``, so no wash trade is possible.
+    """Buys alone: ``w ≥ w0`` and ``buy = w - w0``; there is no ``sell``.
 
-    A buy-only run can only lower cash, and a name whose cap sits below its holding cannot be traded
-    out of: both are named as the infeasibilities they are rather than solved around.
+    Portfolios couple through buys: the tradable set is the buyable set, a contribution is the BUY
+    rows, and the chain carries shares predecessors bought. A buy-only run can only lower cash, and a
+    name whose cap sits below its holding cannot be traded out of: both are named as the
+    infeasibilities they are rather than solved around.
     """
 
     sides: Sides = "buy"
@@ -146,12 +116,13 @@ class BuyOnly:
         return solution.buy
 
     def identity_residuals(self, spec: ProblemSpec, solution: Solution) -> list[tuple[str, F64]]:
-        """``w ≥ w0``, the reported buy is ``w - w0`` (an equality), it is non-negative, and the sell vector is zero."""
+        """``w ≥ w0``, the reported buy is ``w - w0`` (an equality), it is non-negative, the sell vector is zero, and the box."""
         return [
             ("no_sells", spec.w0 - solution.w),
             ("trade_balance", np.abs(solution.w - spec.w0 - solution.buy + solution.sell)),
             ("nonneg_buy", -solution.buy),
             ("sell_absent", np.abs(solution.sell)),
+            *_box_residuals(spec, solution),
         ]
 
     def infeasible_starts(self, spec: ProblemSpec) -> list[str]:
@@ -192,12 +163,13 @@ class SellOnly:
         return solution.sell
 
     def identity_residuals(self, spec: ProblemSpec, solution: Solution) -> list[tuple[str, F64]]:
-        """``w ≤ w0``, the reported sell is ``w0 - w`` (an equality), it is non-negative, and the buy vector is zero."""
+        """``w ≤ w0``, the reported sell is ``w0 - w`` (an equality), it is non-negative, the buy vector is zero, and the box."""
         return [
             ("no_buys", solution.w - spec.w0),
             ("trade_balance", np.abs(solution.w - spec.w0 - solution.buy + solution.sell)),
             ("nonneg_sell", -solution.sell),
             ("buy_absent", np.abs(solution.buy)),
+            *_box_residuals(spec, solution),
         ]
 
     def infeasible_starts(self, spec: ProblemSpec) -> list[str]:
@@ -214,12 +186,13 @@ class SellOnly:
 
 
 def _cash_start(spec: ProblemSpec, run: str, *, floor: bool) -> list[str]:
-    """The starting cash against the bound the side can only move away from."""
+    """The starting cash against the bound the side can only move away from, where the spec carries one."""
     cash = 1.0 - float(spec.w0.sum())
-    if floor and cash < spec.cash_lb - TOLERANCE:
-        return [f"the book starts with cash {cash:.6f} below cash_lb {spec.cash_lb:.6f}, and a {run} run can only lower cash"]
-    if not floor and cash > spec.cash_ub + TOLERANCE:
-        return [f"the book starts with cash {cash:.6f} above cash_ub {spec.cash_ub:.6f}, and a {run} run can only raise cash"]
+    lower, upper = spec.scalars.get("cash_lb"), spec.scalars.get("cash_ub")
+    if floor and lower is not None and cash < lower - TOLERANCE:
+        return [f"the book starts with cash {cash:.6f} below cash_lb {lower:.6f}, and a {run} run can only lower cash"]
+    if not floor and upper is not None and cash > upper + TOLERANCE:
+        return [f"the book starts with cash {cash:.6f} above cash_ub {upper:.6f}, and a {run} run can only raise cash"]
     return []
 
 
@@ -231,11 +204,10 @@ def _bound_starts(spec: ProblemSpec, violated: Flags, how: str) -> list[str]:
     return [f"names whose {how}, which this side cannot trade out of: {names}"]
 
 
-TWO_SIDED: SideProfile = TwoSided()
 BUY_ONLY: SideProfile = BuyOnly()
 SELL_ONLY: SideProfile = SellOnly()
 
-PROFILES: Mapping[Sides, SideProfile] = {profile.sides: profile for profile in (TWO_SIDED, BUY_ONLY, SELL_ONLY)}
+PROFILES: Mapping[Sides, SideProfile] = {profile.sides: profile for profile in (BUY_ONLY, SELL_ONLY)}
 """Every profile a config may select, by its ``sides`` value; ``cvx/sides.py`` carries the matching variables and identities."""
 
 

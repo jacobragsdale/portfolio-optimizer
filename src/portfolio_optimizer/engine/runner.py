@@ -31,11 +31,11 @@ from pathlib import Path
 import pandas as pd
 
 from portfolio_optimizer.config.resolve import ResolvedConfig
-from portfolio_optimizer.cvx.adapter import solver_version
+from portfolio_optimizer.domain.constraints import frame_reads_chain
 from portfolio_optimizer.domain.data import IoContext
 from portfolio_optimizer.domain.results import RUN_SCOPED, Artifact, AssemblyAuditRecord, Contribution, PortfolioFailure, PortfolioResult
 from portfolio_optimizer.domain.types import PortfolioId
-from portfolio_optimizer.engine.backends import Backend, BackendFactory, ClusterError, Pending, SharedRunData, TaskOutput, WorkerEnvironmentError, WorkersReady
+from portfolio_optimizer.engine.backends import Backend, BackendFactory, ClusterError, InlineBackend, Pending, SharedRunData, TaskOutput, WorkerEnvironmentError, WorkersReady
 from portfolio_optimizer.engine.dask_backend import DaskBackend
 from portfolio_optimizer.engine.environment import IMAGE_DIGEST_VARIABLE, GitInfo, WorkerEnvironment, environment_for, package_versions
 from portfolio_optimizer.engine.hashing import file_sha256
@@ -54,9 +54,10 @@ from portfolio_optimizer.engine.manifest import (
     write_manifest,
 )
 from portfolio_optimizer.engine.schedule import Coupling, OverlapIndex, Schedule, order_portfolios
-from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, contribution, probe_task, skipped, solve_task, step_refs, summarize
+from portfolio_optimizer.engine.tasks import BuildResult, BuildSummary, Outcome, build_task, contribution, probe_task, skipped, solve_task, summarize
 from portfolio_optimizer.engine.timing import Span, SpanRecorder, sort_spans, write_trace
 from portfolio_optimizer.settings import ExecutionSettings
+from portfolio_optimizer.solving import configured_solver, solver_version
 
 log = logging.getLogger(__name__)
 
@@ -106,13 +107,23 @@ class Executed:
 
 @dataclass(frozen=True, slots=True)
 class RunContext:
-    """The run's surroundings, beyond its config: where it reads and writes, its id and clock, the cluster it provisions, the code revision, and the settings the manifest records."""
+    """The run's surroundings, beyond its config: the instant it is as of, where it reads and writes, its id and clock, the cluster it provisions, the code revision, and the settings the manifest records."""
 
     io: IoContext
+    as_of_date: datetime
+    """The timezone-aware instant the run is *as of*: every loader receives it, the build decides holding periods against it, and the manifest records it. A run argument, not config, so one wiring runs every day under one hash."""
+
     execution: ExecutionSettings
     git: GitInfo
     config_path: str
     settings: Mapping[str, str]
+
+
+def default_backend(execution: ExecutionSettings, *, run_id: str) -> Backend:
+    """The backend the settings ask for: this process under ``inline``, otherwise a Dask cluster the run owns."""
+    if execution.cluster_kind == "inline":
+        return InlineBackend()
+    return DaskBackend(execution, run_id=run_id)
 
 
 @dataclass(slots=True)
@@ -192,7 +203,7 @@ class _Session:
 # --- the run ---
 
 
-def run(resolved: ResolvedConfig, context: RunContext, *, backend_factory: BackendFactory = DaskBackend) -> RunReport:
+def run(resolved: ResolvedConfig, context: RunContext, *, backend_factory: BackendFactory = default_backend) -> RunReport:
     """Execute the run end to end and write its manifest. Raises only when nothing could start."""
     config = resolved.config
     io = context.io
@@ -210,16 +221,17 @@ def run(resolved: ResolvedConfig, context: RunContext, *, backend_factory: Backe
         load_started_s = time.time()
         try:
             with recorder.span("load"):
-                loaded = load_datasets(resolved, data_root=io.data_root, run_id=io.run_id)
+                loaded = load_datasets(resolved, data_root=io.data_root, run_id=io.run_id, as_of_date=context.as_of_date)
             with recorder.span("assembly"):
-                assembled = assemble(loaded, resolved, run_id=io.run_id)
+                assembled = assemble(loaded, resolved, run_id=io.run_id, as_of_date=context.as_of_date)
         except (ValueError, KeyError) as error:
             msg = f"inputs rejected: {error}"
             raise InputRejectedError(msg) from error
         dataset_audits, assembly_audits, order = loaded.audits, assembled.audits, assembled.portfolio_ids
         for audit in dataset_audits:
             recorder.add(f"dataset:{audit.name}", started_at_s=load_started_s + audit.started_s, duration_s=audit.load_time_s)
-        executed = _execute(SharedRunData(assembled=assembled, config=config, config_sha256=resolved.config_sha256, run_id=io.run_id), resolved, session, run_dir=io.output_dir / io.run_id)
+        shared = SharedRunData(assembled=assembled, config=config, config_sha256=resolved.config_sha256, run_id=io.run_id, packages=context.execution.step_packages)
+        executed = _execute(shared, resolved, session, run_dir=io.output_dir / io.run_id)
         outcomes, order = executed.outcomes, executed.schedule.order
     except ClusterError as error:
         log.error("cluster unavailable", extra={"run_id": io.run_id, "stage": "cluster", "error": type(error).__name__})
@@ -331,11 +343,12 @@ def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session,
     expected = environment_for(config, cwd=Path.cwd(), image_digest=os.environ.get(IMAGE_DIGEST_VARIABLE))
     _check_workers(backend, shared, session, expected)
     dispatch = _Dispatch(backend, backend.share(shared), shared.run_id, len(shared.assembled.portfolio_ids), session, expected)
-    coupling: Coupling = config.execution.dependencies
     builds = _submit_builds(dispatch, shared)
-    if coupling == "none":
+    if _nothing_reads_the_chain(resolved, shared):
+        coupling: Coupling = "none"
         planned = _plan_uncoupled(dispatch, shared, builds)
     else:
+        coupling = config.execution.dependencies
         planned = _stream_solves(dispatch, builds, _solve_order(shared, resolved, builds), coupling, fail_fast=fail_fast, securities=_universe_securities(shared))
     builds.release()
     shape = planned.schedule.summary()
@@ -351,6 +364,15 @@ def _execute(shared: SharedRunData, resolved: ResolvedConfig, session: _Session,
     return Executed(outcomes=planned.outcomes, schedule=planned.schedule, keys=planned.keys, artifacts=artifacts)
 
 
+def _nothing_reads_the_chain(resolved: ResolvedConfig, shared: SharedRunData) -> bool:
+    """Whether the run can be told, before any build, that no portfolio waits for another: no chain-aware term, the shipped solve step, and no constraint row that reads the chain.
+
+    Derived, never declared: a config cannot switch the chain off, only the data and the steps can
+    make it moot. When they do, every solve goes in behind its own build.
+    """
+    return not resolved.chain_aware_terms and resolved.shipped_solve and not frame_reads_chain(shared.assembled.constraints)
+
+
 def _check_workers(backend: Backend, shared: SharedRunData, session: _Session, expected: WorkerEnvironment) -> None:
     """Every worker the run starts with must resolve the config and match the run's fingerprint before any data is shared.
 
@@ -359,7 +381,7 @@ def _check_workers(backend: Backend, shared: SharedRunData, session: _Session, e
     has done any work. Workers that join later are gated per result by :func:`_accept`.
     """
     problems: list[str] = []
-    probes = backend.probe(probe_task, shared.config)
+    probes = backend.probe(probe_task, shared.config, shared.packages)
     for address, output in probes.items():
         session.saw(output.environment, output.host, solved=False)
         if isinstance(output.outcome, PortfolioFailure):
@@ -653,21 +675,23 @@ def _manifest(
     if infrastructure_error is not None:
         records.append(failed_record(infrastructure_error))
     solved = [o for o in outcomes if isinstance(o, PortfolioResult)]
-    solver_ver = solved[0].solution.solver_version if solved else solver_version(config.solver.name)
+    solver = configured_solver(config)
+    solver_ver = solved[0].solution.solver_version if solved else solver_version(solver)
     packages = package_versions(step.qualname.partition(":")[0] for step in resolved.all_steps if step.is_external)
     manifest = RunManifest(
         run_id=context.io.run_id,
         run_name=config.run.name,
+        tags=dict(config.run.tags),
         created_at_utc=created_at(context.io.clock()),
-        as_of_date=config.run.as_of_date,
+        as_of_date=context.as_of_date,
         git_sha=context.git.sha,
         git_dirty=context.git.dirty,
         schedule=executed.schedule.summary() if executed is not None else None,
         cluster=session.cluster_record(),
-        versions=versions(config.solver.name, solver_ver, packages, session.worker_records()),
+        versions=versions(solver, solver_ver, packages, session.worker_records()),
         config=ConfigInfo(path=context.config_path, sha256=resolved.config_sha256, resolved=config.model_dump(mode="json")),
         settings=dict(context.settings),
-        terms=step_refs(resolved.terms),
+        terms=tuple(term.record() for term in resolved.terms),
         datasets=tuple(audits),
         assembly=tuple(assembly_audits),
         portfolios=tuple(records),

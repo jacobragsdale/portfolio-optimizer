@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, Field
 
-from portfolio_optimizer.domain.results import RUN_SCOPED, Artifact, AssemblyAuditRecord, PortfolioFailure, PortfolioResult, RuleAuditRecord, StepRef
+from portfolio_optimizer.domain.results import RUN_SCOPED, Artifact, AssemblyAuditRecord, ConstraintRecord, PortfolioFailure, PortfolioResult, RuleAuditRecord
 from portfolio_optimizer.domain.types import StrictModel
 from portfolio_optimizer.engine.environment import WorkerEnvironment, distribution_version
 from portfolio_optimizer.engine.files import write_atomically
@@ -82,7 +82,11 @@ class ConfigInfo(StrictModel):
 
 
 class SolveRecord(StrictModel):
-    """Solver identity and outcome; the cvxpy version behind the shipped step is in ``versions``."""
+    """Solver identity and outcome; the cvxpy version behind the shipped step is in ``versions``.
+
+    ``duals`` is, per constraint the step rendered, the largest dual value the solver reported — the
+    shadow price of the limit, zero where it did not bind; empty for a step that reports none.
+    """
 
     solver: str
     solver_version: str
@@ -90,17 +94,18 @@ class SolveRecord(StrictModel):
     iterations: int | None
     objective_value: float | None
     solve_time_s: float
+    duals: dict[str, float] = Field(default_factory=dict)
 
 
 class CheckRecord(StrictModel):
-    """Outcome of the independent verification; ``tolerance`` is the violation every residual was held to."""
+    """Outcome of the independent verification; ``tolerance`` is the violation every residual was held to, ``active`` the checks that bind — where the answer stopped."""
 
     tolerance: float
     max_violation: float
     violated: tuple[str, ...]
+    active: tuple[str, ...]
     objective_gap: float
     objective_passed: bool
-    unverified: tuple[str, ...]
     passed: bool
 
 
@@ -129,8 +134,8 @@ class PortfolioRecord(StrictModel):
     solve_order: str | None = None
     predecessors: int | None = None
     rules: tuple[RuleAuditRecord, ...] = ()
-    constraints: tuple[StepRef, ...] = ()
-    """What the solve step made of this portfolio's constraint rows, after its rules.
+    constraints: tuple[ConstraintRecord, ...] = ()
+    """The typed constraints the solve step applied to this portfolio, as records, after its rules.
 
     Per portfolio, because constraints are loaded data and a rule may change them; the run-level block
     that used to hold them could not say what any one account solved.
@@ -151,6 +156,7 @@ class RunManifest(StrictModel):
 
     run_id: str
     run_name: str
+    tags: dict[str, str] = Field(default_factory=dict)
     created_at_utc: AwareDatetime
     as_of_date: AwareDatetime
     git_sha: str
@@ -160,7 +166,9 @@ class RunManifest(StrictModel):
     versions: VersionInfo
     config: ConfigInfo
     settings: dict[str, str]
-    terms: tuple[StepRef, ...]
+    terms: tuple[dict[str, object], ...]
+    """The configured objective terms as records — each kind and its fields — in order; ``verify`` reads them back through the registry."""
+
     datasets: tuple[DatasetAudit, ...]
     assembly: tuple[AssemblyAuditRecord, ...] = ()
     portfolios: tuple[PortfolioRecord, ...]
@@ -210,14 +218,15 @@ def solved_record(result: PortfolioResult, violation_tol: float, *, solve_order:
             iterations=solution.iterations,
             objective_value=solution.objective,
             solve_time_s=solution.solve_time_s,
+            duals=dict(solution.duals),
         ),
         check=CheckRecord(
             tolerance=violation_tol,
             max_violation=report.max_violation,
             violated=report.violated,
+            active=report.active,
             objective_gap=report.objective_gap,
             objective_passed=report.objective_passed,
-            unverified=report.unverified,
             passed=report.passed,
         ),
         drift=DriftRecord(max_weight_error=drift.max_weight_error, tolerance=drift.tolerance, dropped_orders=drift.dropped_orders, passed=drift.passed),

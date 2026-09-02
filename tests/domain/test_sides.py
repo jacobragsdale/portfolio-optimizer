@@ -7,58 +7,25 @@ import numpy as np
 import pytest
 
 from portfolio_optimizer.cvx.sides import SIDES
-from portfolio_optimizer.domain.results import ChainState, Contribution
-from portfolio_optimizer.domain.sides import BUY_ONLY, PROFILES, SELL_ONLY, TWO_SIDED, Sides, profile_for
+from portfolio_optimizer.domain.results import Contribution
+from portfolio_optimizer.domain.sides import BUY_ONLY, PROFILES, SELL_ONLY, Sides, profile_for
 from tests.conftest import Factories, Frames
 
 
 def test_every_profile_has_its_cvxpy_half_and_the_config_can_select_it() -> None:
-    assert set(PROFILES) == set(SIDES) == set(get_args(Sides.__value__)) == {"both", "buy", "sell"}
-    assert profile_for("both") is TWO_SIDED
+    assert set(PROFILES) == set(SIDES) == set(get_args(Sides.__value__)) == {"buy", "sell"}
     assert profile_for("buy") is BUY_ONLY
     assert profile_for("sell") is SELL_ONLY
-    with pytest.raises(ValueError, match="sides 'short' is not one the engine knows"):
-        profile_for("short")
+    with pytest.raises(ValueError, match="sides 'both' is not one the engine knows"):
+        profile_for("both")
 
 
-# --- both ---
-
-
-def test_two_sided_split_is_the_minimal_one() -> None:
-    buy, sell = TWO_SIDED.split(np.array([0.5, 0.2, 0.3]), np.array([0.4, 0.3, 0.3]))
-    np.testing.assert_allclose(buy, [0.1, 0.0, 0.0])
-    np.testing.assert_allclose(sell, [0.0, 0.1, 0.0])
-
-
-@pytest.mark.parametrize(
-    ("buy", "sell", "violated"),
-    [
-        (np.array([0.1, 0.0, 0.0]), np.array([0.0, 0.1, 0.0]), set()),
-        (np.array([0.2, 0.0, 0.0]), np.array([0.0, 0.1, 0.0]), {"trade_balance"}),
-        (np.array([0.1, 0.0, -0.01]), np.array([0.0, 0.1, -0.01]), {"nonneg_buy", "nonneg_sell"}),
-        (np.array([0.1, 0.0, 0.5]), np.array([0.0, 0.1, 0.5]), {"sell_le_w0", "complementarity"}),
-    ],
-    ids=["minimal", "balance", "negative", "round-trip-beyond-holding"],
-)
-def test_two_sided_identity_residuals_name_what_is_violated(make: Factories, buy: np.ndarray, sell: np.ndarray, violated: set[str]) -> None:
-    spec = make.spec(w0=np.array([0.4, 0.3, 0.3]))
-    solution = make.solution(spec, w=np.array([0.5, 0.2, 0.3]), buy=buy, sell=sell)
-    residuals = dict(TWO_SIDED.identity_residuals(spec, solution))
-    assert set(residuals) == {"trade_balance", "nonneg_buy", "nonneg_sell", "sell_le_w0", "complementarity"}
-    assert {name for name, residual in residuals.items() if residual.max() > 1e-9} == violated
-
-
-def test_two_sided_couples_through_buys_only(make: Factories, frames: Frames) -> None:
-    spec = make.spec(w0=np.array([0.5, 0.5, 0.0]), ub=np.array([0.5, 1.0, 1.0]))
-    assert TWO_SIDED.tradable(spec).tolist() == [False, True, True], "S0 is capped at its holding, so it is not buyable"
-    orders = frames.orders({"security_id": "S1", "side": "SELL", "quantity": 10, "notional": Decimal(1000)}, {"security_id": "S2", "side": "BUY", "quantity": 7, "notional": Decimal(700)})
-    contribution = TWO_SIDED.contribution("P1", orders)
-    assert (contribution.security_ids, contribution.traded_shares.tolist()) == (("S2",), [7.0])
-    state = TWO_SIDED.chain_state(spec, [Contribution("P0", ("S0", "S2"), np.array([5.0, 3.0]))], np.ones(3, dtype=np.bool_))
-    assert isinstance(state, ChainState) and state.traded_shares.tolist() == [0.0, 0.0, 3.0], "a predecessor's buy of a name this portfolio cannot buy is masked out"
-    assert TWO_SIDED.order_sides == {"BUY", "SELL"}
-    assert TWO_SIDED.coupled(make.solution(spec, buy=np.array([0.0, 0.1, 0.2]), sell=np.array([0.3, 0.0, 0.0]))).tolist() == [0.0, 0.1, 0.2]
-    assert TWO_SIDED.infeasible_starts(make.spec(w0=np.array([0.6, 0.3, 0.3]), ub=np.array([0.5, 1.0, 1.0]))) == [], "a two-sided run can sell its way back inside a cap"
+def test_every_profile_holds_the_specs_box(make: Factories) -> None:
+    spec = make.spec(lb=np.array([0.1, 0.0, 0.0]), ub=np.array([0.5, 0.5, 0.5]))
+    for profile in (BUY_ONLY, SELL_ONLY):
+        residuals = dict(profile.identity_residuals(spec, make.solution(spec, w=np.array([0.05, 0.6, 0.35]))))
+        np.testing.assert_allclose(residuals["lb"], [0.05, -0.6, -0.35], err_msg="S0 sits below its floor")
+        np.testing.assert_allclose(residuals["ub"], [-0.45, 0.1, -0.15], err_msg="S1 sits above its cap")
 
 
 # --- buy ---
@@ -84,18 +51,18 @@ def test_buy_only_split_is_the_clipped_delta_and_no_sell() -> None:
 def test_buy_only_identity_residuals_name_what_is_violated(make: Factories, w: np.ndarray, buy: np.ndarray, sell: np.ndarray, violated: set[str]) -> None:
     spec = make.spec(w0=np.array([0.4, 0.3, 0.3]))
     residuals = dict(BUY_ONLY.identity_residuals(spec, make.solution(spec, w=w, buy=buy, sell=sell)))
-    assert set(residuals) == {"no_sells", "trade_balance", "nonneg_buy", "sell_absent"}
+    assert set(residuals) == {"no_sells", "trade_balance", "nonneg_buy", "sell_absent", "lb", "ub"}
     assert {name for name, residual in residuals.items() if residual.max() > 1e-9} == violated
 
 
 def test_buy_only_couples_through_buys_and_reports_only_buys(make: Factories, frames: Frames) -> None:
     spec = make.spec(w0=np.array([0.5, 0.5, 0.0]), ub=np.array([0.5, 1.0, 1.0]))
-    assert BUY_ONLY.tradable(spec).tolist() == [False, True, True]
+    assert BUY_ONLY.tradable(spec).tolist() == [False, True, True], "S0 is capped at its holding, so it is not buyable"
     orders = frames.orders({"security_id": "S1", "side": "BUY", "quantity": 10, "notional": Decimal(1000)}, {"security_id": "S2", "side": "BUY", "quantity": 7, "notional": Decimal(700)})
     contribution = BUY_ONLY.contribution("P1", orders)
     assert (contribution.security_ids, contribution.traded_shares.tolist()) == (("S1", "S2"), [10.0, 7.0])
     state = BUY_ONLY.chain_state(spec, [Contribution("P0", ("S0", "S2"), np.array([5.0, 3.0]))], np.ones(3, dtype=np.bool_))
-    assert state.traded_shares.tolist() == [0.0, 0.0, 3.0]
+    assert state.traded_shares.tolist() == [0.0, 0.0, 3.0], "a predecessor's buy of a name this portfolio cannot buy is masked out"
     assert BUY_ONLY.order_sides == {"BUY"}
     assert BUY_ONLY.coupled(make.solution(spec, buy=np.array([0.0, 0.1, 0.2]))).tolist() == [0.0, 0.1, 0.2]
 
@@ -103,6 +70,7 @@ def test_buy_only_couples_through_buys_and_reports_only_buys(make: Factories, fr
 def test_buy_only_names_the_starts_it_cannot_trade_out_of(make: Factories) -> None:
     fine = make.spec(w0=np.array([0.3, 0.3, 0.3]), cash_lb=0.0, cash_ub=0.1)
     assert BUY_ONLY.infeasible_starts(fine) == []
+    assert BUY_ONLY.infeasible_starts(make.spec(w0=np.array([0.3, 0.3, 0.3]), scalars={})) == [], "a spec without cash bounds has no cash start to be wrong"
     low_cash = make.spec(w0=np.array([0.3, 0.3, 0.3]), cash_lb=0.2, cash_ub=0.5)
     assert BUY_ONLY.infeasible_starts(low_cash) == ["the book starts with cash 0.100000 below cash_lb 0.200000, and a buy-only run can only lower cash"]
     over_cap = make.spec(w0=np.array([0.6, 0.3, 0.1]), ub=np.array([0.5, 0.3, 1.0]))
@@ -132,7 +100,7 @@ def test_sell_only_split_is_the_clipped_deficit_and_no_buy() -> None:
 def test_sell_only_identity_residuals_name_what_is_violated(make: Factories, w: np.ndarray, buy: np.ndarray, sell: np.ndarray, violated: set[str]) -> None:
     spec = make.spec(w0=np.array([0.4, 0.3, 0.3]))
     residuals = dict(SELL_ONLY.identity_residuals(spec, make.solution(spec, w=w, buy=buy, sell=sell)))
-    assert set(residuals) == {"no_buys", "trade_balance", "nonneg_sell", "buy_absent"}
+    assert set(residuals) == {"no_buys", "trade_balance", "nonneg_sell", "buy_absent", "lb", "ub"}
     assert {name for name, residual in residuals.items() if residual.max() > 1e-9} == violated
 
 
@@ -161,7 +129,7 @@ def test_chain_state_masks_to_the_consume_set_as_well_as_the_tradable_set(make: 
     """A predecessor's trade in a name this portfolio *could* buy but whose chain readers never consult is zeroed — which is what keeps the chain hash identical however many predecessors were folded."""
     spec = make.spec(w0=np.array([0.5, 0.5, 0.0]), ub=np.array([0.5, 1.0, 1.0]))
     contributions = [Contribution("P0", ("S1", "S2"), np.array([5.0, 3.0]))]
-    narrowed = TWO_SIDED.chain_state(spec, contributions, np.array([False, False, True]))
+    narrowed = BUY_ONLY.chain_state(spec, contributions, np.array([False, False, True]))
     assert narrowed.traded_shares.tolist() == [0.0, 0.0, 3.0], "S1 is buyable but outside the consume set"
-    everything = TWO_SIDED.chain_state(spec, contributions, np.ones(3, dtype=np.bool_))
+    everything = BUY_ONLY.chain_state(spec, contributions, np.ones(3, dtype=np.bool_))
     assert everything.traded_shares.tolist() == [0.0, 5.0, 3.0]

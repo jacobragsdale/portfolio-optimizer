@@ -1,8 +1,7 @@
 """Turn a solution into whole-share orders: the one place float64 becomes Decimal again.
 
-The trade is the split the side profile reported, ``buy - sell`` — which is ``w - w0`` exactly for a
-two-sided run and, for a one-sided one, ``w - w0`` clipped to the side the run has, so solver noise
-on the other side never becomes an order. Weight deltas become whole shares by rounding to the
+The trade is the split the side profile reported, ``buy - sell``: ``w - w0`` clipped to the side the
+run has, so solver noise on the other side never becomes an order. Weight deltas become whole shares by rounding to the
 **nearest** share (half-even), then down to a lot multiple, then clamped so a sell never exceeds
 what is held and a buy never exceeds the room under the security's upper bound. Nearest rounding
 matters because solver noise of 1e-8 in weight space is a fraction of a share: rounding toward zero

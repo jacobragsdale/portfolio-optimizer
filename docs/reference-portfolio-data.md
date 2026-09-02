@@ -1,9 +1,10 @@
 # Reference: the per-portfolio bundle and the optimizer frame
 
 `portfolio_optimizer.domain.data.PortfolioData` is the validated bundle every rule receives and every
-build consumes. `Frames` is what assembly steps receive. This page states their contracts; for how to
-use them see [how to add security analytics](how-to-add-security-analytics.md) and
-[how to add a rule](how-to-add-a-rule.md).
+build consumes; `portfolio_optimizer.domain.results.ProblemSpec` is what the build returns and every
+term, constraint, and solve step reads. `Frames` is what assembly steps receive. This page states their
+contracts; for how to use them see [how to add security analytics](how-to-add-security-analytics.md),
+[how to add a rule](how-to-add-a-rule.md), and [how to add a term or constraint kind](how-to-add-a-term.md).
 
 ## `Frames`
 
@@ -28,11 +29,11 @@ raises `PortfolioDataError` listing all failures.
 
 | Field | Type | Description |
 |---|---|---|
-| `details` | `PortfolioDetails` | This portfolio's `details` row: `portfolio_id`, `name`, `state`, `st_tax_rate`, `lt_tax_rate`, `cash`, `nav`, and the style limits `max_weight`, `max_turnover`, `max_adv_participation`, `min_trade_notional`, `cash_lb`, `cash_ub`. |
+| `details` | `PortfolioDetails` | This portfolio's `details` row: `portfolio_id`, `name`, optional `state`, `st_tax_rate`, `lt_tax_rate`, `cash`, `nav`, the style limits `max_weight`, `max_turnover`, `max_adv_participation`, `min_trade_notional`, `cash_lb`, `cash_ub`, and `extra` — every further column of the row, as `Decimal`, `int`, `str`, `bool`, or `None`. `details.scalars()` is every number on the row, declared or extra, which the build exports as the spec's scalars. |
 | `holdings` | frame | This portfolio's rows of `holdings`. Schema columns `portfolio_id`, `security_id`, `quantity`, `avg_cost`, `acquired_on`; any further columns allowed. |
-| `universe` | frame | The whole `universe`, identical for every portfolio. Schema columns `security_id`, `price`, `sector`, `adv_shares`, `lot_size`, `restricted`; optional `alpha`, `tcost_bps`, `min_weight`, `max_weight`; any further columns allowed. |
-| `constraints` | frame | This portfolio's rows of `constraints`, in the desk's own shape. The engine validates only that `portfolio_id` is present and names this portfolio; every other column is carried untouched to the solve step. Empty when the run declares no such dataset. A rule may replace it. |
-| `as_of_date` | `datetime` | The run's `as_of_date`, timezone-aware UTC. |
+| `universe` | frame | The whole `universe`, identical for every portfolio. Required columns `security_id`, `price`; optional `sector`, `adv_shares`, `lot_size` (default one share), `restricted` (default false), `alpha`, `tcost_bps`, `min_weight`, `max_weight`; any further columns allowed. |
+| `constraints` | frame | This portfolio's rows of `constraints`: one typed row each — `portfolio_id`, `kind`, `label`, `params` — or a desk's own shape. The engine validates that `portfolio_id` is present and names this portfolio, and reads `kind` for the declaration it schedules by; the rest reaches the solve step. Empty when the run declares no such dataset. A rule may replace it. |
+| `as_of_date` | `datetime` | The run's `--as-of`, timezone-aware UTC. |
 | `extras` | `Mapping[str, frame]` | Every non-engine dataset that remained after assembly. A dataset with a `portfolio_id` column is reduced to this portfolio's rows; one without is passed whole. Carried past the build to the solve step as `request.extras`, which is where runtime parameters reach a solver. Default `{}`. |
 | `applied_rules` | `tuple[str, ...]` | Qualified names of the rules applied so far; maintained by the pipeline. |
 | `portfolio_id` | property | `details.portfolio_id`. |
@@ -40,8 +41,8 @@ raises `PortfolioDataError` listing all failures.
 ### Checks on construction
 
 1. `holdings`, `universe`, and `constraints` satisfy their frame schemas (columns, dtypes,
-   nullability, bounds, unique key). `constraints` declares only `portfolio_id`, so in practice only
-   that is checked.
+   nullability, bounds, unique key). `constraints` declares only `portfolio_id`, so only that is
+   checked here; its rows are parsed as their kinds when the portfolio builds.
 2. `extras` values are frames, and no extra is named `holdings`, `universe`, `details`,
    `constraints`, or `portfolios`.
 3. `as_of_date` is timezone-aware UTC.
@@ -77,12 +78,44 @@ A held security need not be in the universe. The shipped build requires it (a `B
 
 `stack_frames` accepts any mapping of named frames and is what the shipped `union` assembly step uses.
 
+## `ProblemSpec`
+
+What the build step returns — `standard` by default, or any `(data: PortfolioData[, params]) ->
+ProblemSpec` named as `build` in the config — and what every term, constraint, solve step, and the
+verifier read: pure numpy, read-only arrays, aligned to the sorted `security_ids`, every vector a
+fraction of NAV, no cvxpy. It is persisted as `problem_specs/<portfolio_id>.npz` and its content hash
+goes into the manifest.
+
+| Field | Type | Description |
+|---|---|---|
+| `portfolio_id`, `as_of_date`, `nav` | | Identity; `nav` as float64. |
+| `security_ids` | `tuple[str, ...]` | Sorted and unique; every array is aligned to it. |
+| `w0`, `price`, `shares_held`, `lot_size`, `lb`, `ub` | `float64[n]` | The fixed vectors every spec carries: starting weights, price, shares held, lot size, and the per-security box the build derived. |
+| `columns` | `Mapping[str, float64[n]]` | Named per-security numbers: the derived `tax_per_dollar`, `tcost_per_dollar` (where the universe carries `tcost_bps`), `adv_capacity` (where it carries `adv_shares`), and every exported numeric universe column, `alpha` included. |
+| `flags` | `Mapping[str, bool[n]]` | Named per-security masks: every boolean universe column, `restricted` included. What a constraint's `scope` names. |
+| `groups` | `Mapping[str, Grouping]` | Every string universe column as a sparse membership matrix: `names`, the sorted distinct values, and `matrix`, *K*-by-*n* CSR with one nonzero per security. What `group_limit` reads. |
+| `scalars` | `Mapping[str, float]` | Every number on the account's `details` row, declared or extra: `cash_lb`, `cash_ub`, `max_turnover`, `max_weight`, `max_adv_participation`, `min_trade_notional`, `nav`, `cash`, the tax rates, and any numeric extra column. What a `{"scalar": ...}` bound names. |
+| `buyable`, `sellable` | properties, `bool[n]` | `ub > w0`; held and `lb < w0`. The sets a side profile couples the portfolio through. |
+
+Accessors — `spec.column(name)` (a fixed vector or an exported column; `spec.column_names` lists both),
+`spec.flag(name)`, `spec.scalar(name)`, `spec.group(column)` — raise `MissingSpecColumnError` naming
+what is available, which is how a term or constraint refuses, at build, a spec that lacks what it
+reads. Construction checks shapes, sortedness, finiteness, `lb ≤ ub`, positive `nav` and `price`,
+`lot_size ≥ 1`, that no name is both a column and a flag, and that no column shadows a fixed vector.
+
 ## What the shipped build exports
 
-`engine/build.py` aligns every array to the sorted `universe` and exports each universe column the
-schema does not declare (plus `alpha`) by name: **numeric** columns (`Int64`, `Float64`, `float64`,
-`int64`, Decimal-valued `object`) into `ProblemSpec.columns` as float64, read with `spec.column(name)`;
-**boolean** columns (`bool`, `boolean`) into `ProblemSpec.flags` as real `np.bool_` masks, read with
-`spec.flag(name)`. String columns are not exported. A null in an exported column or flag is a
+`engine/build.py`'s `standard` aligns every array to the sorted `universe`, computes the starting
+weights, the tax per dollar sold, and the bounds exactly in `Decimal` before the one conversion to
+float64, and exports each universe column other than `security_id` by name: **numeric** columns beyond
+the schema (`Int64`, `Float64`, `float64`, `int64`, Decimal-valued `object`), plus `alpha`, into
+`columns`; **boolean** columns (`bool`, `boolean`) into `flags`; **string** columns into `groups`. The
+schema's other numeric columns (`price`, `adv_shares`, `lot_size`, `tcost_bps`, `min_weight`,
+`max_weight`) are folded into the fixed vectors and the derived columns and not exported again. Every
+number on the `details` row becomes a scalar. A null in an exported column, flag, or grouping is a
 `BuildError`, and a name cannot be both a column and a flag. Columns on `holdings` beyond its schema
-are never exported.
+are never exported: the build has no row for a name that is not in the universe.
+
+`engine.build.order_inputs(data, spec)` derives the exact `Decimal` prices, share counts, and bounds the
+order step needs from any spec aligned to the universe's securities, so a custom build never has to
+reconstruct money from float64.

@@ -1,7 +1,7 @@
 # How to set the solve order
 
 Solve order decides who gets first pick when two portfolios compete for the same trades on the side the
-run couples through — the same buys under `sides: both` or `buy`, the same sells under `sell`. It is a
+run couples through — the same buys under `sides: buy`, the same sells under `sell`. It is a
 *priority*, not a sequence: a portfolio waits only for higher-priority portfolios that can trade a
 security it can trade too, on that side, and everything else solves concurrently. This guide sets it from the data
 with a solve-order step; the alternative is the `solve_order` column of the portfolios frame.
@@ -64,8 +64,8 @@ The step is part of the config hash, so two runs with different priorities are v
 ## 4. Check it resolves, then read the schedule back
 
 ```bash
-uv run --env-file .env portfolio-optimizer validate-config configs/my_run.json
-uv run --env-file .env portfolio-optimizer run configs/my_run.json
+uv run portfolio-optimizer validate-config configs/my_run.json
+uv run portfolio-optimizer run configs/my_run.json --as-of 2026-08-28T00:00:00Z
 ```
 
 Each portfolio's record in the manifest carries `solve_order` (the key as a string) and

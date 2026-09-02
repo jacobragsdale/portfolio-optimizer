@@ -13,7 +13,8 @@ book into that many independent components, and ``--mandate-overlap M`` extends 
 next *M* groups' sectors as well, ring-wise — disjoint components become one connected component whose
 critical path sits between the partitioned book's and the line's, which is what a real book of
 overlapping mandates looks like. ``--dependencies all`` runs the same book as a strict line for
-comparison.
+comparison; the chain-free case needs no flag, since a book whose rows read no chain derives an
+edge-free schedule by itself.
 
     uv run python benchmarks/run_book.py --portfolios 100 --groups 10
     uv run python benchmarks/run_book.py --portfolios 100 --groups 10 --mandate-overlap 1
@@ -21,6 +22,7 @@ comparison.
 """
 
 import argparse
+import csv
 import shutil
 import sys
 import tempfile
@@ -30,7 +32,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
-from harness import SHIPPED_CONSTRAINTS, execute, report_lines
+from harness import CONSTRAINT_COLUMNS, SHIPPED_CONSTRAINTS, constraint_row, execute, report_lines
 
 
 def write_book(root: Path, rng: np.random.Generator, *, portfolios: int, securities: int, sectors: int, groups: int, held: int, mandate_overlap: int) -> None:
@@ -55,7 +57,7 @@ def write_book(root: Path, rng: np.random.Generator, *, portfolios: int, securit
     mandates = ["portfolio_id,sector"]
     holdings = ["portfolio_id,security_id,quantity,avg_cost,acquired_on"]
     details = ["portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,max_weight,max_turnover,max_adv_participation,min_trade_notional,cash_lb,cash_ub"]
-    constraints = ["portfolio_id,name,label,params"]
+    constraints: list[tuple[str, str, str, str]] = [CONSTRAINT_COLUMNS]
     nav = Decimal(50_000_000)
     cap = max(Decimal("0.05"), (Decimal("1.8") / Decimal(held)).quantize(Decimal("0.0001")))  # twice the starting position weight, so no start sits above its cap
     for index, portfolio_id in enumerate(portfolio_ids):
@@ -72,11 +74,12 @@ def write_book(root: Path, rng: np.random.Generator, *, portfolios: int, securit
             )  # gains only: a harvestable loss is the tax term's wash-trade refusal, not a scheduling question
             holdings.append(f"{portfolio_id},S{security:06d},{quantity},{cost},2025-07-01T00:00:00Z")
         details.append(f"{portfolio_id},{portfolio_id} book,NY,0.40,0.20,{nav // 10},{nav},{cap},2,0.25,0,0,0.15")
-        constraints.extend(f"{portfolio_id},{name}," for name in SHIPPED_CONSTRAINTS)
+        constraints.extend(constraint_row(portfolio_id, kind, label, params) for kind, label, params in SHIPPED_CONSTRAINTS)
     (root / "mandates.csv").write_text("\n".join(mandates) + "\n")
     (root / "holdings.csv").write_text("\n".join(holdings) + "\n")
     (root / "details.csv").write_text("\n".join(details) + "\n")
-    (root / "constraints.csv").write_text("\n".join(constraints) + "\n")
+    with (root / "constraints.csv").open("w", newline="") as handle:
+        csv.writer(handle).writerows(constraints)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -89,7 +92,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--mandate-overlap", type=int, default=0, help="how many neighbouring groups' sectors each mandate also covers, ring-wise; 0 keeps the groups disjoint")
     parser.add_argument("--held", type=int, default=50, help="positions per portfolio")
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--dependencies", default="overlap", choices=("overlap", "all", "none"))
+    parser.add_argument("--dependencies", default="overlap", choices=("overlap", "all"))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, default=None, help="directory for the book, config, and run output (default: a fresh temp directory, kept)")
     args = parser.parse_args(argv)

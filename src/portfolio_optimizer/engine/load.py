@@ -181,7 +181,7 @@ type _RequestFactory = Callable[[str, tuple[PortfolioId, ...], Frames], LoadRequ
 """Builds one loader call's request: dataset name, the ids this call is for, and its view of the input frames."""
 
 
-def load_datasets(resolved: ResolvedConfig, *, data_root: Path, run_id: str) -> LoadedDatasets:
+def load_datasets(resolved: ResolvedConfig, *, data_root: Path, run_id: str, as_of_date: datetime) -> LoadedDatasets:
     """Run every loader on a fresh event loop; the entry point for the synchronous runner.
 
     Code that already runs an event loop must ``await`` :func:`load_datasets_async` instead.
@@ -189,12 +189,12 @@ def load_datasets(resolved: ResolvedConfig, *, data_root: Path, run_id: str) -> 
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(load_datasets_async(resolved, data_root=data_root, run_id=run_id))
+        return asyncio.run(load_datasets_async(resolved, data_root=data_root, run_id=run_id, as_of_date=as_of_date))
     msg = "load_datasets cannot be called from inside an event loop; await load_datasets_async instead"
     raise RuntimeError(msg)
 
 
-async def load_datasets_async(resolved: ResolvedConfig, *, data_root: Path, run_id: str) -> LoadedDatasets:
+async def load_datasets_async(resolved: ResolvedConfig, *, data_root: Path, run_id: str, as_of_date: datetime) -> LoadedDatasets:
     """Run every dataset's loader as a task that starts the moment its dependencies have loaded.
 
     The tasks are the config's dependency DAG: each awaits the outcomes of the datasets its entry
@@ -208,7 +208,7 @@ async def load_datasets_async(resolved: ResolvedConfig, *, data_root: Path, run_
     order = dataset_order(config.datasets)  # the model validator already refused a cycle; guard again so a hand-built config cannot deadlock the scheduler
 
     def request(name: str, ids: tuple[PortfolioId, ...], inputs: Frames) -> LoadRequest:
-        return LoadRequest(dataset=name, portfolio_ids=ids, as_of_date=config.run.as_of_date, data_root=data_root, run_id=run_id, inputs=inputs)
+        return LoadRequest(dataset=name, portfolio_ids=ids, as_of_date=as_of_date, data_root=data_root, run_id=run_id, inputs=inputs)
 
     plans = {name: _Plan(name=name, step=resolved.loaders.get(name), spec=spec, dependencies=spec.dependencies()) for name, spec in config.datasets.items()}
     started = time.perf_counter()
@@ -482,7 +482,7 @@ def _audit(
     )
 
 
-def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -> AssembledDatasets:
+def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str, as_of_date: datetime) -> AssembledDatasets:
     """Run the assembly steps in order over the global datasets, then validate every engine-known frame against its schema.
 
     A step that raises ``ValueError`` or ``KeyError`` (a missing dataset, a violated cardinality, a
@@ -546,7 +546,7 @@ def assemble(loaded: LoadedDatasets, resolved: ResolvedConfig, *, run_id: str) -
         constraints=frames.get("constraints", empty_frame(CONSTRAINTS)),
         extras={name: frame for name, frame in frames.items() if name not in DATASET_SCHEMAS},
         rejected=rejected,
-        as_of_date=resolved.config.run.as_of_date,
+        as_of_date=as_of_date,
         audits=tuple(audits),
     )
 

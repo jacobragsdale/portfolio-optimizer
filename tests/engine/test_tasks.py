@@ -8,12 +8,12 @@ from portfolio_optimizer.engine.backends import SharedRunData
 from portfolio_optimizer.engine.environment import environment_for
 from portfolio_optimizer.engine.load import assemble, load_datasets
 from portfolio_optimizer.engine.tasks import BuildResult, build_task
-from tests.conftest import example_config_real, resolved_example_real
+from tests.conftest import AS_OF, example_config_real, resolved_example_real
 
 
 def _shared(book: Path) -> SharedRunData:
     resolved = resolved_example_real(sink="orders_to_parquet")  # every step from the template modules: a spawned worker cannot import tests.steps
-    assembled = assemble(load_datasets(resolved, data_root=book, run_id="run-x"), resolved, run_id="run-x")
+    assembled = assemble(load_datasets(resolved, data_root=book, run_id="run-x", as_of_date=AS_OF), resolved, run_id="run-x", as_of_date=AS_OF)
     return SharedRunData(assembled=assembled, config=resolved.config, config_sha256="example", run_id="run-x")
 
 
@@ -23,7 +23,7 @@ def test_build_task_slices_rules_and_builds_from_the_shared_data_and_reports_its
     assert isinstance(output.outcome, BuildResult)
     assert output.outcome.spec.security_ids == ("A", "B", "C")
     assert output.outcome.solve_order == 0
-    assert output.outcome.consumes == output.outcome.tradable, "function-convention rows are opaque, so the consume side is the whole tradable set"
+    assert output.outcome.consumes == output.outcome.tradable, "the example's ADV row is unscoped, so the consume side is the whole tradable set"
     assert output.environment == environment_for(shared.config, cwd=Path.cwd(), image_digest=None)
     assert output.host
     assert [span.name for span in output.spans] == ["build:slice", "build:rules", "build:spec", "build"], "phases end before the stage that contains them"

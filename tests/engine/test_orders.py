@@ -1,5 +1,6 @@
 """Tier 1: solution → whole-share orders, nearest-share rounding, the buy clamp, and the drift bound."""
 
+from dataclasses import dataclass
 from decimal import Decimal
 
 import numpy as np
@@ -11,10 +12,13 @@ from pandas.testing import assert_frame_equal
 from portfolio_optimizer.domain.frames import validate_frame
 from portfolio_optimizer.domain.results import OrderInputs, ProblemSpec, Solution
 from portfolio_optimizer.domain.schemas import ORDERS
-from portfolio_optimizer.engine.build import BuildOutput, build_problem_spec
+from portfolio_optimizer.engine.build import order_inputs, standard
 from portfolio_optimizer.engine.orders import rounding_drift, solution_to_orders
 from tests.conftest import Factories, Frames, make_portfolio_data, make_solution
-from tests.engine.support import EXAMPLE_ORDERS_P1, HAND_OPTIMUM
+
+HAND_OPTIMUM = np.array([0.35, 0.4, 0.25])
+"""A target for the default bundle — A 5,000 @100 and B 10,000 @50 on 1,000,000 — whose deltas are whole shares: sell 1,500 A, sell 2,000 B, buy 25,000 C."""
+EXACT_ORDERS = [{"security_id": "A", "side": "SELL", "quantity": 1500}, {"security_id": "B", "side": "SELL", "quantity": 2000}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
 
 
 def solution_at(spec: ProblemSpec, w: np.ndarray) -> Solution:
@@ -23,14 +27,24 @@ def solution_at(spec: ProblemSpec, w: np.ndarray) -> Solution:
     return make_solution(spec, w=w, buy=np.maximum(delta, 0.0), sell=np.maximum(-delta, 0.0))
 
 
-def built(make: Factories, **kwargs: object) -> BuildOutput:
-    return build_problem_spec(make.portfolio_data(**kwargs))
+@dataclass(frozen=True, slots=True)
+class Built:
+    """The spec and the exact order inputs the standard build derives for a bundle."""
+
+    spec: ProblemSpec
+    order_inputs: OrderInputs
+
+
+def built(make: Factories, **kwargs: object) -> Built:
+    data = make.portfolio_data(**kwargs)
+    spec = standard(data)
+    return Built(spec, order_inputs(data, spec))
 
 
 def test_exact_deltas_become_exact_orders(make: Factories) -> None:
     output = built(make)
     orders = solution_to_orders(output.spec, solution_at(output.spec, HAND_OPTIMUM), output.order_inputs, run_id="r1")
-    assert orders[["security_id", "side", "quantity"]].to_dict("records") == EXAMPLE_ORDERS_P1
+    assert orders[["security_id", "side", "quantity"]].to_dict("records") == EXACT_ORDERS
     assert orders["notional"].tolist() == [Decimal(150000), Decimal(100000), Decimal(250000)]
     assert orders["run_id"].tolist() == ["r1"] * 3
     assert orders["spec_hash"].iloc[0] == output.spec.content_hash()
@@ -143,7 +157,8 @@ def test_orders_respect_holdings_lots_and_the_drift_bound(weights: list[float]) 
     w = np.array([weight / total for weight in weights])
     universe = make_portfolio_data().universe
     universe.loc[2, "lot_size"] = 7
-    output = build_problem_spec(make_portfolio_data(universe=universe))
+    data = make_portfolio_data(universe=universe)
+    output = Built(standard(data), order_inputs(data, standard(data)))
     solution = solution_at(output.spec, w)
     orders = solution_to_orders(output.spec, solution, output.order_inputs, run_id="r")
     held = dict(zip(output.order_inputs.security_ids, output.order_inputs.shares_held, strict=True))

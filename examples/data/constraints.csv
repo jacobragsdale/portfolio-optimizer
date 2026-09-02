@@ -1,635 +1,531 @@
-portfolio_id,name,label,params
-P1,long_only,,
-P1,max_weight,,
-P1,cash_bounds,,
-P1,turnover_cap,,
-P1,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P1,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P1,cumulative_adv_participation,,
-P2,long_only,,
-P2,max_weight,,
-P2,cash_bounds,,
-P2,turnover_cap,,
-P2,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P2,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P2,cumulative_adv_participation,,
-P3,long_only,,
-P3,max_weight,,
-P3,cash_bounds,,
-P3,turnover_cap,,
-P3,cumulative_adv_participation,,
-P4,long_only,,
-P4,max_weight,,
-P4,cash_bounds,,
-P4,turnover_cap,,
-P4,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P4,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P4,cumulative_adv_participation,,
-P5,long_only,,
-P5,max_weight,,
-P5,cash_bounds,,
-P5,turnover_cap,,
-P5,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P5,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P5,cumulative_adv_participation,,
-P6,long_only,,
-P6,max_weight,,
-P6,cash_bounds,,
-P6,turnover_cap,,
-P6,cumulative_adv_participation,,
-P7,long_only,,
-P7,max_weight,,
-P7,cash_bounds,,
-P7,turnover_cap,,
-P7,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P7,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P7,cumulative_adv_participation,,
-P8,long_only,,
-P8,max_weight,,
-P8,cash_bounds,,
-P8,turnover_cap,,
-P8,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P8,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P8,cumulative_adv_participation,,
-P9,long_only,,
-P9,max_weight,,
-P9,cash_bounds,,
-P9,turnover_cap,,
-P9,cumulative_adv_participation,,
-P10,long_only,,
-P10,max_weight,,
-P10,cash_bounds,,
-P10,turnover_cap,,
-P10,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P10,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P10,cumulative_adv_participation,,
-P11,long_only,,
-P11,max_weight,,
-P11,cash_bounds,,
-P11,turnover_cap,,
-P11,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P11,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P11,cumulative_adv_participation,,
-P12,long_only,,
-P12,max_weight,,
-P12,cash_bounds,,
-P12,turnover_cap,,
-P12,cumulative_adv_participation,,
-P13,long_only,,
-P13,max_weight,,
-P13,cash_bounds,,
-P13,turnover_cap,,
-P13,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P13,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P13,cumulative_adv_participation,,
-P14,long_only,,
-P14,max_weight,,
-P14,cash_bounds,,
-P14,turnover_cap,,
-P14,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P14,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P14,cumulative_adv_participation,,
-P15,long_only,,
-P15,max_weight,,
-P15,cash_bounds,,
-P15,turnover_cap,,
-P15,cumulative_adv_participation,,
-P16,long_only,,
-P16,max_weight,,
-P16,cash_bounds,,
-P16,turnover_cap,,
-P16,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P16,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P16,cumulative_adv_participation,,
-P17,long_only,,
-P17,max_weight,,
-P17,cash_bounds,,
-P17,turnover_cap,,
-P17,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P17,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P17,cumulative_adv_participation,,
-P18,long_only,,
-P18,max_weight,,
-P18,cash_bounds,,
-P18,turnover_cap,,
-P18,cumulative_adv_participation,,
-P19,long_only,,
-P19,max_weight,,
-P19,cash_bounds,,
-P19,turnover_cap,,
-P19,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P19,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P19,cumulative_adv_participation,,
-P20,long_only,,
-P20,max_weight,,
-P20,cash_bounds,,
-P20,turnover_cap,,
-P20,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P20,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P20,cumulative_adv_participation,,
-P21,long_only,,
-P21,max_weight,,
-P21,cash_bounds,,
-P21,turnover_cap,,
-P21,cumulative_adv_participation,,
-P22,long_only,,
-P22,max_weight,,
-P22,cash_bounds,,
-P22,turnover_cap,,
-P22,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P22,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P22,cumulative_adv_participation,,
-P23,long_only,,
-P23,max_weight,,
-P23,cash_bounds,,
-P23,turnover_cap,,
-P23,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P23,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P23,cumulative_adv_participation,,
-P24,long_only,,
-P24,max_weight,,
-P24,cash_bounds,,
-P24,turnover_cap,,
-P24,cumulative_adv_participation,,
-P25,long_only,,
-P25,max_weight,,
-P25,cash_bounds,,
-P25,turnover_cap,,
-P25,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P25,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P25,cumulative_adv_participation,,
-P26,long_only,,
-P26,max_weight,,
-P26,cash_bounds,,
-P26,turnover_cap,,
-P26,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P26,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P26,cumulative_adv_participation,,
-P27,long_only,,
-P27,max_weight,,
-P27,cash_bounds,,
-P27,turnover_cap,,
-P27,cumulative_adv_participation,,
-P28,long_only,,
-P28,max_weight,,
-P28,cash_bounds,,
-P28,turnover_cap,,
-P28,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P28,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P28,cumulative_adv_participation,,
-P29,long_only,,
-P29,max_weight,,
-P29,cash_bounds,,
-P29,turnover_cap,,
-P29,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P29,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P29,cumulative_adv_participation,,
-P30,long_only,,
-P30,max_weight,,
-P30,cash_bounds,,
-P30,turnover_cap,,
-P30,cumulative_adv_participation,,
-P31,long_only,,
-P31,max_weight,,
-P31,cash_bounds,,
-P31,turnover_cap,,
-P31,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P31,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P31,cumulative_adv_participation,,
-P32,long_only,,
-P32,max_weight,,
-P32,cash_bounds,,
-P32,turnover_cap,,
-P32,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P32,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P32,cumulative_adv_participation,,
-P33,long_only,,
-P33,max_weight,,
-P33,cash_bounds,,
-P33,turnover_cap,,
-P33,cumulative_adv_participation,,
-P34,long_only,,
-P34,max_weight,,
-P34,cash_bounds,,
-P34,turnover_cap,,
-P34,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P34,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P34,cumulative_adv_participation,,
-P35,long_only,,
-P35,max_weight,,
-P35,cash_bounds,,
-P35,turnover_cap,,
-P35,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P35,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P35,cumulative_adv_participation,,
-P36,long_only,,
-P36,max_weight,,
-P36,cash_bounds,,
-P36,turnover_cap,,
-P36,cumulative_adv_participation,,
-P37,long_only,,
-P37,max_weight,,
-P37,cash_bounds,,
-P37,turnover_cap,,
-P37,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P37,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P37,cumulative_adv_participation,,
-P38,long_only,,
-P38,max_weight,,
-P38,cash_bounds,,
-P38,turnover_cap,,
-P38,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P38,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P38,cumulative_adv_participation,,
-P39,long_only,,
-P39,max_weight,,
-P39,cash_bounds,,
-P39,turnover_cap,,
-P39,cumulative_adv_participation,,
-P40,long_only,,
-P40,max_weight,,
-P40,cash_bounds,,
-P40,turnover_cap,,
-P40,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P40,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P40,cumulative_adv_participation,,
-P41,long_only,,
-P41,max_weight,,
-P41,cash_bounds,,
-P41,turnover_cap,,
-P41,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P41,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P41,cumulative_adv_participation,,
-P42,long_only,,
-P42,max_weight,,
-P42,cash_bounds,,
-P42,turnover_cap,,
-P42,cumulative_adv_participation,,
-P43,long_only,,
-P43,max_weight,,
-P43,cash_bounds,,
-P43,turnover_cap,,
-P43,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P43,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P43,cumulative_adv_participation,,
-P44,long_only,,
-P44,max_weight,,
-P44,cash_bounds,,
-P44,turnover_cap,,
-P44,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P44,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P44,cumulative_adv_participation,,
-P45,long_only,,
-P45,max_weight,,
-P45,cash_bounds,,
-P45,turnover_cap,,
-P45,cumulative_adv_participation,,
-P46,long_only,,
-P46,max_weight,,
-P46,cash_bounds,,
-P46,turnover_cap,,
-P46,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P46,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P46,cumulative_adv_participation,,
-P47,long_only,,
-P47,max_weight,,
-P47,cash_bounds,,
-P47,turnover_cap,,
-P47,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P47,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P47,cumulative_adv_participation,,
-P48,long_only,,
-P48,max_weight,,
-P48,cash_bounds,,
-P48,turnover_cap,,
-P48,cumulative_adv_participation,,
-P49,long_only,,
-P49,max_weight,,
-P49,cash_bounds,,
-P49,turnover_cap,,
-P49,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P49,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P49,cumulative_adv_participation,,
-P50,long_only,,
-P50,max_weight,,
-P50,cash_bounds,,
-P50,turnover_cap,,
-P50,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P50,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P50,cumulative_adv_participation,,
-P51,long_only,,
-P51,max_weight,,
-P51,cash_bounds,,
-P51,turnover_cap,,
-P51,cumulative_adv_participation,,
-P52,long_only,,
-P52,max_weight,,
-P52,cash_bounds,,
-P52,turnover_cap,,
-P52,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P52,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P52,cumulative_adv_participation,,
-P53,long_only,,
-P53,max_weight,,
-P53,cash_bounds,,
-P53,turnover_cap,,
-P53,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P53,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P53,cumulative_adv_participation,,
-P54,long_only,,
-P54,max_weight,,
-P54,cash_bounds,,
-P54,turnover_cap,,
-P54,cumulative_adv_participation,,
-P55,long_only,,
-P55,max_weight,,
-P55,cash_bounds,,
-P55,turnover_cap,,
-P55,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P55,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P55,cumulative_adv_participation,,
-P56,long_only,,
-P56,max_weight,,
-P56,cash_bounds,,
-P56,turnover_cap,,
-P56,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P56,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P56,cumulative_adv_participation,,
-P57,long_only,,
-P57,max_weight,,
-P57,cash_bounds,,
-P57,turnover_cap,,
-P57,cumulative_adv_participation,,
-P58,long_only,,
-P58,max_weight,,
-P58,cash_bounds,,
-P58,turnover_cap,,
-P58,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P58,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P58,cumulative_adv_participation,,
-P59,long_only,,
-P59,max_weight,,
-P59,cash_bounds,,
-P59,turnover_cap,,
-P59,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P59,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P59,cumulative_adv_participation,,
-P60,long_only,,
-P60,max_weight,,
-P60,cash_bounds,,
-P60,turnover_cap,,
-P60,cumulative_adv_participation,,
-P61,long_only,,
-P61,max_weight,,
-P61,cash_bounds,,
-P61,turnover_cap,,
-P61,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P61,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P61,cumulative_adv_participation,,
-P62,long_only,,
-P62,max_weight,,
-P62,cash_bounds,,
-P62,turnover_cap,,
-P62,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P62,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P62,cumulative_adv_participation,,
-P63,long_only,,
-P63,max_weight,,
-P63,cash_bounds,,
-P63,turnover_cap,,
-P63,cumulative_adv_participation,,
-P64,long_only,,
-P64,max_weight,,
-P64,cash_bounds,,
-P64,turnover_cap,,
-P64,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P64,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P64,cumulative_adv_participation,,
-P65,long_only,,
-P65,max_weight,,
-P65,cash_bounds,,
-P65,turnover_cap,,
-P65,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P65,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P65,cumulative_adv_participation,,
-P66,long_only,,
-P66,max_weight,,
-P66,cash_bounds,,
-P66,turnover_cap,,
-P66,cumulative_adv_participation,,
-P67,long_only,,
-P67,max_weight,,
-P67,cash_bounds,,
-P67,turnover_cap,,
-P67,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P67,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P67,cumulative_adv_participation,,
-P68,long_only,,
-P68,max_weight,,
-P68,cash_bounds,,
-P68,turnover_cap,,
-P68,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P68,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P68,cumulative_adv_participation,,
-P69,long_only,,
-P69,max_weight,,
-P69,cash_bounds,,
-P69,turnover_cap,,
-P69,cumulative_adv_participation,,
-P70,long_only,,
-P70,max_weight,,
-P70,cash_bounds,,
-P70,turnover_cap,,
-P70,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P70,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P70,cumulative_adv_participation,,
-P71,long_only,,
-P71,max_weight,,
-P71,cash_bounds,,
-P71,turnover_cap,,
-P71,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P71,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P71,cumulative_adv_participation,,
-P72,long_only,,
-P72,max_weight,,
-P72,cash_bounds,,
-P72,turnover_cap,,
-P72,cumulative_adv_participation,,
-P73,long_only,,
-P73,max_weight,,
-P73,cash_bounds,,
-P73,turnover_cap,,
-P73,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P73,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P73,cumulative_adv_participation,,
-P74,long_only,,
-P74,max_weight,,
-P74,cash_bounds,,
-P74,turnover_cap,,
-P74,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P74,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P74,cumulative_adv_participation,,
-P75,long_only,,
-P75,max_weight,,
-P75,cash_bounds,,
-P75,turnover_cap,,
-P75,cumulative_adv_participation,,
-P76,long_only,,
-P76,max_weight,,
-P76,cash_bounds,,
-P76,turnover_cap,,
-P76,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P76,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P76,cumulative_adv_participation,,
-P77,long_only,,
-P77,max_weight,,
-P77,cash_bounds,,
-P77,turnover_cap,,
-P77,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P77,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P77,cumulative_adv_participation,,
-P78,long_only,,
-P78,max_weight,,
-P78,cash_bounds,,
-P78,turnover_cap,,
-P78,cumulative_adv_participation,,
-P79,long_only,,
-P79,max_weight,,
-P79,cash_bounds,,
-P79,turnover_cap,,
-P79,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P79,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P79,cumulative_adv_participation,,
-P80,long_only,,
-P80,max_weight,,
-P80,cash_bounds,,
-P80,turnover_cap,,
-P80,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P80,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P80,cumulative_adv_participation,,
-P81,long_only,,
-P81,max_weight,,
-P81,cash_bounds,,
-P81,turnover_cap,,
-P81,cumulative_adv_participation,,
-P82,long_only,,
-P82,max_weight,,
-P82,cash_bounds,,
-P82,turnover_cap,,
-P82,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P82,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P82,cumulative_adv_participation,,
-P83,long_only,,
-P83,max_weight,,
-P83,cash_bounds,,
-P83,turnover_cap,,
-P83,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P83,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P83,cumulative_adv_participation,,
-P84,long_only,,
-P84,max_weight,,
-P84,cash_bounds,,
-P84,turnover_cap,,
-P84,cumulative_adv_participation,,
-P85,long_only,,
-P85,max_weight,,
-P85,cash_bounds,,
-P85,turnover_cap,,
-P85,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P85,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P85,cumulative_adv_participation,,
-P86,long_only,,
-P86,max_weight,,
-P86,cash_bounds,,
-P86,turnover_cap,,
-P86,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P86,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P86,cumulative_adv_participation,,
-P87,long_only,,
-P87,max_weight,,
-P87,cash_bounds,,
-P87,turnover_cap,,
-P87,cumulative_adv_participation,,
-P88,long_only,,
-P88,max_weight,,
-P88,cash_bounds,,
-P88,turnover_cap,,
-P88,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P88,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P88,cumulative_adv_participation,,
-P89,long_only,,
-P89,max_weight,,
-P89,cash_bounds,,
-P89,turnover_cap,,
-P89,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P89,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P89,cumulative_adv_participation,,
-P90,long_only,,
-P90,max_weight,,
-P90,cash_bounds,,
-P90,turnover_cap,,
-P90,cumulative_adv_participation,,
-P91,long_only,,
-P91,max_weight,,
-P91,cash_bounds,,
-P91,turnover_cap,,
-P91,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P91,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P91,cumulative_adv_participation,,
-P92,long_only,,
-P92,max_weight,,
-P92,cash_bounds,,
-P92,turnover_cap,,
-P92,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P92,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P92,cumulative_adv_participation,,
-P93,long_only,,
-P93,max_weight,,
-P93,cash_bounds,,
-P93,turnover_cap,,
-P93,cumulative_adv_participation,,
-P94,long_only,,
-P94,max_weight,,
-P94,cash_bounds,,
-P94,turnover_cap,,
-P94,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P94,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P94,cumulative_adv_participation,,
-P95,long_only,,
-P95,max_weight,,
-P95,cash_bounds,,
-P95,turnover_cap,,
-P95,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P95,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P95,cumulative_adv_participation,,
-P96,long_only,,
-P96,max_weight,,
-P96,cash_bounds,,
-P96,turnover_cap,,
-P96,cumulative_adv_participation,,
-P97,long_only,,
-P97,max_weight,,
-P97,cash_bounds,,
-P97,turnover_cap,,
-P97,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P97,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P97,cumulative_adv_participation,,
-P98,long_only,,
-P98,max_weight,,
-P98,cash_bounds,,
-P98,turnover_cap,,
-P98,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P98,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P98,cumulative_adv_participation,,
-P99,long_only,,
-P99,max_weight,,
-P99,cash_bounds,,
-P99,turnover_cap,,
-P99,cumulative_adv_participation,,
-P100,long_only,,
-P100,max_weight,,
-P100,cash_bounds,,
-P100,turnover_cap,,
-P100,sector_bound,tech,"{""sector"": ""TECH"", ""lower"": ""0.5"", ""upper"": ""1""}"
-P100,sector_bound,health,"{""sector"": ""HEALTH"", ""lower"": ""0"", ""upper"": ""0.5""}"
-P100,cumulative_adv_participation,,
+portfolio_id,kind,label,params
+P1,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P1,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P1,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P1,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P1,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P1,participation_limit,adv,"{""direction"": ""<=""}"
+P2,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P2,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P2,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P2,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P2,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P2,participation_limit,adv,"{""direction"": ""<=""}"
+P3,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P3,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P3,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P3,participation_limit,adv,"{""direction"": ""<=""}"
+P4,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P4,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P4,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P4,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P4,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P4,participation_limit,adv,"{""direction"": ""<=""}"
+P5,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P5,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P5,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P5,participation_limit,adv,"{""direction"": ""<=""}"
+P6,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P6,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P6,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P6,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P6,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P6,participation_limit,adv,"{""direction"": ""<=""}"
+P7,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P7,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P7,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P7,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P7,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P7,participation_limit,adv,"{""direction"": ""<=""}"
+P8,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P8,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P8,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P8,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P8,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P8,participation_limit,adv,"{""direction"": ""<=""}"
+P9,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P9,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P9,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P9,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P9,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P9,participation_limit,adv,"{""direction"": ""<=""}"
+P10,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P10,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P10,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P10,participation_limit,adv,"{""direction"": ""<=""}"
+P11,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P11,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P11,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P11,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P11,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P11,participation_limit,adv,"{""direction"": ""<=""}"
+P12,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P12,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P12,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P12,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P12,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P12,participation_limit,adv,"{""direction"": ""<=""}"
+P13,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P13,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P13,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P13,participation_limit,adv,"{""direction"": ""<=""}"
+P14,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P14,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P14,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P14,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P14,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P14,participation_limit,adv,"{""direction"": ""<=""}"
+P15,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P15,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P15,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P15,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P15,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P15,participation_limit,adv,"{""direction"": ""<=""}"
+P16,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P16,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P16,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P16,participation_limit,adv,"{""direction"": ""<=""}"
+P17,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P17,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P17,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P17,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P17,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P17,participation_limit,adv,"{""direction"": ""<=""}"
+P18,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P18,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P18,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P18,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P18,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P18,participation_limit,adv,"{""direction"": ""<=""}"
+P19,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P19,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P19,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P19,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P19,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P19,participation_limit,adv,"{""direction"": ""<=""}"
+P20,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P20,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P20,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P20,participation_limit,adv,"{""direction"": ""<=""}"
+P21,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P21,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P21,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P21,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P21,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P21,participation_limit,adv,"{""direction"": ""<=""}"
+P22,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P22,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P22,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P22,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P22,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P22,participation_limit,adv,"{""direction"": ""<=""}"
+P23,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P23,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P23,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P23,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P23,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P23,participation_limit,adv,"{""direction"": ""<=""}"
+P24,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P24,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P24,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P24,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P24,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P24,participation_limit,adv,"{""direction"": ""<=""}"
+P25,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P25,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P25,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P25,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P25,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P25,participation_limit,adv,"{""direction"": ""<=""}"
+P26,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P26,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P26,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P26,participation_limit,adv,"{""direction"": ""<=""}"
+P27,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P27,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P27,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P27,participation_limit,adv,"{""direction"": ""<=""}"
+P28,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P28,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P28,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P28,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P28,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P28,participation_limit,adv,"{""direction"": ""<=""}"
+P29,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P29,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P29,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P29,participation_limit,adv,"{""direction"": ""<=""}"
+P30,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P30,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P30,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P30,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P30,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P30,participation_limit,adv,"{""direction"": ""<=""}"
+P31,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P31,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P31,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P31,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P31,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P31,participation_limit,adv,"{""direction"": ""<=""}"
+P32,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P32,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P32,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P32,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P32,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P32,participation_limit,adv,"{""direction"": ""<=""}"
+P33,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P33,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P33,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P33,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P33,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P33,participation_limit,adv,"{""direction"": ""<=""}"
+P34,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P34,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P34,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P34,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P34,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P34,participation_limit,adv,"{""direction"": ""<=""}"
+P35,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P35,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P35,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P35,participation_limit,adv,"{""direction"": ""<=""}"
+P36,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P36,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P36,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P36,participation_limit,adv,"{""direction"": ""<=""}"
+P37,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P37,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P37,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P37,participation_limit,adv,"{""direction"": ""<=""}"
+P38,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P38,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P38,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P38,participation_limit,adv,"{""direction"": ""<=""}"
+P39,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P39,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P39,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P39,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P39,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P39,participation_limit,adv,"{""direction"": ""<=""}"
+P40,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P40,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P40,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P40,participation_limit,adv,"{""direction"": ""<=""}"
+P41,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P41,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P41,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P41,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P41,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P41,participation_limit,adv,"{""direction"": ""<=""}"
+P42,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P42,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P42,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P42,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P42,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P42,participation_limit,adv,"{""direction"": ""<=""}"
+P43,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P43,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P43,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P43,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P43,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P43,participation_limit,adv,"{""direction"": ""<=""}"
+P44,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P44,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P44,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P44,participation_limit,adv,"{""direction"": ""<=""}"
+P45,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P45,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P45,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P45,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P45,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P45,participation_limit,adv,"{""direction"": ""<=""}"
+P46,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P46,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P46,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P46,participation_limit,adv,"{""direction"": ""<=""}"
+P47,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P47,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P47,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P47,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P47,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P47,participation_limit,adv,"{""direction"": ""<=""}"
+P48,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P48,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P48,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P48,participation_limit,adv,"{""direction"": ""<=""}"
+P49,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P49,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P49,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P49,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P49,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P49,participation_limit,adv,"{""direction"": ""<=""}"
+P50,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P50,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P50,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P50,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P50,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P50,participation_limit,adv,"{""direction"": ""<=""}"
+P51,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P51,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P51,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P51,participation_limit,adv,"{""direction"": ""<=""}"
+P52,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P52,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P52,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P52,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P52,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P52,participation_limit,adv,"{""direction"": ""<=""}"
+P53,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P53,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P53,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P53,participation_limit,adv,"{""direction"": ""<=""}"
+P54,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P54,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P54,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P54,participation_limit,adv,"{""direction"": ""<=""}"
+P55,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P55,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P55,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P55,participation_limit,adv,"{""direction"": ""<=""}"
+P56,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P56,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P56,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P56,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P56,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P56,participation_limit,adv,"{""direction"": ""<=""}"
+P57,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P57,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P57,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P57,participation_limit,adv,"{""direction"": ""<=""}"
+P58,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P58,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P58,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P58,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P58,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P58,participation_limit,adv,"{""direction"": ""<=""}"
+P59,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P59,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P59,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P59,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P59,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P59,participation_limit,adv,"{""direction"": ""<=""}"
+P60,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P60,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P60,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P60,participation_limit,adv,"{""direction"": ""<=""}"
+P61,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P61,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P61,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P61,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P61,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P61,participation_limit,adv,"{""direction"": ""<=""}"
+P62,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P62,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P62,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P62,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P62,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P62,participation_limit,adv,"{""direction"": ""<=""}"
+P63,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P63,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P63,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P63,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P63,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P63,participation_limit,adv,"{""direction"": ""<=""}"
+P64,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P64,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P64,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P64,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P64,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P64,participation_limit,adv,"{""direction"": ""<=""}"
+P65,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P65,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P65,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P65,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P65,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P65,participation_limit,adv,"{""direction"": ""<=""}"
+P66,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P66,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P66,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P66,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P66,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P66,participation_limit,adv,"{""direction"": ""<=""}"
+P67,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P67,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P67,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P67,participation_limit,adv,"{""direction"": ""<=""}"
+P68,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P68,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P68,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P68,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P68,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P68,participation_limit,adv,"{""direction"": ""<=""}"
+P69,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P69,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P69,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P69,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P69,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P69,participation_limit,adv,"{""direction"": ""<=""}"
+P70,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P70,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P70,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P70,participation_limit,adv,"{""direction"": ""<=""}"
+P71,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P71,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P71,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P71,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P71,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P71,participation_limit,adv,"{""direction"": ""<=""}"
+P72,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P72,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P72,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P72,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P72,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P72,participation_limit,adv,"{""direction"": ""<=""}"
+P73,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P73,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P73,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P73,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P73,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P73,participation_limit,adv,"{""direction"": ""<=""}"
+P74,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P74,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P74,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P74,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P74,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P74,participation_limit,adv,"{""direction"": ""<=""}"
+P75,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P75,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P75,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P75,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P75,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P75,participation_limit,adv,"{""direction"": ""<=""}"
+P76,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P76,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P76,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P76,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P76,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P76,participation_limit,adv,"{""direction"": ""<=""}"
+P77,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P77,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P77,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P77,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P77,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P77,participation_limit,adv,"{""direction"": ""<=""}"
+P78,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P78,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P78,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P78,participation_limit,adv,"{""direction"": ""<=""}"
+P79,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P79,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P79,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P79,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P79,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P79,participation_limit,adv,"{""direction"": ""<=""}"
+P80,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P80,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P80,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P80,participation_limit,adv,"{""direction"": ""<=""}"
+P81,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P81,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P81,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P81,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P81,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P81,participation_limit,adv,"{""direction"": ""<=""}"
+P82,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P82,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P82,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P82,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P82,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P82,participation_limit,adv,"{""direction"": ""<=""}"
+P83,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P83,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P83,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P83,participation_limit,adv,"{""direction"": ""<=""}"
+P84,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P84,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P84,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P84,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P84,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P84,participation_limit,adv,"{""direction"": ""<=""}"
+P85,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P85,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P85,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P85,participation_limit,adv,"{""direction"": ""<=""}"
+P86,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P86,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P86,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P86,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P86,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P86,participation_limit,adv,"{""direction"": ""<=""}"
+P87,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P87,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P87,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P87,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P87,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P87,participation_limit,adv,"{""direction"": ""<=""}"
+P88,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P88,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P88,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P88,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P88,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P88,participation_limit,adv,"{""direction"": ""<=""}"
+P89,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P89,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P89,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P89,participation_limit,adv,"{""direction"": ""<=""}"
+P90,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P90,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P90,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P90,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P90,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P90,participation_limit,adv,"{""direction"": ""<=""}"
+P91,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P91,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P91,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P91,participation_limit,adv,"{""direction"": ""<=""}"
+P92,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P92,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P92,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P92,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P92,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P92,participation_limit,adv,"{""direction"": ""<=""}"
+P93,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P93,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P93,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P93,participation_limit,adv,"{""direction"": ""<=""}"
+P94,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P94,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P94,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P94,participation_limit,adv,"{""direction"": ""<=""}"
+P95,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P95,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P95,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P95,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P95,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P95,participation_limit,adv,"{""direction"": ""<=""}"
+P96,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P96,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P96,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P96,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P96,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P96,participation_limit,adv,"{""direction"": ""<=""}"
+P97,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P97,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P97,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P97,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P97,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P97,participation_limit,adv,"{""direction"": ""<=""}"
+P98,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P98,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P98,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P98,participation_limit,adv,"{""direction"": ""<=""}"
+P99,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P99,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P99,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P99,participation_limit,adv,"{""direction"": ""<=""}"
+P100,cash_limit,cash_floor,"{""direction"": "">="", ""bounds"": {""scalar"": ""cash_lb""}}"
+P100,cash_limit,cash_cap,"{""direction"": ""<="", ""bounds"": {""scalar"": ""cash_ub""}}"
+P100,turnover_limit,turnover,"{""direction"": ""<="", ""bounds"": {""scalar"": ""max_turnover""}}"
+P100,group_limit,sector_floor,"{""direction"": "">="", ""column"": ""sector"", ""bounds"": {""TECH"": ""0.5"", ""HEALTH"": ""0""}}"
+P100,group_limit,sector_cap,"{""direction"": ""<="", ""column"": ""sector"", ""bounds"": {""TECH"": ""1"", ""HEALTH"": ""0.5""}}"
+P100,participation_limit,adv,"{""direction"": ""<=""}"

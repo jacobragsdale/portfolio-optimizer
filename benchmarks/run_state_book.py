@@ -24,7 +24,6 @@ and CA accounts a name in common, and the star collapses back towards the line.
 
 import argparse
 import csv
-import json
 import shutil
 import sys
 import tempfile
@@ -35,7 +34,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
-from harness import SHIPPED_CONSTRAINTS, execute, report_lines
+from harness import CONSTRAINT_COLUMNS, SHIPPED_CONSTRAINTS, constraint_row, execute, report_lines
 
 from portfolio_optimizer.engine.runner import RunReport
 
@@ -119,7 +118,7 @@ def write_book(root: Path, rng: np.random.Generator, *, portfolios: int, securit
     mandates = ["portfolio_id,sector"]
     holdings = ["portfolio_id,security_id,quantity,avg_cost,acquired_on"]
     details = ["portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,max_weight,max_turnover,max_adv_participation,min_trade_notional,cash_lb,cash_ub"]
-    rows: list[tuple[str, str, str, str]] = [("portfolio_id", "name", "label", "params")]
+    rows: list[tuple[str, str, str, str]] = [CONSTRAINT_COLUMNS]
     nav = Decimal(10_000_000)
     cap = max(Decimal("0.02"), (Decimal("1.8") / Decimal(held)).quantize(Decimal("0.0001")))  # twice the starting position weight, so no start sits above its cap
     for index, portfolio_id in enumerate(portfolio_ids):
@@ -146,19 +145,19 @@ def write_book(root: Path, rng: np.random.Generator, *, portfolios: int, securit
 
 
 def _constraint_rows(portfolio_id: str, sleeve: Sleeve) -> list[tuple[str, str, str, str]]:
-    """One account's constraint rows, in the shipped function convention the example uses.
+    """One account's typed constraint rows, the kinds the example uses.
 
-    ``long_only`` and ``max_weight`` are what hold ``w`` inside the spec's own per-security bounds, and
-    those are where the mandate lands: :func:`~portfolio_optimizer.rules.restrict_to_mandate` marks every
-    out-of-state bond ``restricted``, which the build freezes at ``lb = ub = w0``. A national account adds
-    a band per issuer state — the concentration rule an unrestricted muni account carries and a
-    single-state one cannot. ``cumulative_adv_participation`` is the only row that reads the chain, and
-    no row here declares a narrower scope, so each account couples through its whole buyable set, which
-    is exactly its mandate's states.
+    The spec's own box is where the mandate lands: :func:`~portfolio_optimizer.rules.restrict_to_mandate`
+    marks every out-of-state bond ``restricted``, which the build freezes at ``lb = ub = w0``, and the
+    trade identity holds ``w`` inside that box. A national account adds a cap per issuer state — the
+    concentration rule an unrestricted muni account carries and a single-state one cannot — as one
+    ``group_limit`` row over the ``sector`` column. ``participation_limit`` is the only row that reads the
+    chain, and no row here declares a narrower scope, so each account couples through its whole buyable
+    set, which is exactly its mandate's states.
     """
-    rows = [(portfolio_id, name, "", "") for name in SHIPPED_CONSTRAINTS]
+    rows = [constraint_row(portfolio_id, kind, label, params) for kind, label, params in SHIPPED_CONSTRAINTS]
     if sleeve.state_band is not None:
-        rows.extend((portfolio_id, "sector_bound", state.lower(), json.dumps({"sector": state, "upper": str(sleeve.state_band)})) for state in sleeve.mandate)
+        rows.append(constraint_row(portfolio_id, "group_limit", "state_caps", {"direction": "<=", "column": "sector", "bounds": {state: str(sleeve.state_band) for state in sleeve.mandate}}))
     return rows
 
 
@@ -202,7 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--territories", type=int, default=0, help="how many of the smallest states are triple-exempt and buyable by every sleeve; 1 is enough to couple NY to CA")
     parser.add_argument("--held", type=int, default=200, help="positions per account")
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--dependencies", default="overlap", choices=("overlap", "all", "none"))
+    parser.add_argument("--dependencies", default="overlap", choices=("overlap", "all"))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, default=None, help="directory for the book, config, and run output (default: a fresh temp directory, kept)")
     args = parser.parse_args(argv)

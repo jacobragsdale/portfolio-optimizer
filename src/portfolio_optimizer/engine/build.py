@@ -1,8 +1,14 @@
-"""Turn a validated ``PortfolioData`` into a ``ProblemSpec``: the one place Decimal becomes float64.
+"""The shipped build step: turn a validated ``PortfolioData`` into a ``ProblemSpec``, the one place Decimal becomes float64.
 
-Everything money-like is computed exactly in Decimal first (current weights, tax per dollar) and
-converted once through :func:`to_float64`. The spec is chain-independent; chain-aware constraints
-combine it with a ``ChainState`` at solve time.
+``build`` is a configured step kind, ``(data: PortfolioData[, params]) -> ProblemSpec``, and
+:func:`standard` is the default. Everything money-like is computed exactly in Decimal first
+(current weights, tax per dollar) and converted once through :func:`to_float64`. The spec is
+chain-independent; chain-aware constraints combine it with a ``ChainState`` at solve time. What the
+bundle carries beyond the schemas is exported by name: every extra numeric universe column as a
+column, every boolean one as a flag, every string one as a grouping, and every number on the
+account's details row as a scalar. A build of your own — tax lots, a factor block, a different
+bounds policy — is a function of the same shape named in the config; the engine derives the exact
+order inputs from whatever spec it returns.
 """
 
 from collections.abc import Sequence
@@ -15,7 +21,7 @@ import pandas as pd
 from scipy.sparse import csc_array, csr_array
 
 from portfolio_optimizer.domain.data import PortfolioData
-from portfolio_optimizer.domain.results import F64, Flags, OrderInputs, ProblemSpec
+from portfolio_optimizer.domain.results import F64, Flags, Grouping, OrderInputs, ProblemSpec
 from portfolio_optimizer.domain.schemas import UNIVERSE
 
 LONG_TERM_HOLDING = timedelta(days=365)
@@ -26,14 +32,6 @@ BPS = Decimal(10_000)
 
 class BuildError(ValueError):
     """The bundle cannot be turned into a well-formed problem."""
-
-
-@dataclass(frozen=True, slots=True)
-class BuildOutput:
-    """The spec plus the exact inputs the order step needs."""
-
-    spec: ProblemSpec
-    order_inputs: OrderInputs
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,8 +58,15 @@ def to_float64(values: Sequence[Decimal | int], name: str) -> F64:
     return out
 
 
-def build_problem_spec(data: PortfolioData) -> BuildOutput:
-    """Align every input to the sorted universe and express it as a fraction of NAV."""
+def standard(data: PortfolioData) -> ProblemSpec:
+    """Align every input to the sorted universe and express it as a fraction of NAV.
+
+    Derived per security: ``tax_per_dollar`` (signed; a loss is negative), ``tcost_per_dollar`` where
+    the universe carries ``tcost_bps``, and ``adv_capacity`` — the style's participation times the
+    day's volume, as a fraction of NAV — where it carries ``adv_shares``. The bounds fold the style's
+    ``max_weight``, the optional ``min_weight``/``max_weight`` columns, and the ``restricted`` flag,
+    which freezes a name at its current weight.
+    """
     universe = data.universe.sort_values("security_id", kind="stable").reset_index(drop=True)
     ids = tuple(str(value) for value in universe["security_id"])
     unbuyable = sorted({str(value) for value in data.holdings["security_id"]} - set(ids))
@@ -73,54 +78,77 @@ def build_problem_spec(data: PortfolioData) -> BuildOutput:
     price = [_decimal(value) for value in universe["price"]]
     positions = _positions(data.holdings)
     shares_held = [positions[security].quantity if security in positions else 0 for security in ids]
-    lot_size = [int(value) for value in universe["lot_size"]]
+    lot_size = [int(value) for value in universe["lot_size"]] if "lot_size" in universe.columns else [1] * n
     w0 = [Decimal(shares) * px / nav for shares, px in zip(shares_held, price, strict=True)]
-    tax = [_tax_per_dollar(data, positions.get(security), px) for security, px in zip(ids, price, strict=True)]
-    tcost = [_decimal(value) / BPS for value in universe["tcost_bps"]] if "tcost_bps" in universe.columns else [Decimal(0)] * n
     lb, ub = _bounds(data, universe, ids, w0)
-    sector_names = tuple(sorted({str(value) for value in universe["sector"]}))
-    sector_matrix = _membership(universe["sector"], sector_names)
-    adv_capacity = [data.details.max_adv_participation * Decimal(int(adv)) * px / nav for adv, px in zip(universe["adv_shares"], price, strict=True)]
-    columns, flags = _extra_columns(universe)
-    spec = ProblemSpec(
+    columns: dict[str, F64] = {"tax_per_dollar": to_float64([_tax_per_dollar(data, positions.get(security), px) for security, px in zip(ids, price, strict=True)], "tax_per_dollar")}
+    if "tcost_bps" in universe.columns:
+        columns["tcost_per_dollar"] = to_float64([_decimal(value) / BPS for value in universe["tcost_bps"]], "tcost_per_dollar")
+    if "adv_shares" in universe.columns:
+        columns["adv_capacity"] = to_float64([data.details.max_adv_participation * Decimal(int(adv)) * px / nav for adv, px in zip(universe["adv_shares"], price, strict=True)], "adv_capacity")
+    extra_columns, flags, groups = _exports(universe)
+    return ProblemSpec(
         portfolio_id=data.details.portfolio_id,
         as_of_date=data.as_of_date,
         security_ids=ids,
-        sector_names=sector_names,
         nav=float(nav),
         w0=to_float64(w0, "w0"),
         price=to_float64(price, "price"),
         shares_held=to_float64(shares_held, "shares_held"),
         lot_size=to_float64(lot_size, "lot_size"),
-        tax_per_dollar=to_float64(tax, "tax_per_dollar"),
-        tcost_per_dollar=to_float64(tcost, "tcost_per_dollar"),
         lb=to_float64(lb, "lb"),
         ub=to_float64(ub, "ub"),
-        adv_capacity=to_float64(adv_capacity, "adv_capacity"),
-        sector_matrix=sector_matrix,
-        max_turnover=float(data.details.max_turnover),
-        cash_lb=float(data.details.cash_lb),
-        cash_ub=float(data.details.cash_ub),
-        min_trade_notional=float(data.details.min_trade_notional),
-        columns=columns,
+        columns={**extra_columns, **columns},
         flags=flags,
+        groups=groups,
+        scalars={name: float(value) for name, value in data.details.scalars().items()},
     )
-    inputs = OrderInputs(
-        security_ids=ids, price=tuple(price), shares_held=tuple(shares_held), lot_size=tuple(lot_size), w0=tuple(w0), ub=tuple(ub), nav=nav, min_trade_notional=data.details.min_trade_notional
-    )
-    return BuildOutput(spec=spec, order_inputs=inputs)
 
 
-def _membership(column: pd.Series, names: tuple[str, ...]) -> csr_array:
-    """The *K*-by-*N* 0/1 matrix of which group each security belongs to, built in numpy and carried sparse.
+def order_inputs(data: PortfolioData, spec: ProblemSpec) -> OrderInputs:
+    """The exact inputs the order step needs, aligned to ``spec``: prices and shares from the bundle, the upper bounds from the spec.
+
+    Works for any build whose spec is aligned to the universe's securities — a custom build included —
+    so orders never reconstruct money from float64.
+    """
+    universe = data.universe.set_index(data.universe["security_id"].astype(str))
+    missing = sorted(set(spec.security_ids) - set(universe.index))
+    if missing:
+        msg = f"the spec names securities the universe does not carry {missing}; a build must align its spec to the universe"
+        raise BuildError(msg)
+    aligned = universe.loc[list(spec.security_ids)]
+    positions = _positions(data.holdings)
+    nav = data.details.nav
+    price = tuple(_decimal(value) for value in aligned["price"])
+    shares = tuple(positions[security].quantity if security in positions else 0 for security in spec.security_ids)
+    lots = tuple(int(value) for value in aligned["lot_size"]) if "lot_size" in aligned.columns else (1,) * spec.n
+    w0 = tuple(Decimal(held) * px / nav for held, px in zip(shares, price, strict=True))
+    return OrderInputs(
+        security_ids=spec.security_ids,
+        price=price,
+        shares_held=shares,
+        lot_size=lots,
+        w0=w0,
+        ub=tuple(Decimal(repr(float(bound))) for bound in spec.ub),
+        nav=nav,
+        min_trade_notional=data.details.min_trade_notional,
+    )
+
+
+def _membership(column: pd.Series, name: str) -> Grouping:
+    """A string column as its *K*-by-*N* 0/1 membership matrix, built in numpy and carried sparse.
 
     One nonzero per column, so it is a megabyte at 100,000 names however many groups there are; the
     dense form is 8 *K* *N* bytes and was most of every large spec.
     """
+    if column.isna().any():
+        msg = f"grouping column {name!r} has null values; fill them in a rule before the optimizer runs"
+        raise BuildError(msg)
+    names = tuple(sorted({str(value) for value in column}))
     codes = np.asarray(pd.Categorical(column.astype("string"), categories=list(names)).codes, dtype=np.int64)
     n = len(codes)
     by_column = csc_array((np.ones(n, dtype=np.float64), codes, np.arange(n + 1, dtype=np.int64)), shape=(len(names), n))
-    return csr_array(by_column)
+    return Grouping(names, csr_array(by_column))
 
 
 def _int(value: object) -> int:
@@ -172,10 +200,11 @@ def _bounds(data: PortfolioData, universe: pd.DataFrame, ids: tuple[str, ...], w
     """Long-only floor and style cap, tightened by optional per-security columns; restricted names are frozen."""
     floors = [_optional_decimal(value) for value in universe["min_weight"]] if "min_weight" in universe.columns else [None] * len(ids)
     caps = [_optional_decimal(value) for value in universe["max_weight"]] if "max_weight" in universe.columns else [None] * len(ids)
+    frozen = [bool(value) for value in universe["restricted"]] if "restricted" in universe.columns else [False] * len(ids)
     lb: list[Decimal] = []
     ub: list[Decimal] = []
-    for index, (security, restricted) in enumerate(zip(ids, universe["restricted"], strict=True)):
-        if bool(restricted):
+    for index, security in enumerate(ids):
+        if frozen[index]:
             lb.append(w0[index])
             ub.append(w0[index])
             continue
@@ -197,30 +226,33 @@ def _optional_decimal(value: object) -> Decimal | None:
     return _decimal(value)
 
 
-def _extra_columns(universe: pd.DataFrame) -> tuple[dict[str, F64], dict[str, Flags]]:
-    """Export every numeric universe column the schema does not declare as a float64 column, and every boolean one as a boolean flag.
+def _exports(universe: pd.DataFrame) -> tuple[dict[str, F64], dict[str, Flags], dict[str, Grouping]]:
+    """Every universe column the spec carries by name: numeric extras (and ``alpha``) as columns, booleans as flags, strings as groupings.
 
-    Holdings' extra columns are not exported: this build is aligned to the universe, and a
-    per-position analytic has no value for names not held. A term that needs one reads it from the
-    universe after a rule copies it across — the mirror of the shipped ``attach_universe_columns``, and
-    yours to write, since only the desk knows what the analytic means for a name nobody holds — or
-    consumes the optimizer frame in a custom build.
+    The schema's own numeric columns are folded into the fixed vectors and derived columns and are
+    not exported again. Holdings' extra columns are not exported: this build is aligned to the
+    universe, and a per-position analytic has no value for names not held.
     """
     declared = {column.name for column in UNIVERSE.columns}
     columns: dict[str, F64] = {}
     flags: dict[str, Flags] = {}
+    groups: dict[str, Grouping] = {}
     for name in universe.columns:
         column_name = str(name)
-        if column_name in declared and column_name != "alpha":
+        if column_name == "security_id":
             continue
         column = universe[column_name]
         if pd.api.types.is_bool_dtype(column.dtype):
             flags[column_name] = _flag_values(column, column_name)
-        elif column_name == "alpha" or pd.api.types.is_numeric_dtype(column.dtype) or column.dtype == "object":
+        elif pd.api.types.is_string_dtype(column.dtype) and column.dtype != "object":
+            groups[column_name] = _membership(column, column_name)
+        elif column_name in declared and column_name != "alpha":
+            continue
+        elif pd.api.types.is_numeric_dtype(column.dtype) or column.dtype == "object":
             values = _numeric_values(column, column_name)
             if values is not None:
                 columns[column_name] = values
-    return columns, flags
+    return columns, flags, groups
 
 
 def _flag_values(column: pd.Series, name: str) -> Flags:

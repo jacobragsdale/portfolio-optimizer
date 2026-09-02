@@ -30,11 +30,12 @@ process peaks at 1.4–1.8 GB, canonicalization and the solve each adding about 
 is what a worker needs per concurrent solve at this size.
 
 The same book under each side profile (`--sides`, measured 2026-08-29 after the one-sided profiles
-landed; `both` re-measured the same day, bitwise the same orders as before them):
+landed; `both` re-measured the same day, bitwise the same orders as before them — that row is history,
+the two-sided profile was removed 2026-09-01, see *Sides* below):
 
 | `sides` | Variables (*P*) | Clarabel | Iterations | Solve task end to end | Peak RSS | Note |
 |---|---|---:|---:|---:|---:|---|
-| `both` | 400k | 7.5 s | 29 | 8.0 s | 2.1 GB | tracking, tax, tcost |
+| `both` | 400k | 7.5 s | 29 | 8.0 s | 2.1 GB | tracking, tax, tcost; removed 2026-09-01 |
 | `buy` | 200k | 2.1 s | 12 | 2.8 s | 1.5 GB | `tax_cost` dropped: it reads `sell` |
 | `sell` | 200k | 3.6 s | 20 | 5.7 s | 1.3 GB | `cash_bounds` `[0, 1]`; the gains-only book sells nothing |
 
@@ -69,8 +70,8 @@ section were measured while `tracking_error` still shipped and made *P* diagonal
 difference than it sounds — re-measure before leaning on them.) Things to measure, in the order they are cheap:
 
 1. **Clarabel's linear solver.** The default is QDLDL, single-threaded. Clarabel also offers `faer`
-   (multi-threaded) and, where the wheel carries it, MKL, through `direct_solve_method` in
-   `solver.options` — no engine change, one config key. Workers run with `--nthreads 1` and
+   (multi-threaded) and, where the wheel carries it, MKL, through `direct_solve_method` in the
+   `cvxpy` solve step's `options` param — no engine change, one config key. Workers run with `--nthreads 1` and
    `OMP_NUM_THREADS=1`, which is right for many small portfolios and wrong for a few enormous ones;
    the worker thread count may want to be a setting rather than a constant.
 2. **Other solvers, same problem — measured, and Clarabel is the only one that works at defaults.**
@@ -86,7 +87,7 @@ difference than it sounds — re-measure before leaning on them.) Things to meas
 
 The formulation was the largest solve-time win on this list, and it came with the design rather than
 from solver tuning: the one-sided profiles (table above) have one variable per name and no trade
-identity. What remains of it is `both`, which is deferred.
+identity. `both` itself went on 2026-09-01 (*Sides*, below).
 
 ### The result carries the spec back
 
@@ -113,11 +114,12 @@ For the record, since the word is overloaded:
 
 ### Two-sided coupling, if it ever comes
 
-Sell-only *runs* are built: within one they couple through sells only, the exact mirror of the
-buy-only run (see *Sides*, below, for what is still open). What is not planned, and possibly never, is a run in which buys and
-sells couple *with each other* across portfolios — the deferred two-sided profile made chain-aware on
-both sides. Recorded so the one-side guarantee is not silently load-bearing. Everything such a run
-would add couples across the sides, per security:
+A run trades one side: a buy run couples through buys, a sell run through sells, the exact mirror
+(see *Sides*, below, for what is still open). What is not planned, and possibly never, is a run in
+which buys and sells couple *with each other* across portfolios — which would first need the
+two-sided profile back (removed 2026-09-01) and then made chain-aware on both sides. Recorded so the
+one-side guarantee is not silently load-bearing. Everything such a run would add couples across the
+sides, per security:
 
 | Effect | Produced by | Consumed by |
 |---|---|---|
@@ -125,6 +127,12 @@ would add couples across the sides, per security:
 | Wash sales: do not buy what an earlier account sold at a loss | sells | buys |
 | Wash sales, mirrored: do not sell at a loss what an earlier account bought | buys | sells |
 | Internal crossing: an earlier sell of *X* makes a later buy of *X* cheaper — a *term* | sells | buys |
+
+The wash-sale rows have a cross-run answer today, outside the engine: the buy program takes a boolean
+universe column (`sold_at_loss`, from a rule or a loader), the build exports it as a flag, and one
+constraint row — `{"kind": "weight_limit", "vector": "buy", "direction": "<=", "bounds": "0", "scope":
+"sold_at_loss"}` — closes buys on those names. Producing that column from the sell program's orders is
+part of the handoff sketched under *the sell run feeds the buy run*.
 
 Each simplification the one-side guarantee buys (see the architecture explanation) would need to un-simplify, in this order:
 
@@ -157,7 +165,7 @@ grow to match. The manifest's derived-graph record is how to watch that happen.
 
 ## Sides: what is still open after the one-sided profiles
 
-`sides: "buy" | "sell" | "both"` is built (2026-08-29) and documented: what the profile owns, why the
+`sides: "buy" | "sell"` is built (2026-08-29; `both` removed 2026-09-01 — status below) and documented: what the profile owns, why the
 side is a config value, and what it costs the solver are in
 [the architecture explanation](docs/explanation-architecture.md#the-side-a-run-trades-is-one-object);
 the operating guide is [how to run one side](docs/how-to-run-one-side.md); the numbers are in the
@@ -169,10 +177,26 @@ table above. Two things are not decided:
    (fail the portfolio). The declaration is per constraint, never per run. Today every such start is
    infeasible, and `diagnose_infeasibility` lists the names (`SideProfile.infeasible_starts`), which is
    where the accept policy lands.
+   *Status 2026-08-30:* landed on the typed constraint rows as `allow_current_weight`, per row, for
+   the `w`-shaped kinds. The spec's own box `lb ≤ w ≤ ub` is part of the trade identity rather than a
+   row — the schedule's buyable set and the order rounding assume it — so a name over its cap in a
+   buy-only run is still an infeasible start the profile names; giving the box a policy would mean
+   making it a row, and nothing asks for that yet.
 2. **Sells do not feed buys today**, so nothing crosses between a sell run and a buy run; see below.
 
-`both` is what existed before the profiles, extracted and not extended; the wash-trade defect under
-*Bugs and cleanup* belongs to it alone.
+`both` is what existed before the profiles, extracted and not extended. The wash-trade defect it
+carried — a rewarded round trip that the canonical split stripped, so verification failed with a bare
+objective gap — was closed 2026-08-30: the cvxpy step refuses such an optimum with `WashTradeError`,
+naming the securities and what the round trips were worth.
+
+*Status 2026-09-01:* `both` removed. Why: a rewarded sale — a harvestable loss, a negative
+`tax_per_dollar` — makes the buy/sell split loose the moment `buy` and `sell` are independent
+variables, and `WashTradeError` was a refusal, not a policy; the desks run one side at a time, a buy
+program and a sell program over one snapshot; and what a rewarded round trip *should* mean is
+undecided. Either remaining profile has one variable, so such a term is exact, and the complementarity
+check and the refusal went with the profile. How it comes back: a third profile in `domain/sides.py`
+and `cvx/sides.py` plus the agreed policy — the profile protocol, `Solution.buy`/`sell`, the vector
+names, and the tests parameterized over `sides` were kept for that.
 
 ### Future enhancement: the sell run feeds the buy run
 
@@ -199,8 +223,8 @@ higher-priority account gets the scarce liquidity" — in a form a portfolio man
 approve before the code exists and point at after a bad run. The gap is not coverage. It is that the
 suite has one audience.
 
-Little of it has to be built. `engine/check.py` is already a cvxpy-free numpy twin of every shipped
-constraint; `verify` re-runs it over a persisted `.npz` with no solver installed; `diff-manifests` names
+Little of it has to be built. Every typed constraint and term carries its own cvxpy-free numpy half,
+which `engine/check.py` runs; `verify` re-runs it over a persisted `.npz` with no solver installed; `diff-manifests` names
 the stage at which two runs diverge; the manifest records every step, hash, and environment fingerprint.
 An acceptance harness needs a *vocabulary*, a *runner*, and a *report* — not new engine machinery.
 
@@ -228,7 +252,7 @@ book — a handful of securities, two or three portfolios, their holdings, alpha
   "expect": [
     {"portfolio": "P1", "buys_at_most_adv_fraction": {"security": "THIN", "fraction": "0.25"}},
     {"portfolio": "P2", "does_not_buy": "THIN"},
-    {"portfolio": "P2", "bound_by": "cumulative_adv_participation"},
+    {"portfolio": "P2", "bound_by": "adv/cumulative_participation"},
     {"every_portfolio": true, "satisfies": "all_constraints", "within": 1e-6}
   ]
 }
@@ -253,7 +277,7 @@ actually unique:
 |---|---|---|
 | Constraint residual | `satisfies: all_constraints, within: 1e-6` | Yes — holds for every optimal solution |
 | Objective value | `objective_at_most: "0.0042"` | Yes — the argmin may not be unique, the minimum is |
-| A binding constraint | `bound_by: turnover_cap` | Yes when the active set is unique; check it |
+| A binding constraint | `bound_by: turnover/turnover_limit` | Yes when the active set is unique; check it — the manifest's `check.active` is exactly this |
 | Aggregate flow | `turnover_at_most`, `cash_between` | Usually — these are constrained quantities |
 | Sign or absence | `does_not_buy: THIN` | Only when a constraint forces it, not a preference |
 | A single weight or share count | `buys_shares: {"AAPL": 500}` | **Only when the optimum is unique** |
@@ -281,6 +305,9 @@ today and printed nowhere: the largest active residual per portfolio names the b
 the chain state names who consumed the budget ahead of it. The harness should print, per portfolio, the
 constraints that were tight and — for a chain-bound portfolio — which higher-priority portfolios
 consumed what. Cheap to compute, and probably the highest-value line in the whole report.
+*Status 2026-08-31:* the first half exists — the run prints `binding:` per portfolio, `verify` marks
+`[binding]`, and the manifest records `check.active` and the solver's `duals`. Which predecessors
+consumed what is still only the chain file's `predecessors` list.
 
 ### One scenario that cannot be checked by hand
 
@@ -304,6 +331,19 @@ stubs, or imports anything from `portfolio_optimizer` has stopped being an accep
 CLI over a directory and reads the artifacts, or it is a unit test in the wrong place.
 
 ## Constraints: one contract, three ways to author it
+
+**Status 2026-09-01: typed kinds are the only contract.** Six shipped constraint kinds
+(`weight_limit`, `group_limit`, `exposure_limit`, `cash_limit`, `turnover_limit`, and the chain-aware
+`participation_limit`), `direction` spelled as the comparison operator, a bound written as a literal,
+`{"scalar": ...}` (any numeric column of the account's `details` row, exported as a spec scalar), or
+`{"column": ...}`; the function convention, the `terms.py` module, and the twin tables in `check.py`
+are gone, and objective terms are typed kinds too (`linear`, `domain/objective.py`), registered the
+same way and published under `portfolio_optimizer.term`/`portfolio_optimizer.constraint`. `groups` on
+the spec generalizes the sector matrix to every string universe column; `benchmarks/run_book.py`
+writes typed rows, so the narrowing runs at scale. What this thread still owes: the style schema
+derived from the config (property 7's declaration half — the numbers already come from the row or the
+style), more kinds as the desk needs them, and the GUI. The status below and the paragraphs after it
+predate that and keep the history.
 
 **Status 2026-08-30: the typed union shipped** (`domain/constraints.py`): four hashable pydantic
 kinds — `group_limit`, `exposure_limit`, `weight_limit`, and the chain-aware `participation_limit` —
@@ -368,8 +408,9 @@ the side profile's identity checks to make, not a special case.
 ### The solve step is the interpreter
 
 Everything shape-specific belongs to the *consumer*. The solve step receives a `SolveRequest` —
-`spec`, `chain`, `profile`, `terms`, `constraints`, and the `solver` block (`solving.py`) — plus its own
-`params`, and returns a `SolveResult` whose `w` is aligned to the spec; the side profile turns `w` into
+`spec`, `chain`, `profile`, `terms`, `constraints`, `extras` (`solving.py`) — plus its own `params`
+(the cvxpy solver's name and options are the shipped step's params, not a block of their own, since
+2026-08-31), and returns a `SolveResult` whose `w` is aligned to the spec; the side profile turns `w` into
 the trade; the verifier is what makes the answer trustworthy; the manifest records the step where it
 records the solver and its version. Three interpreters, and the engine treats them identically:
 
@@ -414,6 +455,11 @@ reach a service, and the one-security dummy is not a problem worth solving.
 
 ### The declarative grammar
 
+*Status 2026-08-30:* landed as the typed kinds rather than the `of`/`at_most` spelling sketched below
+— `direction` as the comparison operator, `bounds` as a literal, `{"scalar": ...}`, or
+`{"column": ...}`, `scope` as a boolean flag, `column` as any string universe column for a grouping —
+and in the `constraints` dataset rather than the config. The sketch stays for the reasoning.
+
 ```json
 "constraints": [
   {"label": "country_caps", "of": {"sum": "w", "by": "country"}, "at_most": {"from_style": "country_bounds"}},
@@ -454,11 +500,11 @@ promise something the solver will not deliver.
 
 ### Order of work, and what it composes with
 
-1. `residual` *on* the model. The first kind, the labels, and the solve seam are built (above); the
-   shipped constraints' twins are still the table in `check.py`, keyed by qualname, and move onto the
-   model when the second kind arrives and needs it.
-2. `groups` on the spec and the row-block family (`bound_on`, `group_bound`), with `sector_bound` as
-   an instance — its band already lives on the row, so what remains is the column.
+1. `residual` *on* the model — done 2026-08-30; the twin tables in `check.py` are gone, and every
+   kind, shipped or published, carries its own.
+2. `groups` on the spec and the row-block family — done 2026-08-30 as `weight_limit`, `group_limit`,
+   `exposure_limit`, `cash_limit`, and `turnover_limit`; a sector band is a `group_limit` row naming
+   `sector`, and any string universe column is a grouping.
 3. The style schema derived from the config (property 7).
 4. The GUI, which by then is a form renderer over the schema plus a call to `validate-config`.
 
@@ -473,8 +519,10 @@ and not a second implementation:
 
 - **The JSON Schema is the GUI's contract.** Forms are rendered from it — which is why every property
   must be documented (a test enforces that already), why the declarative constraint grammar must be a
-  discriminated union rather than a free object, and why step names and parameter models are the stable
-  surface a release must not break casually.
+  discriminated union rather than a free object (the objective already is one in the schema, over
+  every term kind the environment can name; the constraint kinds have their models' schemas but live
+  in data, so a form for them is rendered from the registry rather than the run-config schema), and
+  why step names and parameter models are the stable surface a release must not break casually.
 - **Validation stays in the engine.** The GUI calls `validate-config` on save; it does not re-implement
   rules. `validate-config` wants a `--json` mode with structured failures (path, message) so a GUI can
   put each one beside the field it concerns, and an exit-code contract it already has.
@@ -570,7 +618,8 @@ invent the id scheme; that is the OMS's, and it belongs in the step's params.
 
 An aggregation step is arbitrary user code that decides what a trading system is told to do. The posture
 the repo already takes with custom steps applies with more force here, not less: `check.py` re-verifies
-every solution without cvxpy and reports custom constraints as `unverified` rather than trusting them. The
+every solution without cvxpy through each constraint's own residual, and a solve step that reports no
+constraints has none checked rather than silently passed. The
 equivalent is an `AggregationReport`, computed by the engine over whatever the steps returned, and the run
 refuses to publish when it fails:
 
@@ -590,7 +639,7 @@ vocabulary: *the blocks add up*.
 
 There is a reason for this step beyond plumbing, and it is the argument for building it.
 
-`cumulative_adv_participation` bounds each portfolio's buy against the shared budget, and the chain makes
+`participation_limit` bounds each portfolio's buy against the shared budget, and the chain makes
 the portfolios' sum respect it — but that check happens on the *solved weights*, before rounding, and
 rounding is per portfolio and not chain-aware. Two hundred accounts each rounding a fraction of a lot in
 the same direction can push the aggregate over a participation cap that every individual account
@@ -620,9 +669,9 @@ graph — nothing an aggregator does can feed back into which portfolio waits fo
 ## A live dashboard: watching a run rather than reading about it afterwards
 
 Everything a run says about itself today it says when it is over. The manifest is written in the last
-stage, `diff-manifests` compares two finished runs, and the timing spans (the `timing` block,
-`trace.json`, and the `timeline` subcommand — see the architecture explanation) are read from a
-manifest that only exists once the run has ended. While a run is going, the only channel is the log: one line
+stage, `diff-manifests` compares two finished runs, and the timing spans (the `timing` block and
+`trace.json` — see the architecture explanation; the `timeline` subcommand was cut in the 2026-08-31
+audit) are read from a manifest that only exists once the run has ended. While a run is going, the only channel is the log: one line
 per stage transition, carrying a `run_id` and a `stage` but no notion of how much is left. On the
 example book that is fine. On a book of five hundred accounts where the chain's critical path is deep
 and one solve takes minutes, "is this progressing or is it wedged, and on what" is unanswerable

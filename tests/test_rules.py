@@ -41,7 +41,7 @@ def test_add_zero_alpha_adds_a_float_column_only_when_missing(make: Factories, f
     assert str(added.universe["alpha"].dtype) == "Float64"
     assert added.universe["alpha"].tolist() == [0.0, 0.0, 0.0]
     kept = add_zero_alpha(make.portfolio_data())
-    assert kept.universe["alpha"].tolist() == [0.03, 0.01, 0.05]
+    assert kept.universe["alpha"].tolist() == [0.03, -0.01, 0.05]
 
 
 def test_add_zero_alpha_on_an_empty_universe(make: Factories, frames: Frames) -> None:

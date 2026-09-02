@@ -1,38 +1,116 @@
-"""Functions a JSON config names as steps: no-ops that let a config resolve, liars the engine must catch, and loaders that prove the load stage's plumbing.
+"""Functions and kinds a JSON config names: no-ops that let a config resolve, liars the engine must catch, loaders that prove the load stage's plumbing, and custom term kinds.
 
-Nothing here is a test. A config refers to these as ``tests.steps:<name>``.
+Nothing here is a test. A config refers to the steps as ``tests.steps:<name>``; the kinds are
+registered in the process, which is what an installed package's entry point would do.
 """
 
 import asyncio
 import threading
+from collections.abc import Iterator
 from dataclasses import replace
 from decimal import Decimal
+from typing import Literal, override
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
-from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, scale, total
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, ObjectiveTerm, dot, scale, sum_squares, weighted
+from portfolio_optimizer.domain.constraints import Vector, vector_values
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.frames import ColumnSpec, FrameSchema, coerce_frame
-from portfolio_optimizer.domain.results import Artifact, ProblemSpec
+from portfolio_optimizer.domain.objective import TypedTerm, register_term_kind
+from portfolio_optimizer.domain.results import Artifact, ChainState, MissingSpecColumnError, ProblemSpec, Solution
+from portfolio_optimizer.domain.sides import SideProfile
+from portfolio_optimizer.engine.build import standard
 from portfolio_optimizer.loaders import ServiceParams, load_holdings
 from portfolio_optimizer.rules import parameter
-from portfolio_optimizer.solvers import cvxpy
+from portfolio_optimizer.solvers import CvxpyParams, cvxpy
 from portfolio_optimizer.solving import SolveRequest, SolveResult
 
+# --- term kinds a package might publish: a convex one, one that reads the chain, and liars ---
+
+
+@register_term_kind
+class Quadratic(TypedTerm):
+    """``weight · Σ dᵢ vᵢ²`` for a per-security column ``d``: the shape of a diagonal risk penalty, and proof a convex kind verifies like a linear one."""
+
+    kind: Literal["quadratic"] = "quadratic"
+    column: str = Field(min_length=1, description="The per-security column of penalties.")
+    vector: Vector = Field(default="w", description="The decision vector the penalty is over.")
+
+    @override
+    def requirements(self, spec: ProblemSpec) -> Iterator[str]:
+        try:
+            spec.column(self.column)
+        except MissingSpecColumnError as error:
+            yield str(error)
+
+    @override
+    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> float:
+        del chain, profile
+        return float(self.weight) * float((spec.column(self.column) * vector_values(solution, self.vector) ** 2).sum())
+
+    @override
+    def to_cvxpy(self, x: DecisionVars, spec: ProblemSpec, chain: ChainState) -> ObjectiveTerm:
+        del chain
+        return ObjectiveTerm(self.name, scale(float(self.weight), sum_squares(weighted(np.sqrt(spec.column(self.column)), x.vector(self.vector)))))
+
+
+@register_term_kind
+class ChainPenalty(TypedTerm):
+    """``weight · (traded_shares · w)``: a term that reads the chain, so a run configuring it couples every portfolio through its whole tradable set."""
+
+    kind: Literal["chain_penalty"] = "chain_penalty"
+    reads_chain = True
+
+    @override
+    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> float:
+        del spec, profile
+        return float(self.weight) * float((chain.traded_shares * solution.w).sum())
+
+    @override
+    def to_cvxpy(self, x: DecisionVars, spec: ProblemSpec, chain: ChainState) -> ObjectiveTerm:
+        del spec
+        return ObjectiveTerm(self.name, scale(float(self.weight), dot(chain.traded_shares, x.w)))
+
+
+@register_term_kind
+class Lying(TypedTerm):
+    """Renders a constraint set where a term is expected; the resolver must catch it."""
+
+    kind: Literal["lying"] = "lying"
+
+    @override
+    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> float:
+        del spec, solution, chain, profile
+        return 0.0
+
+    @override
+    def to_cvxpy(self, x: DecisionVars, spec: ProblemSpec, chain: ChainState) -> ObjectiveTerm:
+        del x, spec, chain
+        return ConstraintSet("lie", ())  # ty: ignore[invalid-return-type]  # the lie is the case under test
+
+
+@register_term_kind
+class Raising(TypedTerm):
+    """Raises when rendered: what dry construction at resolve exists to report."""
+
+    kind: Literal["raising"] = "raising"
+
+    @override
+    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> float:
+        del spec, solution, chain, profile
+        return 0.0
+
+    @override
+    def to_cvxpy(self, x: DecisionVars, spec: ProblemSpec, chain: ChainState) -> ObjectiveTerm:
+        del x, spec, chain
+        msg = "no such column 'beta' in the risk model"
+        raise RuntimeError(msg)
+
+
 # --- steps that satisfy the resolver's contracts, for tests that need a resolvable config ---
-
-
-def noop_term(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:
-    """A zero objective: lets a config resolve and solve without exercising a real term."""
-    del spec
-    return ObjectiveTerm("noop", scale(0.0, total(x.w)))
-
-
-def lying_term(x: DecisionVars, spec: ProblemSpec) -> ObjectiveTerm:
-    """Annotated as a term but returns a constraint set; solve must catch it."""
-    del x, spec
-    return ConstraintSet("lie", ())  # ty: ignore[invalid-return-type]  # the lie is the case under test
 
 
 def hold_still(request: SolveRequest) -> SolveResult:
@@ -67,6 +145,17 @@ def lying_assembly_step(frames: Frames) -> Frames:
     return frames["universe"]  # ty: ignore[invalid-return-type]  # the lie is the case under test
 
 
+def lying_build(data: PortfolioData) -> ProblemSpec:
+    """Annotated as a build step but returns the bundle; the engine must catch it."""
+    return data  # ty: ignore[invalid-return-type]  # the lie is the case under test
+
+
+def build_with_a_scalar(data: PortfolioData) -> ProblemSpec:
+    """The standard build plus one account scalar a constraint row can bound against: the shape of a custom build."""
+    spec = standard(data)
+    return replace(spec, scalars={**spec.scalars, "max_names": 2.0})
+
+
 def score_by_price(frames: Frames) -> Frames:
     """A custom assembly step: attach a ``Float64`` analytics column to both holdings and universe, derived from the universe's price."""
     universe_prices = frames["universe"][["security_id", "price"]]
@@ -79,7 +168,7 @@ def score_by_price(frames: Frames) -> Frames:
 def cvxpy_reporting_a_runtime_parameter(request: SolveRequest) -> SolveResult:
     """The shipped cvxpy step, naming the runtime parameter it read as its solver: proof an extra dataset reaches this seam, and the shape of a step driven by one."""
     value = parameter(request.extras["global_parameters"], "risk_aversion")
-    return replace(cvxpy(request), solver=f"risk_aversion={value}")
+    return replace(cvxpy(request, CvxpyParams()), solver=f"risk_aversion={value}")
 
 
 def refuse_assembly(frames: Frames) -> Frames:

@@ -3,7 +3,7 @@
 Every builder takes partial rows and fills unstated fields with valid defaults, so a test
 states only what it is about. Dtypes come from the schema, so fixtures cannot drift from it.
 Builders are exposed as fixtures because ``--import-mode=importlib`` keeps ``tests/`` off
-``sys.path``. Steps a config names live in ``tests/steps.py``; run helpers in ``tests/engine/support.py``.
+``sys.path``. Steps and kinds a config names live in ``tests/steps.py``; run helpers in ``tests/engine/support.py``.
 """
 
 import json
@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -24,11 +25,13 @@ from portfolio_optimizer.config.models import RunConfig, StepSpec, load_run_conf
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails
 from portfolio_optimizer.domain.frames import FrameSchema
-from portfolio_optimizer.domain.results import F64, ProblemSpec, Solution, SolveStatus, StepRef
+from portfolio_optimizer.domain.objective import TypedTerm, parse_terms
+from portfolio_optimizer.domain.results import F64, Grouping, ProblemSpec, Solution, SolveStatus
 from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, UNIVERSE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_run.json"
+EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_buy.json"
+SELL_CONFIG = REPO_ROOT / "configs" / "example_sell.json"
 EXAMPLE_DATA = REPO_ROOT / "examples" / "data"
 
 AS_OF = datetime(2026, 8, 28, tzinfo=UTC)
@@ -66,7 +69,6 @@ _DEFAULTS: dict[str, Row] = {
         "cash_lb": Decimal(0),
         "cash_ub": Decimal(0),
     },
-    CONSTRAINTS.name: {"portfolio_id": "P1", "name": "long_only", "label": None, "params": None},
     HOLDINGS.name: {"portfolio_id": "P1", "security_id": "A", "quantity": 5000, "avg_cost": Decimal(90), "acquired_on": ACQUIRED},
     UNIVERSE.name: {"security_id": "A", "price": Decimal(100), "sector": "TECH", "adv_shares": 1_000_000, "lot_size": 1, "restricted": False, "alpha": 0.0},
     ORDERS.name: {
@@ -88,6 +90,31 @@ _DEFAULTS: dict[str, Row] = {
 def build(schema: FrameSchema, *rows: Row) -> pd.DataFrame:
     """Build a frame for ``schema`` from partial rows."""
     return _frame(schema, _DEFAULTS[schema.name], rows)
+
+
+# --- the typed constraint rows the example ships, as the loader delivers them ---
+
+CASH_FLOOR: Row = {"kind": "cash_limit", "label": "cash_floor", "params": {"direction": ">=", "bounds": {"scalar": "cash_lb"}}}
+CASH_CAP: Row = {"kind": "cash_limit", "label": "cash_cap", "params": {"direction": "<=", "bounds": {"scalar": "cash_ub"}}}
+TURNOVER: Row = {"kind": "turnover_limit", "label": "turnover", "params": {"direction": "<=", "bounds": {"scalar": "max_turnover"}}}
+ADV: Row = {"kind": "participation_limit", "label": "adv", "params": {"direction": "<="}}
+SHIPPED_CONSTRAINTS: list[Row] = [CASH_FLOOR, CASH_CAP, TURNOVER, ADV]
+"""The example's constraint rows for an account without sector bands, in its order: the cash bounds, the turnover cap, and the chain-aware ADV cap."""
+NO_CHAIN_CONSTRAINTS: list[Row] = [CASH_FLOOR, CASH_CAP, TURNOVER]
+"""The shipped rows without the chain-aware ADV cap; a run over them reads no chain, so nothing waits."""
+
+
+def typed_row(kind: str, label: str, **params: object) -> Row:
+    """One typed constraint row: ``kind``, ``label``, and the model's fields as ``params``."""
+    return {"kind": kind, "label": label, "params": params}
+
+
+def constraint_frame(rows: Sequence[Row] = tuple(SHIPPED_CONSTRAINTS), portfolio_id: str = "P1") -> pd.DataFrame:
+    """A ``constraints`` frame of typed rows the way the loader delivers them: ``params`` as JSON text; with no rows, the empty frame that constrains nothing."""
+    if not rows:
+        return empty_frame(CONSTRAINTS)
+    records = [{"portfolio_id": portfolio_id, **row, "params": json.dumps(row["params"]) if isinstance(row.get("params"), Mapping) else row.get("params")} for row in rows]
+    return pd.DataFrame.from_records(records).astype({"portfolio_id": "string", "kind": "string", "label": "string", "params": "string"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,9 +141,9 @@ class Frames:
         """Build a ``universe`` frame."""
         return build(UNIVERSE, *rows)
 
-    def constraints(self, *names: str, portfolio_id: str = "P1") -> pd.DataFrame:
-        """Build a ``constraints`` frame under the shipped convention; with no names, the empty frame that constrains nothing."""
-        return build(CONSTRAINTS, *({"portfolio_id": portfolio_id, "name": name} for name in names)) if names else empty_frame(CONSTRAINTS)
+    def constraints(self, *rows: Row, portfolio_id: str = "P1") -> pd.DataFrame:
+        """Build a ``constraints`` frame of typed rows; with none, the empty frame that constrains nothing."""
+        return constraint_frame(rows, portfolio_id=portfolio_id)
 
     def orders(self, *rows: Row) -> pd.DataFrame:
         """Build an ``orders`` frame."""
@@ -130,7 +157,7 @@ class Frames:
         """The example's securities: A, B, C at 100, 50, 10 in one sector, C thin and dear to trade but worth the most."""
         return self.universe(
             {"security_id": "A", "price": Decimal(100), "adv_shares": 1_000_000, "alpha": 0.03, "tcost_bps": Decimal(5)},
-            {"security_id": "B", "price": Decimal(50), "adv_shares": 1_000_000, "alpha": 0.01, "tcost_bps": Decimal(5)},
+            {"security_id": "B", "price": Decimal(50), "adv_shares": 1_000_000, "alpha": -0.01, "tcost_bps": Decimal(5)},
             {"security_id": "C", "price": Decimal(10), "adv_shares": 100_000, "alpha": 0.05, "tcost_bps": Decimal(20)},
         )
 
@@ -163,35 +190,47 @@ def make_portfolio_data(
     )
 
 
+_SPEC_COLUMNS: tuple[str, ...] = ("tax_per_dollar", "tcost_per_dollar", "adv_capacity")
+_SPEC_SCALARS: tuple[str, ...] = ("max_turnover", "cash_lb", "cash_ub", "min_trade_notional", "max_weight", "max_adv_participation")
+
+
 def make_spec(n: int = 3, **overrides: object) -> ProblemSpec:
     """A feasible spec with ``n`` securities, identity-like data, and no binding limits.
 
     ``alpha`` rises with the index, so the shipped ``alpha`` term has a strict preference and every
-    optimum below is a single vertex rather than a face the solver may pick any point of.
+    optimum below is a single vertex rather than a face the solver may pick any point of. The derived
+    columns (``tax_per_dollar``, ``tcost_per_dollar``, ``adv_capacity``), the account scalars
+    (``max_turnover``, ``cash_lb``, ...), and ``sector_names``/``sector_matrix`` may be given as bare
+    keywords and are folded into ``columns``, ``scalars``, and ``groups``.
     """
     ids = tuple(f"S{i}" for i in range(n))
     zeros: F64 = np.zeros(n)
+    columns: dict[str, object] = {"alpha": np.arange(n, dtype=np.float64) * 0.01, "tax_per_dollar": zeros, "tcost_per_dollar": zeros, "adv_capacity": np.full(n, 10.0)}
+    scalars: dict[str, object] = {"max_turnover": 2.0, "cash_lb": 0.0, "cash_ub": 0.0, "min_trade_notional": 0.0, "max_weight": 1.0, "max_adv_participation": 1.0}
+    sector_names = overrides.pop("sector_names", ("TECH",))
+    sector_matrix = overrides.pop("sector_matrix", np.ones((len(sector_names), n)))  # ty: ignore[invalid-argument-type]  # a name tuple by construction
+    for name in _SPEC_COLUMNS:
+        if name in overrides:
+            columns[name] = overrides.pop(name)
+    for name in _SPEC_SCALARS:
+        if name in overrides:
+            scalars[name] = overrides.pop(name)
+    columns.update(cast("Mapping[str, object]", overrides.pop("columns", {})))
+    scalars.update(cast("Mapping[str, object]", overrides.pop("scalars", {})))
     base: dict[str, object] = {
         "portfolio_id": "P1",
         "as_of_date": AS_OF,
         "security_ids": ids,
-        "sector_names": ("TECH",),
         "nav": 1_000_000.0,
         "w0": np.full(n, 1.0 / n) if n else zeros,
         "price": np.full(n, 100.0),
         "shares_held": np.full(n, 1_000_000.0 / n / 100.0) if n else zeros,
         "lot_size": np.ones(n),
-        "columns": {"alpha": np.arange(n, dtype=np.float64) * 0.01},
-        "tax_per_dollar": zeros,
-        "tcost_per_dollar": zeros,
         "lb": zeros,
         "ub": np.ones(n),
-        "adv_capacity": np.full(n, 10.0),
-        "sector_matrix": np.ones((1, n)),
-        "max_turnover": 2.0,
-        "cash_lb": 0.0,
-        "cash_ub": 0.0,
-        "min_trade_notional": 0.0,
+        "columns": columns,
+        "scalars": scalars,
+        "groups": {"sector": Grouping(tuple(sector_names), sector_matrix)},  # ty: ignore[invalid-argument-type]  # see above
     }
     return ProblemSpec(**(base | overrides))  # ty: ignore[invalid-argument-type]  # the merged mapping is typed `object`; the dataclass validates every field on construction
 
@@ -235,30 +274,23 @@ def make() -> Factories:
     return Factories(details=make_details, portfolio_data=make_portfolio_data, spec=make_spec, solution=make_solution)
 
 
-# --- the shipped constraints, and the example config with its steps swapped for no-ops or kept real ---
+# --- the shipped terms, and the example config with its steps swapped for no-ops or kept real ---
 
-SHIPPED_CONSTRAINTS = ["long_only", "max_weight", "cash_bounds", "turnover_cap", "cumulative_adv_participation"]
-"""Every constraint the template ships that needs no params, in the example's order; ``sector_bound`` takes a band and is named per case."""
-NO_CHAIN_CONSTRAINTS = [name for name in SHIPPED_CONSTRAINTS if name != "cumulative_adv_participation"]
-"""The shipped constraints without the chain-aware ADV cap; a run over them can declare `dependencies: none`."""
-UNCOUPLED: dict[str, object] = {"on_error": "continue", "dependencies": "none"}
-"""An `execution` block in which nothing waits for anything: coupling is declared, not inferred from the constraints."""
-EXAMPLE_TERMS: list[object] = [{"name": "alpha", "params": {"weight": "1.0"}}, {"name": "tax_cost", "params": {"weight": "1.0"}}, {"name": "transaction_cost", "params": {"weight": "1.0"}}]
-"""The example's objective terms, in its order: buy the expected return, pay the tax and the trading cost."""
-BUY_ONLY_TERMS: list[object] = [term for term in EXAMPLE_TERMS if term != EXAMPLE_TERMS[1]]
-"""The example's terms without ``tax_cost``, which reads ``sell`` and so cannot run in a buy-only run."""
-BUY_ONLY_OBJECTIVE: dict[str, object] = {"terms": BUY_ONLY_TERMS}
-"""The example's objective without ``tax_cost``."""
+ALPHA: dict[str, object] = {"kind": "linear", "name": "alpha", "column": "alpha", "weight": "-1"}
+TAX_COST: dict[str, object] = {"kind": "linear", "name": "tax_cost", "column": "tax_per_dollar", "vector": "sell"}
+TRANSACTION_COST: dict[str, object] = {"kind": "linear", "name": "transaction_cost", "column": "tcost_per_dollar", "vector": "trade"}
+BUY_TERMS: list[dict[str, object]] = [ALPHA, TRANSACTION_COST]
+"""The buy program's objective, as ``configs/example_buy.json`` has it: buy the expected return, pay the trading cost."""
+SELL_TERMS: list[dict[str, object]] = [ALPHA, TAX_COST, TRANSACTION_COST]
+"""The sell program's objective, as ``configs/example_sell.json`` has it: the buy program's terms plus the tax on what is sold — ``tax_cost`` reads ``sell`` and so cannot run in a buy-only run."""
+NOOP_TERMS: list[dict[str, object]] = [{"kind": "linear", "name": "noop", "weight": "0"}]
+"""A zero objective: lets a config resolve and solve without exercising a real term."""
 
 
-def constraint_frame(names: Sequence[str] = tuple(SHIPPED_CONSTRAINTS), portfolio_id: str = "P1") -> pd.DataFrame:
-    """A ``constraints`` frame naming shipped steps under the convention ``solvers.cvxpy`` reads."""
-    return Frames().constraints(*names, portfolio_id=portfolio_id)
-
-
-def step_refs_for(names: list[str]) -> list[StepRef]:
-    """``StepRef``s for shipped constraints named bare, with no params and the bare name as label."""
-    return [StepRef(qualname=f"portfolio_optimizer.terms:{name}", params={}, label=name) for name in names]
+def terms_of(*items: object) -> tuple[TypedTerm, ...]:
+    """Term records — or bare term names from the example — as models."""
+    named = {str(term["name"]): term for term in SELL_TERMS}
+    return parse_terms([named[item] if isinstance(item, str) else item for item in items])
 
 
 def step_spec(name: str, **params: object) -> StepSpec:
@@ -302,7 +334,7 @@ def example_datasets(**overrides: object) -> dict[str, object]:
 def _example_body(real_steps: bool) -> dict[str, object]:
     body = example_body()
     if not real_steps:
-        body["objective"] = {"terms": ["tests.steps:noop_term"]}
+        body["objective"] = NOOP_TERMS
         datasets = body["datasets"]
         assert isinstance(datasets, dict)
         body["datasets"] = {name: spec for name, spec in datasets.items() if name != "constraints"}
@@ -311,7 +343,7 @@ def _example_body(real_steps: bool) -> dict[str, object]:
 
 
 def example_config(**overrides: object) -> RunConfig:
-    """The shipped example config with no-op objective, constraints, and sink; sections replaced by ``overrides``."""
+    """The shipped example config with a zero objective, no constraints dataset, and a no-op sink; sections replaced by ``overrides``."""
     return load_run_config(json.dumps(_example_body(real_steps=False) | overrides))
 
 

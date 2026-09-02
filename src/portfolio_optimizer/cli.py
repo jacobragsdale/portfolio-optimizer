@@ -13,10 +13,13 @@ from typing import TextIO
 from pydantic import ValidationError
 
 from portfolio_optimizer.config.models import load_run_config
-from portfolio_optimizer.config.resolve import ConfigResolutionError, resolve_config
-from portfolio_optimizer.config.schema import run_config_schema, schema_json
+from portfolio_optimizer.config.resolve import TEMPLATE_MODULES, ConfigResolutionError, published_steps, resolve_config
+from portfolio_optimizer.config.schema import installed_steps, run_config_schema, schema_json
+from portfolio_optimizer.config.steps import StepKind
+from portfolio_optimizer.domain.constraints import constraint_kinds, parse_constraint
 from portfolio_optimizer.domain.data import IoContext
-from portfolio_optimizer.domain.results import ChainState, ConstraintCheck, PortfolioResult, ProblemSpec, Solution, Tolerances
+from portfolio_optimizer.domain.objective import TermSpecError, parse_terms, term_kinds
+from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec, Solution, Tolerances
 from portfolio_optimizer.domain.sides import profile_for
 from portfolio_optimizer.domain.types import Clock
 from portfolio_optimizer.engine.check import verify
@@ -24,7 +27,7 @@ from portfolio_optimizer.engine.environment import read_git_info
 from portfolio_optimizer.engine.logging import configure_logging
 from portfolio_optimizer.engine.manifest import diff_manifests, failure_report_path, load_manifest
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_INPUT_REJECTED, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunContext, run
-from portfolio_optimizer.settings import SettingsError, load_settings
+from portfolio_optimizer.settings import Settings, SettingsError, load_settings
 
 
 def system_clock() -> datetime:
@@ -53,12 +56,14 @@ def run_cli(argv: Sequence[str], *, env: Mapping[str, str], clock: Clock, new_ru
     if command == "run":
         return _run(args, env=env, clock=clock, new_run_id=new_run_id, stdout=stdout, stderr=stderr)
     if command == "validate-config":
-        return _validate_config(args, stdout=stdout, stderr=stderr)
+        return _validate_config(args, env=env, stdout=stdout, stderr=stderr)
     if command == "verify":
         return _verify(args, stdout=stdout, stderr=stderr)
     if command == "schema":
         stdout.write(schema_json(run_config_schema()))
         return EXIT_OK
+    if command == "steps":
+        return _steps(stdout=stdout)
     return _diff_manifests(args, stdout=stdout, stderr=stderr)
 
 
@@ -67,6 +72,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     run_parser = commands.add_parser("run", help="run every portfolio in a config")
     run_parser.add_argument("config", type=Path)
+    run_parser.add_argument("--as-of", required=True, metavar="DATETIME", help="the timezone-aware instant the run is as of, e.g. 2026-09-01T00:00:00Z; every loader receives it")
     run_parser.add_argument("--data-root", type=Path, default=None, help="override PORTFOLIO_OPTIMIZER_DATA_ROOT")
     run_parser.add_argument("--output", type=Path, default=None, help="override PORTFOLIO_OPTIMIZER_OUTPUT_DIR")
     run_parser.add_argument("--max-workers", type=int, default=None, help="override PORTFOLIO_OPTIMIZER_MAX_WORKERS")
@@ -76,22 +82,47 @@ def _parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--manifest", type=Path, required=True)
     verify_parser.add_argument("--portfolio", required=True)
     commands.add_parser("schema", help="print the JSON Schema for run configs (redirect to configs/run-config.schema.json)")
+    commands.add_parser("steps", help="list every step and every term and constraint kind this environment can name")
     diff = commands.add_parser("diff-manifests", help="name the first stage at which two runs diverge")
     diff.add_argument("left", type=Path)
     diff.add_argument("right", type=Path)
     return parser
 
 
-def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_run_id: Callable[[], str], stdout: TextIO, stderr: TextIO) -> int:
+def parse_as_of(text: str) -> datetime:
+    """An ISO 8601 instant with a zone, normalized to UTC; a naive one is refused because a holding period compared against it would be off by hours."""
     try:
-        settings = load_settings(env)
+        instant = datetime.fromisoformat(text)
+    except ValueError as error:
+        msg = f"--as-of must be an ISO 8601 instant such as 2026-09-01T00:00:00Z, got {text!r}"
+        raise ValueError(msg) from error
+    if instant.tzinfo is None:
+        msg = f"--as-of must carry a time zone (2026-09-01T00:00:00Z), got the naive {text!r}"
+        raise ValueError(msg)
+    return instant.astimezone(UTC)
+
+
+def _settings(env: Mapping[str, str], stderr: TextIO) -> Settings | None:
+    try:
+        return load_settings(env)
     except SettingsError as error:
         stderr.write(f"{error}\n")
+        return None
+
+
+def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_run_id: Callable[[], str], stdout: TextIO, stderr: TextIO) -> int:
+    settings = _settings(env, stderr)
+    if settings is None:
         return EXIT_INPUT_REJECTED
     configure_logging(settings.log_level, stderr)
+    try:
+        as_of_date = parse_as_of(str(args.as_of))
+    except ValueError as error:
+        stderr.write(f"{error}\n")
+        return EXIT_INPUT_REJECTED
     config_path = Path(args.config)
     try:
-        resolved = resolve_config(load_run_config(config_path.read_text()))
+        resolved = resolve_config(load_run_config(config_path.read_text()), packages=settings.packages())
     except OSError as error:
         stderr.write(f"cannot read config: {error}\n")
         return EXIT_INFRASTRUCTURE
@@ -108,6 +139,7 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_
         execution = replace(execution, max_workers=int(args.max_workers))
     context = RunContext(
         io=IoContext(data_root=data_root, output_dir=output_dir, run_id=new_run_id(), clock=clock),
+        as_of_date=as_of_date,
         execution=execution,
         git=read_git_info(Path.cwd()),
         config_path=str(config_path),
@@ -125,7 +157,8 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_
     run_dir = report.manifest_path.parent
     for outcome in report.outcomes:
         if isinstance(outcome, PortfolioResult):
-            stdout.write(f"  {outcome.portfolio_id}: solved, {len(outcome.orders)} order(s)\n")
+            binding = f"; binding: {', '.join(outcome.report.active)}" if outcome.report.active else ""
+            stdout.write(f"  {outcome.portfolio_id}: solved, {len(outcome.orders)} order(s){binding}\n")
         else:
             traceback_hint = "" if outcome.traceback is None else f" (traceback: {failure_report_path(run_dir, outcome)})"
             stdout.write(f"  {outcome.portfolio_id}: FAILED at {outcome.stage}: {outcome.error_type}: {outcome.message}{traceback_hint}\n")
@@ -133,9 +166,12 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_
     return report.exit_code
 
 
-def _validate_config(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
+def _validate_config(args: argparse.Namespace, *, env: Mapping[str, str], stdout: TextIO, stderr: TextIO) -> int:
+    settings = _settings(env, stderr)
+    if settings is None:
+        return EXIT_INPUT_REJECTED
     try:
-        resolved = resolve_config(load_run_config(Path(args.config).read_text()))
+        resolved = resolve_config(load_run_config(Path(args.config).read_text()), packages=settings.packages())
     except OSError as error:
         stderr.write(f"cannot read config: {error}\n")
         return EXIT_INFRASTRUCTURE
@@ -143,13 +179,27 @@ def _validate_config(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO
         stderr.write(f"config rejected: {error}\n")
         return EXIT_INPUT_REJECTED
     stdout.write(f"config ok (sha256 {resolved.config_sha256[:12]}): {len(resolved.rules)} rule(s), {len(resolved.terms)} term(s), dependencies {resolved.config.execution.dependencies}\n")
-    stdout.writelines(f"  {step.kind:19} {step.qualname}{' [external]' if step.is_external else ''}{' [chain]' if step.reads_chain else ''}\n" for step in resolved.all_steps)
+    stdout.writelines(f"  {step.kind:19} {step.qualname}{' [external]' if step.is_external else ''}\n" for step in resolved.all_steps)
+    stdout.writelines(f"  {'term':19} {term.name} ({type(term).__name__}){' [chain]' if term.reads_chain else ''}\n" for term in resolved.terms)
     return EXIT_OK
 
 
-def _check_name(check: ConstraintCheck) -> str:
-    """The residual's name, qualified by the constraint's label where the two differ — two rows of one constraint produce residuals of the same name."""
-    return check.name if check.label in (check.name, "identity", "solution") else f"{check.label}/{check.name}"
+def _steps(*, stdout: TextIO) -> int:
+    """Every step a bare name can resolve to, by kind, and every term and constraint kind: the template's, and what installed packages publish."""
+    for kind in TEMPLATE_MODULES:
+        step_kind: StepKind = kind
+        stdout.write(f"{step_kind} ({TEMPLATE_MODULES[step_kind]})\n")
+        published = published_steps(step_kind)
+        for name, params in installed_steps(step_kind).items():
+            source = f" [{published[name][0]}]" if name in published else ""
+            fields = ", ".join(params.model_fields) if params is not None else ""
+            stdout.write(f"  {name}{source}{f' ({fields})' if fields else ''}\n")
+    for title, kinds in (("term kinds", term_kinds()), ("constraint kinds", constraint_kinds())):
+        stdout.write(f"{title}\n")
+        for name, model in sorted(kinds.items()):
+            fields = ", ".join(field for field in model.model_fields if field != "kind")
+            stdout.write(f"  {name} ({fields})\n")
+    return EXIT_OK
 
 
 def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
@@ -181,16 +231,20 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
     if chain.content_hash() != record.chain_inputs_sha256:
         stderr.write("persisted chain state does not match the manifest's chain hash\n")
         return EXIT_PORTFOLIO_FAILED
-    profile = profile_for(str(manifest.config.resolved.get("sides", "both")))
-    report = verify(spec, solution, chain, manifest.terms, record.constraints, profile=profile, tolerances=Tolerances(violation=record.check.tolerance))
+    try:
+        terms = parse_terms(manifest.terms)
+        constraints = tuple(parse_constraint(constraint, f"constraints[{index}]") for index, constraint in enumerate(record.constraints))
+    except (TermSpecError, ValueError) as error:
+        stderr.write(f"the manifest names a kind this environment does not know: {error}\n")
+        return EXIT_INPUT_REJECTED
+    profile = profile_for(str(manifest.config.resolved["sides"]))
+    report = verify(spec, solution, chain, terms, constraints, profile=profile, tolerances=Tolerances(violation=record.check.tolerance))
     stdout.writelines(
-        f"  {'ok  ' if check.passed else 'FAIL'} {_check_name(check):32} violation {check.violation:.3e} (tol {check.tolerance:.1e}){' worst ' + check.worst_security if check.worst_security else ''}\n"
+        f"  {'ok  ' if check.passed else 'FAIL'} {check.display:32} violation {check.violation:.3e} (tol {check.tolerance:.1e}){' worst ' + check.worst_security if check.worst_security else ''}{' [binding]' if check.active else ''}\n"
         for check in report.checks
     )
     solver_objective = "none (the solve step minimized nothing)" if report.solver_objective is None else f"{report.solver_objective:.9g}"
-    stdout.write(
-        f"  objective recomputed {report.recomputed_objective:.9g} vs solver {solver_objective} (gap {report.objective_gap:.3e}){' unverified: ' + ', '.join(report.unverified) if report.unverified else ''}\n"
-    )
+    stdout.write(f"  objective recomputed {report.recomputed_objective:.9g} vs solver {solver_objective} (gap {report.objective_gap:.3e})\n")
     stdout.write(f"{'VERIFIED' if report.passed else 'VERIFICATION FAILED'} {portfolio_id} (spec {spec.content_hash()[:12]})\n")
     return EXIT_OK if report.passed else EXIT_PORTFOLIO_FAILED
 

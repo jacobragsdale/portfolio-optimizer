@@ -7,61 +7,72 @@ machinery seen from the config file's side — block by block, what each one tel
 [reading a run config](explanation-run-config.md). Read this page once end to end and the module
 layout under `src/portfolio_optimizer/` will feel inevitable.
 
-The short version: **read the config → prove every named function exists and has the right shape →
-load data through loaders → assemble and validate → build every portfolio at once (slice, rules,
-solve-order key, a pure-numpy problem) → derive who waits for whom from what each may trade on the side
-the run couples through → solve along that graph with the configured solve step (cvxpy by default) →
-re-check each answer without cvxpy → round to whole shares → publish the orders
-once → write a manifest.** Money is `Decimal` everywhere except inside the solver,
-and there are exactly two conversion points. Every stage validates its own output, so a bad input
-fails at the earliest stage that can detect it, with a message naming what is wrong.
+The short version: **read the config → prove every named function exists and has the right shape,
+and every term is a kind the engine knows → load data through loaders → assemble and validate → build
+every portfolio at once (slice, rules, solve-order key, a pure-numpy problem, its constraint rows
+parsed) → derive who waits for whom from what each may trade on the side the run couples through and
+what its rows declare they read → solve along that graph with the configured solve step (cvxpy by
+default) → re-check each answer without cvxpy → round to whole shares → publish the orders once →
+write a manifest.** Money is `Decimal` everywhere except inside the solver, and there are exactly two
+conversion points. Every stage validates its own output, so a bad input fails at the earliest stage
+that can detect it, with a message naming what is wrong.
 
 ## 1. Startup: nothing touches data yet
 
 **Settings** (`settings.py`) come from environment variables: where data is read from
 (`PORTFOLIO_OPTIMIZER_DATA_ROOT`), where runs are written (`PORTFOLIO_OPTIMIZER_OUTPUT_DIR`), how loudly
-to log, and — deliberately here rather than in the config — which Dask cluster the run provisions for
-itself and how big it is (`PORTFOLIO_OPTIMIZER_CLUSTER`, how many workers to provision up front, how
-many after assembly, and how long to wait for the first). There are no defaults, `.env` files are read
-only when you pass `--env-file`, and an *unknown* `PORTFOLIO_OPTIMIZER_*` variable is an error — a typo
-fails loudly instead of being ignored. A cluster the run cannot actually ask for is refused right here:
-a gateway address without the image its pods run, or without the password it authenticates with.
+to log, which packages a qualified step name may import from, and — deliberately here rather than in
+the config — where the work runs (`PORTFOLIO_OPTIMIZER_CLUSTER`: this process under `inline`, the
+default, or a Dask cluster the run provisions for itself) and how big that cluster is: how many
+workers to provision up front, how many after assembly, and how long to wait for the first. Every
+setting has a default a laptop can run with, `.env` files are read only when you pass `--env-file`,
+and an *unknown* `PORTFOLIO_OPTIMIZER_*` variable is an error — a typo fails loudly instead of being
+ignored. A cluster the run cannot actually ask for is refused right here: a gateway address without
+the image its pods run, or without the password it authenticates with.
 
-**The config** (`config/models.py`) is a strict pydantic model: unknown keys are errors, money is written
-as strings (`"0.05"`) so it becomes exact `Decimal`, and `as_of_date` must carry a timezone. The validated
-config is hashed on its canonical JSON form, so whitespace and the `$schema` pointer never change the
-hash.
+**The as-of instant** is a run argument, `--as-of 2026-08-28T00:00:00Z`, and it must carry a time
+zone; a naive one is refused, because a holding period compared against it would be off by hours. It
+is not in the config, so one wiring runs every day under one hash.
+
+**The config** (`config/models.py`) is a strict pydantic model: unknown keys are errors, and money is
+written as strings (`"0.05"`) so it becomes exact `Decimal`. The validated config is hashed on its
+canonical JSON form with the `run` block and the `$schema` pointer left out, so whitespace, a rename,
+and a relabel never change the hash.
 
 **Resolution** (`config/resolve.py`) is where the one convention is enforced. Every step in the config —
-loaders, assembly steps, rules, the solve-order step, objective terms, constraints, the solve step, the
-sink — is a function name such as `"transaction_cost"` or `"mypkg.mod:my_rule"`. Before any data loads,
-the resolver:
+loaders, assembly steps, rules, the solve-order step, the build step, the solve step, the sink — is a
+function name such as `"restrict_low_liquidity"` or `"mypkg.mod:my_rule"`: a bare name is looked up
+in the template module for its kind and then among the steps installed packages publish as entry
+points; a qualified name is imported from anywhere, or from the packages the settings allow. Before any
+data loads, the resolver:
 
 - imports the function;
 - checks its signature against the **contract for its kind**, by argument name and annotation — a rule
-  must take `data: PortfolioData` and return `PortfolioData`, a term must take `x: DecisionVars,
-  spec: ProblemSpec` and return `ObjectiveTerm`, a solve-order step must take `data: PortfolioData` and
-  return `Decimal`, a solve step must take `request: SolveRequest` and return `SolveResult`, and so on;
+  must take `data: PortfolioData` and return `PortfolioData`, a build step must take the same and
+  return `ProblemSpec`, a solve-order step must return `Decimal`, a solve step must take
+  `request: SolveRequest` and return `SolveResult`, and so on;
 - validates the JSON `params` object against the function's own `Params` model;
-- notes whether a term or constraint declares the optional `chain: ChainState` argument, which makes it
-  *chain-aware* (`ResolvedStep.reads_chain`): it reads what higher-priority portfolios traded on the side
-  the run couples through, and its presence is what makes one portfolio wait for another. A rule cannot
-  declare it — rules never see other portfolios;
 - records two hashes — the function's source text and its params;
-- checks the solver: known to the adapter, installed in this process, and able to honor `time_limit_s`;
-- and, once every step has resolved, constructs every term and constraint once against a one-security
-  dummy spec under the run's side profile, so a term that raises when called, or reads a decision vector
-  the side does not have, is refused here. The solve step is not run: a firm's step may reach a service,
-  and the dummy is not a problem worth solving.
+- parses every record in `objective` as the typed term kind its `kind` names — the shipped `linear`,
+  or one an installed package publishes — and insists the names are unique. A kind declares on its
+  class whether it reads the chain (`reads_chain`), which is what makes one portfolio wait for
+  another; a rule cannot read it — rules never see other portfolios;
+- under the shipped `cvxpy` step, checks the solver its params name: known to the adapter, installed
+  in this process, and able to honor `time_limit_s`;
+- and, once every step has resolved, renders every term once against a one-security dummy spec under
+  the run's side profile and checks the problem is convex, so a term that raises when rendered, reads a
+  decision vector the side does not have, or is not DCP is refused here. The solve step is not run: a
+  firm's step may reach a service, and the dummy is not a problem worth solving.
 
 Every failure is collected and reported together. The same resolution runs in every process that will
 solve — here, and again on every worker before it does any work (§9) — so all of them apply identical
 checks. There is no execution mode to check the steps against: the schedule is derived later, from the
 steps and the data (§9).
 
-`portfolio-optimizer validate-config` stops here and prints one line per resolved step. `run` then,
-**before any data loads, asks for its cluster** — local worker processes or a gateway's pods. The call
-does not block; the point is that the cluster comes up underneath the slow stage that follows.
+`portfolio-optimizer validate-config` stops here and prints one line per resolved step and one per
+term. `run` then, **before any data loads, asks for its backend** — this process, or local worker
+processes, or a gateway's pods. The call does not block; the point is that a cluster comes up
+underneath the slow stage that follows.
 
 ## 2. Loading and assembly: validation, first layer
 
@@ -108,12 +119,12 @@ Why the bound on those calls is one number per input, and the engine's rather th
 how `max_in_flight` behaves at load time is in [the reference](reference-run-config.md#max_in_flight).
 
 The shipped loaders (`loaders.py`) are the only place I/O happens. Each stands in for a service — a
-custodian, a security master, an account master — waiting as long as that source would and then
-answering from a table under the data root. They read decimal and timestamp columns as strings and let
-`coerce_frame` turn them into `Decimal` exactly; a float only ever becomes `Decimal(repr(value))`, the
-shortest round-tripping form. `load_holdings` is the fan-out pattern, one call per account;
-`load_details` is its blocking twin, one query per batch of ids in a worker thread. Every dataset is a
-frame, so every loader has the one shape.
+custodian, a security master, an account master, a compliance service — waiting as long as that source
+would and then answering from a table under the data root. They read decimal and timestamp columns as
+strings and let `coerce_frame` turn them into `Decimal` exactly; a float only ever becomes
+`Decimal(repr(value))`, the shortest round-tripping form. `load_holdings` is the fan-out pattern, one
+call per account; `load_details` is its blocking twin, one query per batch of ids in a worker thread.
+Every dataset is a frame, so every loader has the one shape.
 
 `assemble` runs the config's **assembly steps** in order. Each is a function `Frames → Frames` over
 every loaded dataset by name — a vendor's analytics joined into `universe`, then dropped once it has
@@ -125,26 +136,30 @@ the same treatment: a `ValueError` it raises rejects the run under the step's na
 row counts, and the columns it added go into the manifest. After the last step, `holdings`, `universe`,
 and `details` must exist, and **every engine-known frame is validated against its schema** — column
 set, dtype, nullability, bounds, unique key, and frame-level invariants such as "cash_lb does not
-exceed cash_ub" — with all failures across all frames reported at once. `holdings` and `universe` may
-carry any further columns; that is where security analytics live. `constraints` is engine-known but
-optional — a run that omits it is bound by nothing but the trade identity. Finally, `details` must have a row for every
-portfolio. Whatever datasets remain that the engine does not know become the run's extras.
+exceed cash_ub" — with all failures across all frames reported at once. All three may carry any
+further columns: that is where security analytics and the desk's own account limits live, and the
+build exports every one. Only `security_id` and `price` are required of the universe; `sector`,
+`adv_shares`, `lot_size`, and `restricted` are optional and a build or a rule that needs one says so.
+`constraints` is engine-known but optional — a run that omits it is bound by nothing but the trade
+identity and the spec's own bounds. Finally, `details` must have a row for every portfolio. Whatever
+datasets remain that the engine does not know become the run's extras.
 
 Anything failing here raises `InputRejectedError` and the run exits with code 2. Nothing was solved.
 
 ## 3. Slice per portfolio: validation, second layer
 
 `slice_portfolio` builds a `PortfolioData` bundle: this portfolio's `details` row typed into a
-`PortfolioDetails` model — which carries the account's style limits alongside its facts — its holdings,
-the full universe, its own rows of `constraints`, and its share of the
-extras — a dataset with a `portfolio_id` column reduced to this portfolio's rows, one without passed
-whole. This happens *in the worker*, which received the assembled
-datasets once: a task carries a portfolio id and nothing else.
+`PortfolioDetails` model — which carries the account's style limits alongside its facts, and every
+further column of the row as `extra` — its holdings, the full universe, its own rows of `constraints`,
+and its share of the extras — a dataset with a `portfolio_id` column reduced to this portfolio's rows,
+one without passed whole. This happens *in the worker*, which received the assembled datasets once: a
+task carries a portfolio id and nothing else.
 
 The frames the slice produces are marked `prevalidated`: assembly already checked them against their
-schemas, the universe is passed whole, and a row subset of validated holdings or sector bounds keeps
-every per-column check, the key's uniqueness, and the bounds' ordering. So the bundle does not check
-them again, here or after a rule that leaves them untouched. A rule that returns a *new* frame loses that standing for it, and the new frame is validated.
+schemas, the universe is passed whole, and a row subset of validated holdings or constraint rows keeps
+every per-column check and the key's uniqueness. So the bundle does not check them again, here or
+after a rule that leaves them untouched. A rule that returns a *new* frame loses that standing for it,
+and the new frame is validated.
 
 `PortfolioData.__post_init__` (`domain/data.py`) holds the cross-frame invariants: `as_of_date` is UTC,
 holdings contain only this portfolio, every constraint row and every extra with a `portfolio_id` column
@@ -167,10 +182,14 @@ constructs a new `PortfolioData` and therefore **re-runs every check from stage 
 the optimizer a broken bundle. Each rule gets an audit record of row counts before and after.
 
 The shipped rules (`rules.py`) show the patterns: `restrict_low_liquidity` freezes names below an ADV
-threshold it reads from an extra dataset rather than from the config, `add_zero_alpha` fills in a column the objective needs, `attach_universe_columns` copies the universe's analytics
-onto holdings for a book that loads holdings per account, `cap_single_name` tightens the style. A rule never sees other
-portfolios. What it *can* do is shrink the portfolio's tradable set — freeze a name, or cap it at its
-current weight in a run that couples through buys — and that is what lets portfolios solve
+threshold it reads from an extra dataset rather than from the config, `restrict_to_mandate` freezes
+every name whose sector is outside the account's mandate rows, `add_zero_alpha` fills in a column the
+objective needs, `attach_universe_columns` copies the universe's analytics onto holdings for a book that
+loads holdings per account, `cap_single_name` tightens the style. A rule that freezes names starts
+from `restricted_flags(universe)`, the `restricted` column or all-false where the universe has none,
+and a rule that needs `adv_shares` or `sector` refuses a universe without it by name. A rule never sees
+other portfolios. What it *can* do is shrink the portfolio's tradable set — freeze a name, or cap it at
+its current weight in a run that couples through buys — and that is what lets portfolios solve
 concurrently (§9): two portfolios wait on each other only when they can both trade the same security on
 the side the run couples through.
 
@@ -181,110 +200,142 @@ shipped `most_uninvested_first` puts the account with the most left to put to wo
 
 ## 5. Build: `Decimal` becomes float64, once
 
-`engine/build.py` sorts the universe by `security_id` and aligns everything to that order, which is
-why it requires every held name to be in the universe (a `BuildError` otherwise). In exact `Decimal` it
-computes current weights (`shares × price / nav`), tax per dollar sold (gain fraction times
-the short- or long-term rate, long-term when held longer than 365 days; losses come out negative),
-transaction cost from `tcost_bps`, per-name bounds (restricted names frozen at their current weight,
-optional `min_weight`/`max_weight` columns tightening the style cap), the sector indicator matrix, and
-ADV capacity as a fraction of NAV. Only then does `to_float64` convert — refusing bools, non-Decimals,
-and anything non-finite.
+The **build step** is configured like any other, `(data: PortfolioData[, params]) -> ProblemSpec`, and
+`standard` (`engine/build.py`) is the default. It sorts the universe by `security_id` and aligns
+everything to that order, which is why it requires every held name to be in the universe (a
+`BuildError` otherwise). In exact `Decimal` it computes current weights (`shares × price / nav`), tax
+per dollar sold (gain fraction times the short- or long-term rate, long-term when held longer than 365
+days as of `--as-of`; losses come out negative), transaction cost from `tcost_bps` where the universe
+carries it, per-name bounds (restricted names frozen at their current weight, optional
+`min_weight`/`max_weight` columns tightening the style cap), and ADV capacity as a fraction of NAV where
+it carries `adv_shares`. Only then does `to_float64` convert — refusing bools, non-Decimals, and
+anything non-finite.
 
-Any universe column the schema does not declare is exported by name — numeric ones into
-`spec.columns` for `spec.column("my_signal")`, boolean ones into `spec.flags` as real boolean masks for
-`spec.flag("excluded")` — so a custom term can read either. Holdings' extra columns are not exported:
-the build has no row for a name that is not in the universe.
+Everything the bundle carries beyond the schemas is exported by name: each numeric universe column
+into `spec.columns` for `spec.column("my_signal")`, each boolean one into `spec.flags` as a real
+boolean mask for `spec.flag("excluded")`, each string one — `sector`, `country`, an issuer — into
+`spec.groups` as a sparse membership matrix for `spec.group("sector")`, and every number on the
+account's `details` row, declared or extra, into `spec.scalars` for `spec.scalar("cash_ub")`. That is
+what lets a constraint row name a limit the engine has never heard of. Holdings' extra columns are not
+exported: the build has no row for a name that is not in the universe.
 
-The result is a `ProblemSpec` (`domain/results.py`): pure numpy, read-only arrays, no cvxpy. Its own
-`__post_init__` checks shapes, sortedness, finiteness, `lb ≤ ub`, positive prices, and so on, and it
-carries a content hash. Alongside it, `OrderInputs` keeps the *exact* `Decimal` prices and share counts
-for stage 8.
+The result is a `ProblemSpec` (`domain/results.py`): pure numpy, read-only arrays, no cvxpy — six fixed
+vectors (`w0`, `price`, `shares_held`, `lot_size`, `lb`, `ub`) and the named columns, flags, groups,
+and scalars. Its own `__post_init__` checks shapes, sortedness, finiteness, `lb ≤ ub`, positive prices,
+and so on, and it carries a content hash. Alongside it, `order_inputs` keeps the *exact* `Decimal`
+prices and share counts for stage 8, derived from whatever spec the build returned.
+
+The build task then reads the portfolio's **constraint rows** (`domain/constraints.py`): where the
+frame has a `kind` column, every row is parsed as the typed model it names — its fields from `params`,
+its name from `label` — and asked what it needs of the spec; a malformed row, or one naming a column,
+flag, scalar, or group the spec does not carry, fails the portfolio here, at stage `build`, before any
+solve is scheduled on it, as does a term that reads a column this spec lacks. From the parsed rows the
+build derives the portfolio's **consume set**, the schedule's other half (§9): empty when no row reads
+the chain, the scopes of the chain-reading rows when they are the only readers, and the whole tradable
+set when anything opaque might read it — a chain-aware term, a solve step other than the shipped one, a
+frame with no `kind` column at all.
 
 ## 6. Solve
 
 `engine/solve.py` hands the configured **solve step** a `SolveRequest` — the spec, the chain, the
-side profile, the resolved terms and constraints, the run's extra datasets as the rules left them, the
-`solver` block — and takes back a `SolveResult`: weights aligned to the spec and, if the step minimized
-one, an objective. The constraints and the extras cross the build unchanged for the same reason: the
-engine does not know what either means, so it carries rather than interprets them. The default
-step, `solvers.cvxpy`, creates the side profile's decision variables — `w`, `buy`, and `sell` under
-`both`; `w` alone under `buy` or `sell`, with the trade an expression of it — all fractions of NAV,
-adds the profile's trade identity, invokes each configured term and constraint function to obtain
-expressions, and hands them to the adapter. `cvx/adapter.py` is the **only module that imports
-cvxpy**; terms are written against a dozen typed atoms (`dot`, `matvec`, `masked`, `at_most`,
-...) so that the verifier can mirror each one in numpy. The adapter checks that the problem is
-DCP-compliant, maps `time_limit_s` to the solver's own option, solves once, and returns the
-`SolveResult` as is — status, weights, objective, iterations, solve time, solver and version. A step
-that is not cvxpy — the shipped `pro_rata_fill`, a firm's library, a function of your own — returns
+side profile, the typed terms, the portfolio's constraint rows, and the run's extra datasets as the
+rules left them — and takes back a `SolveResult`: weights aligned to the spec and, if the step
+minimized one, an objective. The constraints and the extras cross the build unchanged for the same
+reason: the engine does not interpret what they mean, so it carries them. The default step,
+`solvers.cvxpy`, creates the side profile's decision variable — `w` alone, a fraction of NAV, with the
+trade an expression of it: `buy = w − w0` under `buy`, `sell = w0 − w` under `sell` — adds the
+profile's trade identity (`w ≥ w0` or `w ≤ w0`) and the spec's box `lb ≤ w ≤ ub`, renders each
+configured term and each typed
+constraint row through the model's own `to_cvxpy`, and hands the expressions to the adapter.
+`cvx/adapter.py` is the **only module that imports cvxpy**; kinds are written against a small set of
+typed atoms — affine `dot`, `matvec`, `masked`, `scale`, `weighted`, ...; convex `sum_squares`,
+`norm1`, `absolute`, `pos`; the comparisons `at_most`, `at_least`, `equals` — so that each kind's numpy
+half can mirror them. The adapter checks that the problem is DCP-compliant, maps `time_limit_s` to the
+solver's own option, solves once, reads back the largest dual value of every constraint set — the
+shadow price of each limit — and returns the `SolveResult` as is: status, weights, objective,
+iterations, solve time, solver and version, the records of the constraints it applied, the duals. A
+step that is not cvxpy — the shipped `pro_rata_fill`, a firm's library, a function of your own — returns
 weights the same way and is verified the same way; see
 [how to replace the cvxpy solve](how-to-write-a-solve-step.md).
 
 Classification decides what the result means:
 
-- **Optimal.** The side profile decides the buy/sell split the engine reports for the weights: for the
-  two-sided profile, the minimal one, `buy = max(w − w0, 0)` and `sell = max(w0 − w, 0)`. With no term
-  charging for trading, an interior-point solver can return a wash trade — buy 0.3 and sell 0.3 of the
-  same name — that nets to the right weights but is not minimal.
-- **Infeasible.** `InfeasibleError` carries an arithmetic diagnosis computed without another solve: do
-  the upper bounds even sum to the required investment? Do the lower bounds exceed it? Can each sector
-  reach its floor? Does moving the current weights inside their bounds already exceed `max_turnover`?
-  Is a name that must trade out of ADV budget?
-- **Unbounded.** Impossible with the shipped constraints, so it is reported as a bug in a custom step.
+- **Optimal.** The side profile turns the weights into the trade the engine reports:
+  `buy = max(w − w0, 0)` under `buy`, `sell = max(w0 − w, 0)` under `sell`, the clip keeping solver
+  noise past `w0` from becoming a few shares on the side the run does not have. One variable per name
+  means there is no split to choose and no round trip to strip; a term that rewards a sale is priced
+  exactly.
+- **Infeasible.** `InfeasibleError` carries an arithmetic diagnosis computed without another solve,
+  from what the spec carries: does the book start where the side cannot take it? Do the upper bounds
+  even sum to the required investment? Do the lower bounds exceed it? Does moving the current weights
+  inside their bounds already exceed `max_turnover`? Is a name that must trade out of ADV budget?
+- **Unbounded.** Impossible inside the box, so it is reported as a bug in a custom term or constraint.
 - **Anything else** is a `SolverFailureError` with the solver's own detail.
 
 There is deliberately no path that returns the current portfolio as a fallback answer.
 
 ## 7. Verify: the second opinion
 
-`engine/check.py` recomputes everything in numpy and never imports cvxpy (a test enforces this). For
-each configured constraint it looks up a **numpy twin by qualified name** and computes the violation
-vector; for each term it recomputes the value, sums them, and compares with the solver's reported
-objective. It also checks finiteness, that the solution's `spec_hash` matches the spec it is being
-checked against, and the side profile's **identity checks** — under `both`, the trade balance and
-complementarity (`min(buy, sell) ≈ 0`), which is what proves the reported split held; under a
-one-sided profile, that `w` never crossed `w0` and the absent side is zero. Every check is reported
-under the label of the constraint it belongs to (`identity` and `solution` for the engine's own).
+`engine/check.py` recomputes everything in numpy and never imports cvxpy (a test enforces this). Every
+constraint the solve step reported is parsed back through the kind registry and re-checked through the
+model's own `residual`; every term is recomputed through its own `value`, the values summed and
+compared with the solver's reported objective. So a kind a package published is checked exactly like a
+shipped one, and nothing typed is ever unverified — a step that reports no constraints has none
+checked, which is the honest answer rather than a silent pass. It also checks finiteness, that the
+solution's `spec_hash` matches the spec it is being checked against, and the side profile's **identity
+checks** — under `buy`, `no_sells` (`w ≥ w0`), `trade_balance` (the reported buy is `w − w0`),
+`nonneg_buy`, and `sell_absent`; under `sell`, `no_buys`, `trade_balance`, `nonneg_sell`, and
+`buy_absent`; under either, the box as `lb` and `ub`. Every check is reported under the label of the constraint
+it belongs to (`identity` and `solution` for the engine's own), as `label/residual` where two rows of
+one kind produce residuals of the same name.
 
 Tolerances come from the config's `post_solve` block: `violation_tol`, one tolerance for every residual,
 defaults to `1e-6` — about a hundred times looser than the solver's own — so a pass is a genuine
 statement about the solution rather than a restatement of the solver's convergence check, and the two
-objective tolerances bound the gap. Custom steps with no twin are listed as `unverified` in the
-manifest, and the objective comparison is skipped when some term cannot be recomputed or when the solve
-step reported no objective. A failed check raises `VerificationError`; the portfolio fails at stage
-`solve`.
+objective tolerances bound the gap. The same tolerance decides which checks are **active**: a residual
+within it of its bound is a constraint the answer sits against, which the run prints per portfolio as
+`binding:` and the manifest records as `check.active`. The objective comparison is skipped when the
+solve step reported no objective. A failed check raises `VerificationError`; the portfolio fails at
+stage `solve`.
 
 ## 8. Orders: float64 becomes `Decimal`, once
 
 `engine/orders.py` converts each weight delta to shares: **nearest share** (half-even), then down to a
-lot multiple, then sells are clamped to what is held, then trades below `min_trade_notional` are
-dropped. `notional = quantity × reference_price` is computed in `Decimal` from `OrderInputs`, never from
-the float copies inside the spec, and the `ORDERS` schema's `notional_matches` invariant confirms it.
-Each order also carries the spec hash, run id, `as_of_date`, the float target weight, and the unrounded share
-count for audit.
+lot multiple, then a sell is clamped to what is held and a buy to the room under the security's upper
+bound, then trades below `min_trade_notional` are dropped. `notional = quantity × reference_price` is
+computed in `Decimal` from `OrderInputs`, never from the float copies inside the spec, and the `ORDERS`
+schema's `notional_matches` invariant confirms it. Each order also carries the spec hash, run id,
+`as_of_date`, the float target weight, and the unrounded share count for audit.
 
 `rounding_drift` rebuilds the executed weights from the orders and measures the worst deviation from the
 solved weights. The tolerance is derived, not configured: one lot of the priciest name plus one
-dust-filtered trade, both as fractions of NAV. Exceeding it raises `DriftError`.
+dust-filtered trade, both as fractions of NAV, plus the bound overshoot the verifier accepts. Exceeding
+it raises `DriftError`.
 
 ## 9. The dependency graph, and where the work runs
 
-Portfolios in one run can compete for the same trades. The example's `cumulative_adv_participation`
-constraint says "trade in each name no more than the ADV budget that higher-priority portfolios' trades
-on the side the run couples through have not already consumed" (and, chain-free, "trade no more than
-your own participation"). That is the only kind of coupling the engine has: **a run couples through its
-one side** — buys under `both` and `buy`, sells under `sell`. What a two-sided run's portfolio *sold*
-never changes what a later one may do — a product decision, and everything in this section leans on it.
+Portfolios in one run can compete for the same trades. The example's `participation_limit` rows say
+"trade in each name no more than the ADV budget that higher-priority portfolios' trades on the side the
+run couples through have not already consumed" (and, chain-free, "trade no more than your own
+participation"). That is the only kind of coupling the engine has: **a run couples through its one
+side** — buys under `buy`, sells under `sell` — and a run has no other side, so nothing else a
+portfolio did can change what a later one may do: a product decision, and everything in this section
+leans on it. What a sell program sold reaches a buy program only as data the desk hands it, never
+through the engine.
 
-The mechanism is small. A build reports its portfolio's solve-order key and its **tradable set** — the
+The mechanism is small. A build reports its portfolio's solve-order key, its **tradable set** — the
 securities the side profile lets it trade on that side: buyable (`ub > w0`; a name frozen or capped at
-its current weight is outside it) or sellable (held and `lb < w0`). Portfolios sort by
-`(key, portfolio_id)`, and that order is the graph (`engine/schedule.py`): portfolio *j* depends on
-every earlier *i* whose tradable set intersects its own, and on nothing else. If no term or constraint
-declares `chain`, there are no edges at all. Under `execution.dependencies: "all"` every earlier
-portfolio is a predecessor — one line, the same answer, for diagnosis. A build that failed has an
-unknown tradable set and is treated as overlapping everything after it. The graph is never transitively
-reduced: a solve folds its *direct* predecessors' own trades, so every overlapping earlier portfolio
-stays a direct dependency.
+its current weight is outside it) or sellable (held and `lb < w0`) — and its **consume set**, what its
+own chain readers can see (§5). Portfolios sort by `(key, portfolio_id)`, and that order is the graph
+(`engine/schedule.py`): portfolio *j* depends on every earlier *i* whose tradable set intersects *j*'s
+consume set, and on nothing else. A portfolio whose consume set is empty waits for no one. When the
+run can be told before any build that nothing reads the chain — no chain-reading row in any account,
+no chain-aware term, the shipped solve step — there is no order to respect at all: every solve goes in
+behind its own build, and the manifest records `coupling: "none"`. Under `execution.dependencies:
+"all"` every earlier portfolio is a predecessor — one line, the same answer, for diagnosis. A build that
+failed has an unknown tradable set and is treated as overlapping everything after it. The graph is
+never transitively reduced: a solve folds its *direct* predecessors' own trades, so every overlapping
+earlier portfolio stays a direct dependency.
 
 Because every predecessor is *earlier*, the graph is grown a portfolio at a time rather than derived
 all at once: the runner walks the order and places each portfolio as its build reports, so the head of
@@ -292,23 +343,25 @@ the book is solving while the tail is still building. Nothing waits for the buil
 
 Each solve folds its predecessors' orders on that side into a `ChainState`: `traded_shares`, whole
 shares per security, projected onto this spec's securities and **zeroed wherever this portfolio cannot
-trade the name on that side**. That mask is why the schedule never changes the answer — the argument is
-in [the architecture explanation](explanation-architecture.md#a-run-couples-through-its-one-side-so-the-schedule-is-a-graph).
+trade the name on that side, or its own readers cannot see it**. That mask is why the schedule never
+changes the answer — the argument is in
+[the architecture explanation](explanation-architecture.md#a-run-couples-through-its-one-side-so-the-schedule-is-a-graph).
 Order rounding makes the tradable set structural (a BUY is clamped to the room under `ub` and a SELL to
 the shares held, so solver noise at a bound never produces a trade the graph could not have seen), and
 `finish_portfolio` asserts it, along with every order being on a side the run trades. The chain state's
 hash — the ids and the shares, never who traded them — is recorded per portfolio.
 
-`engine/runner.py` drives one schedule, on the cluster:
+`engine/runner.py` drives one schedule, on the backend:
 
-- **build** every portfolio at once — slice, rules, the solve-order key, the spec — chain-free and in
-  parallel. Each build stays on the worker that made it; a `summarize` task sends back only the key, the
-  tradable ids, the spec hash, and the rule audit, stamped with the worker's environment.
+- **build** every portfolio at once — slice, rules, the solve-order key, the spec, the constraint rows
+  — chain-free and in parallel. Each build stays on the worker that made it; a `summarize` task sends
+  back only the key, the tradable and consume sets, the spec hash, and the rule audit, stamped with the
+  worker's environment.
 - **place** each portfolio in the graph as its build reports, walking the solve order, and log the
   shape it ends up with: portfolios, edges, components, the longest chain of solves.
 - **solve** each portfolio where its build lives, submitted as it is placed with its predecessors'
-  *contributions* — their order rows on the coupled side, a few kilobytes each — as Dask dependencies,
-  so the scheduler enforces the order and starts a solve the moment its last predecessor finishes. A
+  *contributions* — their order rows on the coupled side, a few kilobytes each — as dependencies, so
+  the scheduler enforces the order and starts a solve the moment its last predecessor finishes. A
   portfolio nothing waits for is never asked to contribute. Solves run in solve order and every solve
   outranks every build.
 - **classify** outcomes in solve order as they complete, persisting each result as it arrives, so the
@@ -322,26 +375,30 @@ it are read only to finish the graph the manifest records.
 
 ![Where each stage runs](images/execution-stages.svg)
 
-Which cluster the run provisions is a *setting*: a `LocalCluster` of worker processes on a laptop, a
-`GatewayCluster` of pods a Dask Gateway creates, or a scheduler address (`engine/dask_backend.py`), behind a seam
-the runner can also be tested against with a fake (`engine/backends.py`). The runner drives it through
-one lifetime: **start** it before the load stage, so worker processes import the solver stack and pods
-come up while the loaders wait on their sources; **scale** it and **wait** for the first worker after
-assembly; **probe** every worker that has joined — each resolves the config itself, which is where a
-missing solver or step package surfaces, and reports its fingerprint — and stop the run as an
-infrastructure failure if any cannot; **share** the assembled datasets and the config with it once —
-scattered, and replicated between workers on demand — so a task carries a portfolio id and nothing
-else; **submit** every build, then every solve with its dependencies; **close** it in a `finally`.
-Workers re-resolve the config themselves — function objects are never pickled, only their names.
+Where the work runs is a *setting*. Under `inline`, the default, the backend is this process
+(`engine/backends.py`): every task runs the moment it is submitted, one after another, with exactly the
+seam a cluster gives the runner — a dependency's failure reaches its dependents as a raised handle —
+and no worker in between, which is where a rule is stepped through under a debugger. Otherwise it is a
+Dask cluster the run owns (`engine/dask_backend.py`): a `LocalCluster` of worker processes on a laptop,
+a `GatewayCluster` of pods a Dask Gateway creates, or a scheduler address. The runner drives either
+through one lifetime: **start** it before the load stage, so worker processes import the solver stack
+and pods come up while the loaders wait on their sources; **scale** it and **wait** for the first
+worker after assembly; **probe** every worker that has joined — each resolves the config itself, which
+is where a missing solver, step package, or kind surfaces, and reports its fingerprint — and stop the
+run as an infrastructure failure if any cannot; **share** the assembled datasets and the config with it
+once — scattered, and replicated between workers on demand — so a task carries a portfolio id and
+nothing else; **submit** every build, then every solve with its dependencies; **close** it in a
+`finally`. Workers re-resolve the config themselves, under the run's own step-package allowlist —
+function objects are never pickled, only their names.
 
 ![The run owns its cluster: provisioning overlaps the load stage](images/cluster-lifecycle.svg)
 
 Every task returns the **fingerprint of the process that ran it** — interpreter, numerical libraries,
 solver, the versions of the packages behind external steps, the git revision, the image digest — and
 the runner compares it with its own. A worker running different code fails its portfolio at stage
-`worker` rather than answering, and the manifest lists every environment that did work. A local
-cluster's workers are spawned from the run's own environment, so the fingerprints agree by construction;
-on a gateway's cluster this is what makes sharing machines safe.
+`worker` rather than answering, and the manifest lists every environment that did work. Under `inline`
+and a local cluster the fingerprints agree by construction; on a gateway's cluster this is what makes
+sharing machines safe.
 
 Under `fail_fast`, the first failure *in solve order* cancels every solve behind it — a running task
 finishes and is discarded — and every lower-priority portfolio is recorded `skipped`, whatever it had
@@ -356,27 +413,27 @@ the settings.
 
 ## 10. Failure semantics and exit codes
 
-Every portfolio ends as a `PortfolioResult` or a `PortfolioFailure` naming its stage — `slice`, `build`,
-`solve`, `worker`, or `skipped` — with the exception type, its message, and its traceback. The traceback
-is what makes a failure debuggable once the run is over: `slice`, `build`, and `solve` all run in a
-worker process whose own stderr goes to a pod that outlives nothing, so the formatted frames travel home
-on the failure and the run writes them to `failures/<portfolio_id>.txt` beside the manifest, hashed like
-every other artifact. A skipped portfolio's message
-names what it was waiting for: the predecessor that failed, or, under `fail_fast`, any higher-priority
-failure. A build that fails has an unknown tradable set and is treated as overlapping everything after
-it, so under `continue` it skips every lower-priority portfolio whenever a step reads the chain. The
-process exit code is **0**
-when every portfolio solved, **1** when any failed, **2** when the inputs were rejected before anything
-was solved — invalid settings, a config that does not validate or resolve, datasets that fail loading
-or assembly — and **3** for infrastructure: a sink failure, a cluster that never came up, a config file
-that cannot be read.
+Every portfolio ends as a `PortfolioResult` or a `PortfolioFailure` naming its stage — `load`,
+`slice`, `build`, `solve`, `worker`, or `skipped` — with the exception type, its message, and its
+traceback. The traceback is what makes a failure debuggable once the run is over: `slice`, `build`,
+and `solve` all run in a worker process whose own stderr goes to a pod that outlives nothing, so the
+formatted frames travel home on the failure and the run writes them to `failures/<portfolio_id>.txt`
+beside the manifest, hashed like every other artifact. A skipped portfolio's message names what it was
+waiting for: the predecessor that failed, or, under `fail_fast`, any higher-priority failure. A build
+that fails has an unknown tradable set and is treated as overlapping everything after it, so under
+`continue` it skips every lower-priority portfolio that reads the chain. The process exit code is
+**0** when every portfolio solved, **1** when any failed, **2** when the inputs were rejected before
+anything was solved — invalid settings, a bad `--as-of`, a config that does not validate or resolve,
+datasets that fail loading or assembly — and **3** for infrastructure: a sink failure, a cluster that
+never came up, a config file that cannot be read.
 
 ## 11. Persist, publish, record
 
 For each solved portfolio, the spec, solution, and chain state — its predecessors' trades on the side
 the run couples through, and which predecessors — are written as `.npz` files under
 `<output_dir>/<run_id>/{problem_specs,solutions,chain}/` as each result is classified, while the cluster
-is still up. These are what `portfolio-optimizer verify` reloads to re-check a solution without the
+is still up. The solution carries the records of the constraints the step applied and the solver's
+duals, so these files are what `portfolio-optimizer verify` reloads to re-check a solution without the
 solver stack.
 
 The **sink** is called exactly once, with every solved portfolio's orders concatenated and sorted, and
@@ -384,15 +441,16 @@ only when at least one portfolio solved. The shipped sinks write Parquet (Decima
 CSV, atomically, via a temp file and rename. A sink failure is exit code 3, but the manifest is still
 written.
 
-The **manifest** (`engine/manifest.py`) records the run id, name, and timestamps; the git revision and
-whether the tree was dirty; the schedule the run derived — coupling, edges, components, the critical
-path; the Python, cvxpy, numpy, pandas, and solver versions, and every worker environment that executed
-a task; the backend's lifetime — what was asked for, when the first worker answered, when it was
-released; the resolved config and its hash; the settings, with the cluster and worker counts; every term
-and constraint with its params and label; every dataset's provenance and content hash; and, per portfolio, the
-solve-order key, the number of predecessors, the rule audits, spec hash, chain-input hash, solver
-statistics, verification outcome, drift, and the orders' count, hash, and gross notional. The manifest is then self-hashed, and
-`load_manifest` refuses one whose hash does not match its content.
+The **manifest** (`engine/manifest.py`) records the run id, name, tags, and timestamps, and the instant
+the run was as of; the git revision and whether the tree was dirty; the schedule the run derived —
+coupling, edges, components, the critical path; the Python, cvxpy, numpy, pandas, and solver versions,
+and every worker environment that executed a task; the backend's lifetime — its kind, what was asked
+for, when the first worker answered, when it was released; the resolved config and its hash; the
+settings; every objective term as its record; every dataset's provenance and content hash; and, per
+portfolio, the solve-order key, the number of predecessors, the rule audits, the constraint records it
+solved under, the spec hash, the chain-input hash, the solver statistics and duals, the verification
+outcome with the checks that bound, drift, and the orders' count, hash, and gross notional. The
+manifest is then self-hashed, and `load_manifest` refuses one whose hash does not match its content.
 
 `portfolio-optimizer diff-manifests` compares two manifests and names the **first stage at which they
 diverge**: config, code, versions, datasets, assembly, and then per portfolio status → rules → spec →
@@ -401,49 +459,66 @@ solve → orders. "Did the data change, or did the solver?" is a one-command que
 
 ## The example, stage by stage
 
-`configs/example_run.json` declares a hundred accounts over three securities, four global datasets and
-two loaded per account (`holdings`, a call each under a shared rate-limit pool, and `details`,
-twenty-five ids a call), no assembly steps, one rule, three terms (alpha, tax cost, transaction cost),
-up to seven constraints an account, the Clarabel solver, and `fail_fast`; how many workers the run has
-is the `PORTFOLIO_OPTIMIZER_MAX_WORKERS` setting. The first two accounts are the ones to follow.
+The shipped example is two configs over one book: `configs/example_buy.json`, the desk's buy program
+(`sides: buy`, two `linear` terms — alpha and transaction cost), and `configs/example_sell.json`, its
+sell program (`sides: sell`, three — alpha, tax cost, transaction cost). Each declares a hundred
+accounts over three securities, five global datasets and two loaded per account (`holdings`, a call
+each with eight in flight — 200 rows in 100 batches — and `details`, twenty-five ids a call, four
+batches), no assembly steps, one rule, up to six typed constraint rows an account (530 rows in all),
+the Clarabel solver under the `cvxpy` step, and `fail_fast`; where the work runs is the
+`PORTFOLIO_OPTIMIZER_CLUSTER` setting, this process by default. Each run is a pure function of the
+snapshot with its own manifest; nothing crosses between them. The first two accounts are the ones to
+follow.
 
-P1 and P2 each hold $500,000 of A and $500,000 of B (5,000 A at 100, 10,000 B at 50 against a cost of
-40, so B carries a fifth of unrealized gain). C has the best expected return and the worst liquidity: it
-trades 100,000 shares a day at 10, and the style allows 25% participation, so a portfolio may buy at
-most 25,000 shares — a quarter of its NAV. A and B are `TECH`, C is `HEALTH`, and the sector bands —
-`TECH` in `[0.5, 1]`, `HEALTH` in `[0, 0.5]` — do not bind.
+P1 and P2 each have a NAV of 1,000,000 with 400,000 in cash, and hold 3,000 A at 100 (at cost) and
+6,000 B at 60 against a price of 50 — a loss — P1's lots long-term, P2's short-term. A (alpha 0.03)
+and B (alpha −0.01) are `TECH` and trade a million shares a day; C (alpha 0.05, `HEALTH`, 20 bps to
+trade) has the best expected return and the worst liquidity: 100,000 shares a day at 10, and the style
+allows 25% participation, so a portfolio may buy at most 25,000 shares — a quarter of its NAV. P1's
+single-name cap is 40%, P2's 60%; the cash band is `[0, 0.6]` and the sector bands `TECH ≥ 0.5`,
+`HEALTH ≤ 0.5`.
 
-P1 solves first. Its 40% single-name cap puts both holdings over the line, so it must trim; it raises
-the quarter of NAV that C's budget allows and takes A down first, because A is at cost and B is not:
-sell 1,500 A, sell 2,000 B to the cap, buy 25,000 C — the hand-computable optimum, to the share. P2 can
-buy the same securities, so it waits for P1; when it solves, the chain state says C's budget is spent,
-and with a 60% cap forcing nothing and a short-term rate on B's gain making every A/B swap uneconomic,
-P2 produces no orders. The other ninety-eight accounts follow behind them, each waiting on all the
-ones ahead because every account in this book trades the same three names; about half find something
-worth trading. Run the config twice and `diff-manifests` reports `no differences`; run it with
-`"dependencies": "all"` and every portfolio record is the same again (the diff names only the config).
-The [tutorial](tutorial-first-run.md) walks through exactly this.
+In the buy program P1 solves first: it takes the quarter of NAV that C's budget allows, 25,000 C, and
+buys 1,000 A up to its 40% cap; B's alpha has turned negative, so the remaining 50,000 stays cash — the
+hand-computable optimum, to the share. P2 can buy the same securities, so it waits for P1; when it
+solves, the chain state says C's budget is spent, so it buys 3,000 A to its 60% cap and the run says
+why C is closed: `adv/cumulative_participation` binds. Across the book that is 55 orders in 53
+accounts — 53 in A, and C only for P1 and P3, whose 30% participation leaves 5,000 shares inside its
+own budget. In the sell program neither account waits on C; each harvests B down to the `TECH` floor,
+2,000 shares — P1 at the long-term rate, four cents of refund per dollar sold, P2 at the short-term
+rate — and the term that rewards the sale is exact because nothing can rebuy B in the same solve.
+Across the book: 38 orders in 37 accounts, 23 in B and 15 short-term loss harvests of A, with the
+cumulative ADV cap on B binding from P34 on, in 45 accounts. Either way the other ninety-eight
+accounts follow behind, each waiting on all the ones ahead because every account in this book can
+trade the same three names — 4,950 edges, one component, critical path 100. Run a config twice and
+`diff-manifests` reports `no differences`; run it with `"dependencies": "all"` and every portfolio
+record is the same again (the diff names only the config). The [tutorial](tutorial-first-run.md) walks
+through exactly this.
 
 ## Where validation happens, in one list
 
-1. **Settings** — unknown or missing environment variables; a gateway without a worker image or a password.
-2. **Config** — strict models; money as strings; timestamps with a zone.
-3. **Resolver** — the function exists, its signature matches the contract, its params validate; the
-   solver is known and installed; constraint labels are unique; then every term and constraint is
-   constructed once against a one-security dummy spec under the run's side profile, so a step that
-   raises, reads a side the run lacks, or returns the wrong type is refused. Run by `validate-config`,
-   at the start of `run` before a cluster is asked for, and again on every worker before it does any
-   work — the same checks in every process.
-4. **Loaders** — dtypes declared up front; exact `Decimal` coercion.
-5. **Assembly** — each step's own claims (join keys, cardinality, coverage, dtype agreement on a
-   union); then the required frames exist and every frame schema holds; then details and constraints
-   for every portfolio.
-6. **`PortfolioData`** — cross-frame invariants including holdings/universe dtype agreement, re-run
+1. **Settings** — unknown environment variables; a gateway without a worker image or a password.
+   Every setting has a default.
+2. **Run argument** — `--as-of` is an ISO 8601 instant with a zone.
+3. **Config** — strict models; money as strings; every objective record names a `kind`.
+4. **Resolver** — the function exists, its signature matches the contract, its params validate; every
+   term is a known kind with a unique name; the solver is known and installed; then every term is
+   rendered once against a one-security dummy spec under the run's side profile and the problem is
+   checked for convexity, so a term that raises, reads a side the run lacks, or is not DCP is refused.
+   Run by `validate-config`, at the start of `run` before a backend is asked for, and again on every
+   worker before it does any work — the same checks in every process.
+5. **Loaders** — dtypes declared up front; exact `Decimal` coercion.
+6. **Assembly** — each step's own claims (join keys, cardinality, coverage, dtype agreement on a
+   union); then the required frames exist and every frame schema holds; then details for every
+   portfolio.
+7. **`PortfolioData`** — cross-frame invariants including holdings/universe dtype agreement, re-run
    after every rule; a frame a rule replaces is re-validated against its schema.
-7. **`ProblemSpec`** — shapes, finiteness, bound ordering, read-only arrays.
-8. **Solve step** — weights of the right shape, status classified, infeasibility diagnosed; for the
+8. **`ProblemSpec`** — shapes, finiteness, bound ordering, read-only arrays; then every constraint row
+   parses as its kind and every row and term finds what it reads on the spec.
+9. **Solve step** — weights of the right shape, status classified, infeasibility diagnosed; for the
    cvxpy step, DCP-compliant first.
-9. **Verifier** — every shipped constraint and the objective, independently of cvxpy.
-10. **Orders** — the `ORDERS` schema including `notional = quantity × price`, every order on a side the
+10. **Verifier** — every reported constraint through its own residual, every term through its own
+    value, and the objective, independently of cvxpy.
+11. **Orders** — the `ORDERS` schema including `notional = quantity × price`, every order on a side the
     run trades and inside the tradable set, then the drift bound.
-11. **Manifest** — self-hash checked on load.
+12. **Manifest** — self-hash checked on load.

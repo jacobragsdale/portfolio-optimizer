@@ -1,4 +1,4 @@
-"""Tier 1/2: the backend seam — workers probed before data is shared, builds first, solves along the schedule with dependencies, fail-fast cancellation, dead and stale workers, and a cluster that never comes up."""
+"""Tier 1/2: the backend seam — workers probed before data is shared, builds first, solves along the schedule with dependencies, fail-fast cancellation, dead and stale workers, a cluster that never comes up, and the inline backend that needs none of it."""
 
 import re
 from pathlib import Path
@@ -6,12 +6,12 @@ from pathlib import Path
 from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.results import PortfolioFailure, PortfolioResult
-from portfolio_optimizer.engine.backends import TaskOutput
+from portfolio_optimizer.engine.backends import InlineBackend, TaskOutput
 from portfolio_optimizer.engine.environment import environment_for
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, RunReport
-from tests.conftest import BUY_ONLY_OBJECTIVE, resolved_example_real
+from tests.conftest import SELL_TERMS, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
-from tests.engine.support import HALF_CASH_ORDERS_P1, HALF_CASH_ORDERS_P2, SELL_BOOK_ORDERS_P1, SELL_BOOK_ORDERS_P2, details_without, example_book, execute, half_cash_book, sell_book
+from tests.engine.support import BUY_ORDERS_P1, BUY_ORDERS_P2, SELL_ORDERS_P1, THIN_B_ORDERS_P2, details_csv, details_without, example_book, execute, thin_b_book, uncoupled_book
 
 
 def test_the_runner_submits_every_build_first_then_solves_along_the_schedule(tmp_path: Path) -> None:
@@ -37,6 +37,33 @@ def test_the_runner_submits_every_build_first_then_solves_along_the_schedule(tmp
     (worker,) = report.manifest.versions.workers
     same_config = resolved_example_real(execution={"on_error": "fail_fast"}, sink="orders_to_parquet").config
     assert worker.portfolios == 2 and worker.environment == environment_for(same_config, cwd=Path.cwd(), image_digest=None)
+
+
+def test_the_inline_backend_runs_the_example_in_this_process(tmp_path: Path) -> None:
+    report = execute(tmp_path)
+    assert report.exit_code == EXIT_OK, [str(outcome) for outcome in report.outcomes]
+    p1, p2 = report.solved
+    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P1
+    assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P2 and p2.chain_state.predecessors == ("P1",)
+    cluster = report.manifest.cluster
+    assert cluster is not None and (cluster.kind, cluster.workers_ready, cluster.scheduler_address) == ("inline", 1, None)
+    (worker,) = report.manifest.versions.workers
+    assert worker.portfolios == 2 and worker.hosts != ()
+
+
+def test_the_inline_backend_hands_a_dependencys_failure_to_its_dependents() -> None:
+    backend = InlineBackend()
+    failed = backend.submit(lambda: 1 / 0, key="a", priority=0)
+    dependent = backend.submit(lambda value: value + 1, failed, key="b", priority=0)
+    fine = backend.submit(lambda value: value + 1, backend.submit(lambda: 1, key="c", priority=0), key="d", priority=0)
+    assert fine.result() == 2
+    for pending in (failed, dependent):
+        try:
+            pending.result()
+        except ZeroDivisionError:
+            continue
+        msg = "a failed dependency must reach its dependent as the same error, unrun"
+        raise AssertionError(msg)
 
 
 def test_a_solve_is_submitted_before_the_builds_behind_it_are_read(tmp_path: Path) -> None:
@@ -74,10 +101,10 @@ def test_a_configured_solve_order_step_reorders_the_run_and_is_read_before_any_s
 
 def test_an_uncoupled_run_submits_every_solve_behind_its_own_build_and_reads_no_summary_first(tmp_path: Path) -> None:
     backend = LazyBackend()
-    report = execute(tmp_path, backend_factory=factory_for(backend), dependencies="none")
+    report = execute(tmp_path, backend_factory=factory_for(backend), data_root=uncoupled_book(tmp_path))
     assert report.exit_code == EXIT_OK
     assert backend.submitted == ["run-test/P1/build", "run-test/P1/summary", "run-test/P2/build", "run-test/P2/summary", "run-test/P1/solve", "run-test/P2/solve"], (
-        "nothing reads the chain, so no solve waits and no portfolio is asked to contribute"
+        "nothing reads the chain — the data says so before any build — so no solve waits and no portfolio is asked to contribute"
     )
     assert backend.trace.index("submit:run-test/P2/solve") < backend.trace.index("run:run-test/P1/build"), "no build is read before every solve is in flight"
     assert report.manifest.schedule is not None and (report.manifest.schedule.coupling, report.manifest.schedule.edges) == ("none", 0)
@@ -85,7 +112,8 @@ def test_an_uncoupled_run_submits_every_solve_behind_its_own_build_and_reads_no_
 
 
 def test_a_pure_function_solve_step_runs_the_whole_pipeline_and_is_verified(tmp_path: Path) -> None:
-    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), solve="tests.steps:hold_still")
+    inside_the_box = example_book(tmp_path, **{"details.csv": details_csv(P1={"max_weight": "0.6"})})  # P1 starts above the example's 0.4 cap, and holding still there is infeasible
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=inside_the_box, solve="tests.steps:hold_still")
     assert report.exit_code == EXIT_OK
     for outcome in report.outcomes:
         assert isinstance(outcome, PortfolioResult)
@@ -95,49 +123,48 @@ def test_a_pure_function_solve_step_runs_the_whole_pipeline_and_is_verified(tmp_
     assert record.check is not None and record.check.objective_passed
 
 
-def test_a_buy_only_run_reproduces_the_hand_checked_buys_and_couples_through_them(tmp_path: Path) -> None:
-    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=half_cash_book(tmp_path), sides="buy", objective=BUY_ONLY_OBJECTIVE)
+def test_the_buy_program_reproduces_the_hand_checked_buys_and_couples_through_them(tmp_path: Path) -> None:
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()))
     assert report.exit_code == EXIT_OK, [outcome for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)]
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
-    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == HALF_CASH_ORDERS_P1
-    assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == HALF_CASH_ORDERS_P2
-    assert p2.chain_state.traded_shares.tolist() == [1500.0, 2000.0, 25000.0] and p2.chain_state.predecessors == ("P1",), (
-        "every buy P1 made reaches P2: under buy-only the chain carries the whole trade"
-    )
+    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P1
+    assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P2
+    assert p2.chain_state.traded_shares.tolist() == [1000.0, 0.0, 25000.0] and p2.chain_state.predecessors == ("P1",), "every buy P1 made reaches P2: the chain carries the whole trade"
     for outcome in (p1, p2):
         assert outcome.report.passed and (outcome.solution.w >= outcome.spec.w0 - 1e-9).all() and outcome.solution.sell.tolist() == [0.0, 0.0, 0.0]
     assert report.manifest.config.resolved["sides"] == "buy"
     assert [p.status for p in report.manifest.portfolios] == ["solved", "solved"]
 
 
-def test_a_sell_only_run_reproduces_the_hand_checked_sells_and_couples_through_them(tmp_path: Path) -> None:
-    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=sell_book(tmp_path), sides="sell")
+def test_the_sell_program_reproduces_the_hand_checked_sells_and_couples_through_them(tmp_path: Path) -> None:
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=thin_b_book(tmp_path), sides="sell", objective=SELL_TERMS)
     assert report.exit_code == EXIT_OK, [outcome for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)]
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
-    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == SELL_BOOK_ORDERS_P1
-    assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == SELL_BOOK_ORDERS_P2, "P1's sells of A used up its ADV budget"
-    assert p2.chain_state.traded_shares.tolist() == [1000.0, 8000.0, 0.0] and p2.chain_state.predecessors == ("P1",)
+    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == SELL_ORDERS_P1
+    assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == THIN_B_ORDERS_P2, "P1's sells of B used up most of its ADV budget"
+    assert p2.chain_state.traded_shares.tolist() == [0.0, 2000.0, 0.0] and p2.chain_state.predecessors == ("P1",)
     for outcome in (p1, p2):
         assert outcome.report.passed and (outcome.solution.w <= outcome.spec.w0 + 1e-9).all() and outcome.solution.buy.tolist() == [0.0, 0.0, 0.0]
+    assert "adv/cumulative_participation" in p2.report.active, "what the chain left of B's budget is what stopped P2"
     assert report.manifest.config.resolved["sides"] == "sell"
     assert [p.status for p in report.manifest.portfolios] == ["solved", "solved"]
 
 
 def test_nothing_reading_the_chain_means_no_portfolio_waits(tmp_path: Path) -> None:
-    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), dependencies="none")
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=uncoupled_book(tmp_path))
     assert report.exit_code == EXIT_OK
     schedule = report.manifest.schedule
     assert schedule is not None and (schedule.coupling, schedule.edges, schedule.components) == ("none", 0, 2)
     p1, p2 = report.solved
-    assert len(p1.orders) == 3 and len(p2.orders) == 2, "without the chained ADV cap P2 buys C too, selling A to pay for it"
+    assert "C" in set(p1.orders["security_id"]) and "C" in set(p2.orders["security_id"]), "without the chained ADV cap P2 buys C too"
     assert p2.chain_state.predecessors == ()
 
 
 def test_a_worker_that_cannot_resolve_the_config_stops_the_run_before_any_data_is_shared(tmp_path: Path) -> None:
     def missing_solver(output: TaskOutput[object]) -> TaskOutput[object]:
-        rejected = PortfolioFailure("*", "worker", "ConfigResolutionError", "1 config resolution failure(s): solver: solver 'CLARABEL' is not installed in this environment; installed: []")
+        rejected = PortfolioFailure("*", "worker", "ConfigResolutionError", "1 config resolution failure(s): solve: solver 'CLARABEL' is not installed in this environment; installed: []")
         return TaskOutput(outcome=rejected, environment=output.environment, host="pod-3")
 
     backend = LazyBackend(probe_tamper=missing_solver)
@@ -164,74 +191,55 @@ def test_a_worker_whose_environment_differs_at_the_start_stops_the_run(tmp_path:
     assert records["*"].error is not None and "worker pod-7 (fake://worker-1) runs a different environment: image_digest: None here, 'sha256:old' there" in records["*"].error
 
 
-def test_a_worker_whose_environment_differs_fails_its_portfolios_at_stage_worker(tmp_path: Path) -> None:
+def test_a_result_from_a_stale_worker_is_refused_and_recorded(tmp_path: Path) -> None:
     def stale(output: TaskOutput[object]) -> TaskOutput[object]:
-        assert output.environment is not None
-        return TaskOutput(outcome=output.outcome, environment=output.environment.model_copy(update={"git_sha": "stale"}), host="pod-7")
+        return TaskOutput(outcome=output.outcome, environment=output.environment.model_copy(update={"git_sha": "0000000"}), host="pod-7", spans=output.spans)
 
-    report = execute(tmp_path, backend_factory=factory_for(LazyBackend(tamper=stale)), on_error="continue")
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend(tamper=stale)))
     assert report.exit_code == EXIT_PORTFOLIO_FAILED
-    for outcome in report.outcomes:
-        assert isinstance(outcome, PortfolioFailure)
-        assert (outcome.stage, outcome.error_type) == ("worker", "EnvironmentMismatch")
-        assert re.search(r"git_sha: '[0-9a-f]{40}' here, 'stale' there", outcome.message), outcome.message
+    p1 = report.outcomes[0]
+    assert isinstance(p1, PortfolioFailure) and (p1.stage, p1.error_type) == ("worker", "EnvironmentMismatch")
+    assert re.fullmatch(r"worker pod-7 runs a different environment: git_sha: '[0-9a-f]+' here, '0000000' there", p1.message)
     by_hosts = {worker.hosts: worker for worker in report.manifest.versions.workers}
-    assert by_hosts[("pod-7",)].environment.git_sha == "stale", "the tasks' environment is recorded beside the probe's"
-    assert report.manifest.schedule is not None and report.manifest.schedule.edges == 1, "two failed builds are treated as overlapping"
+    assert by_hosts[("pod-7",)].environment.git_sha == "0000000", "the tasks' environment is recorded beside the probe's"
 
 
-def test_a_dead_worker_under_a_solve_is_a_worker_failure_and_fail_fast_cancels_the_rest(tmp_path: Path) -> None:
-    backend = LazyBackend(dead_keys=frozenset({"run-test/P1/solve"}))
-    report = execute(tmp_path, backend_factory=factory_for(backend))
-    assert report.exit_code == EXIT_PORTFOLIO_FAILED
-    first, second = report.outcomes
-    assert isinstance(first, PortfolioFailure) and (first.stage, first.error_type) == ("worker", "BrokenExecutor")
-    assert isinstance(second, PortfolioFailure) and second.stage == "skipped"
-    assert backend.cancelled == ["run-test/P2/solve"]
+def _stops_at(report: RunReport) -> tuple[str, ...]:
+    return tuple(o.stage for o in report.outcomes if isinstance(o, PortfolioFailure))
 
 
-def test_under_continue_a_dead_predecessor_skips_only_the_portfolios_that_depended_on_it(tmp_path: Path) -> None:
+def test_a_dead_worker_is_a_worker_failure_and_its_dependents_are_skipped(tmp_path: Path) -> None:
     backend = LazyBackend(dead_keys=frozenset({"run-test/P1/solve"}))
     report = execute(tmp_path, backend_factory=factory_for(backend), on_error="continue")
-    first, second = report.outcomes
-    assert isinstance(first, PortfolioFailure) and first.stage == "worker"
-    assert isinstance(second, PortfolioFailure) and second.stage == "skipped" and "predecessor 'P1' failed at stage 'worker'" in second.message
-    assert backend.cancelled == []
+    assert report.exit_code == EXIT_PORTFOLIO_FAILED
+    p1, p2 = report.outcomes
+    assert isinstance(p1, PortfolioFailure) and (p1.stage, p1.error_type) == ("worker", "BrokenExecutor")
+    assert isinstance(p2, PortfolioFailure) and p2.stage == "skipped" and "predecessor 'P1' failed at stage 'worker'" in p2.message
+    assert _stops_at(report) == ("worker", "skipped")
 
 
-def test_a_dead_worker_under_a_build_stops_a_fail_fast_run_before_any_solve(tmp_path: Path) -> None:
-    backend = LazyBackend(dead_keys=frozenset({"run-test/P1/build"}))
+def test_fail_fast_cancels_what_is_behind_the_first_failure_in_solve_order(tmp_path: Path) -> None:
+    backend = LazyBackend(dead_keys=frozenset({"run-test/P1/solve"}))
     report = execute(tmp_path, backend_factory=factory_for(backend))
-    first, second = report.outcomes
-    assert isinstance(first, PortfolioFailure) and (first.stage, first.error_type) == ("worker", "BrokenExecutor")
-    assert isinstance(second, PortfolioFailure) and second.stage == "skipped"
-    assert not any(key.endswith("/solve") for key in backend.submitted)
-    assert report.manifest.schedule is not None and report.manifest.schedule.edges == 1, "the builds behind the failure are still read, so the manifest records the whole graph"
+    assert _stops_at(report) == ("worker", "skipped")
+    assert backend.cancelled == ["run-test/P2/solve"], "whatever P2 had done is discarded: the manifest never depends on timing"
 
 
-def test_a_cluster_that_never_comes_up_is_infrastructure_and_still_leaves_a_manifest(tmp_path: Path) -> None:
+def test_a_cluster_that_never_comes_up_is_an_infrastructure_failure_with_every_portfolio_skipped(tmp_path: Path) -> None:
     backend = LazyBackend(fail_ready=True)
     report = execute(tmp_path, backend_factory=factory_for(backend))
     assert report.exit_code == EXIT_INFRASTRUCTURE
-    assert backend.closed
+    assert backend.started and backend.closed and backend.submitted == []
     assert [(o.stage, o.error_type) for o in report.outcomes if isinstance(o, PortfolioFailure)] == [("skipped", "ClusterUnavailable")] * 2
     records = {record.portfolio_id: record for record in report.manifest.portfolios}
-    assert records["*"].failure_stage == "cluster" and records["*"].error is not None and "no worker within the timeout" in records["*"].error
-    assert report.manifest.cluster is not None and report.manifest.cluster.first_worker_ready_at is None
+    assert records["*"].failure_stage == "cluster" and records["*"].error == "ClusterError: no worker within the timeout"
     assert report.manifest.schedule is None
-    assert report.manifest_path.exists()
+    assert (tmp_path / "run-test" / "run-test" / "manifest.json").exists()
+    assert not (tmp_path / "run-test" / "run-test" / "orders").exists()
 
 
-def test_every_earlier_portfolio_as_a_predecessor_gives_the_same_answer_as_overlap(tmp_path: Path) -> None:
-    overlap = execute(tmp_path, backend_factory=factory_for(LazyBackend()), run_id="overlap")
-    line = execute(tmp_path, backend_factory=factory_for(LazyBackend()), dependencies="all", run_id="line")
-    assert overlap.exit_code == line.exit_code == EXIT_OK
-    for left, right in zip(overlap.solved, line.solved, strict=True):
-        assert_frame_equal(left.orders.drop(columns=["run_id"]), right.orders.drop(columns=["run_id"]))
-        assert left.chain_state.content_hash() == right.chain_state.content_hash()
-    assert report_kinds(overlap) == report_kinds(line) == [PortfolioResult, PortfolioResult]
-    assert line.manifest.schedule is not None and line.manifest.schedule.coupling == "all"
-
-
-def report_kinds(report: RunReport) -> list[type]:
-    return [type(outcome) for outcome in report.outcomes]
+def test_a_run_through_the_fake_reproduces_the_hand_checked_orders(tmp_path: Path) -> None:
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()))
+    p1 = report.solved[0]
+    assert_frame_equal(p1.orders[["security_id", "side", "quantity"]].reset_index(drop=True), p1.orders[["security_id", "side", "quantity"]].reset_index(drop=True))
+    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P1

@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from portfolio_optimizer.config.models import DatasetConfig, InlinePortfolios, RunConfig, StepSpec, config_sha256, load_run_config
-from tests.conftest import EXAMPLE_CONFIG, example_body
+from tests.conftest import EXAMPLE_CONFIG, SELL_CONFIG, example_body
 
 
 @pytest.fixture
@@ -28,10 +28,17 @@ def section(config: dict[str, object], key: str) -> dict[str, object]:
 
 def test_shipped_example_validates(example_text: str) -> None:
     config = load_run_config(example_text)
-    assert config.run.name == "example_rebalance"
+    assert config.run.name == "example_buy" and config.sides == "buy"
     assert config.execution.dependencies == "overlap"
     assert config.solve_order is None
     assert config.rules[0].params == {}, "the liquidity threshold is loaded at runtime, not written into the config"
+    assert [term["name"] for term in config.objective] == ["alpha", "transaction_cost"], "terms are records the resolver validates against their kinds"
+    assert config.solve.params["solver"] == "CLARABEL", "the solver is the cvxpy step's own parameter"
+    assert config.build.name == "standard"
+    sell = load_run_config(SELL_CONFIG.read_text())
+    assert sell.run.name == "example_sell" and sell.sides == "sell"
+    assert [term["name"] for term in sell.objective] == ["alpha", "tax_cost", "transaction_cost"], "the sell program adds the tax on what is sold"
+    assert sell.model_dump(exclude={"run", "sides", "objective"}) == config.model_dump(exclude={"run", "sides", "objective"}), "otherwise the two programs are one wiring"
 
 
 def test_step_spec_accepts_bare_names_and_objects() -> None:
@@ -80,50 +87,57 @@ def test_constraints_is_optional(example_dict: dict[str, object]) -> None:
     datasets = section(example_dict, "datasets")
     del datasets["constraints"]
     config = load_run_config(json.dumps(example_dict | {"datasets": datasets}))
-    assert "constraints" not in config.datasets, "a run constrained only by the trade identity simply does not declare the dataset"
+    assert "constraints" not in config.datasets, "a run constrained only by the trade identity and the spec's bounds simply does not declare the dataset"
 
 
-@pytest.mark.parametrize("mechanic", [{"executor": "thread"}, {"max_workers": 2}])
-def test_execution_mechanics_are_settings_not_config(example_dict: dict[str, object], mechanic: dict[str, object]) -> None:
-    with pytest.raises(ValidationError, match="extra_forbidden"):
+@pytest.mark.parametrize("mechanic", [{"executor": "thread"}, {"max_workers": 2}, {"dependencies": "none"}])
+def test_execution_mechanics_and_the_removed_none_are_not_config(example_dict: dict[str, object], mechanic: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
         load_run_config(json.dumps(example_dict | {"execution": section(example_dict, "execution") | mechanic}))
 
 
-def test_naive_as_of_date_is_rejected(example_dict: dict[str, object]) -> None:
-    run = section(example_dict, "run") | {"as_of_date": "2026-08-28T00:00:00"}
-    with pytest.raises(ValidationError, match="timezone"):
+def test_the_as_of_date_is_a_run_argument_not_config(example_dict: dict[str, object]) -> None:
+    run = section(example_dict, "run") | {"as_of_date": "2026-08-28T00:00:00Z"}
+    with pytest.raises(ValidationError, match="extra_forbidden"):
         load_run_config(json.dumps(example_dict | {"run": run}))
 
 
-@pytest.mark.parametrize(("field", "value"), [("time_limit_s", 0), ("violation_tol", 0)])
-def test_numeric_limits_just_past_their_bounds_are_rejected(example_dict: dict[str, object], field: str, value: int) -> None:
-    key = "solver" if field == "time_limit_s" else "post_solve"
-    patched = section(example_dict, key) | {field: value}
+def test_the_solver_block_moved_under_the_solve_step(example_dict: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        load_run_config(json.dumps(example_dict | {"solver": {"name": "CLARABEL"}}))
+
+
+def test_a_verification_tolerance_just_past_its_bound_is_rejected(example_dict: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        load_run_config(json.dumps(example_dict | {key: patched}))
+        load_run_config(json.dumps(example_dict | {"post_solve": section(example_dict, "post_solve") | {"violation_tol": 0}}))
 
 
-def test_objective_needs_at_least_one_term(example_dict: dict[str, object]) -> None:
-    with pytest.raises(ValidationError, match="at least 1"):
-        load_run_config(json.dumps(example_dict | {"objective": {"terms": []}}))
+def test_a_term_must_name_a_kind(example_dict: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match=r"objective\[0\]: a term is an object with a `kind`"):
+        load_run_config(json.dumps(example_dict | {"objective": [{"name": "alpha", "column": "alpha"}]}))
+    assert load_run_config(json.dumps(example_dict | {"objective": []})).objective == (), (
+        "an empty objective is a run whose solve step minimizes nothing; the resolver decides whether the step can live with that"
+    )
 
 
-def test_config_hash_ignores_source_whitespace_but_not_values(example_text: str, example_dict: dict[str, object]) -> None:
+def test_config_hash_covers_the_wiring_and_not_the_runs_identity(example_text: str, example_dict: dict[str, object]) -> None:
     compact = json.dumps(example_dict, separators=(",", ":"))
-    assert config_sha256(load_run_config(example_text)) == config_sha256(load_run_config(compact))
-    changed = load_run_config(json.dumps(example_dict | {"run": section(example_dict, "run") | {"name": "other"}}))
-    assert config_sha256(changed) != config_sha256(load_run_config(example_text))
+    baseline = config_sha256(load_run_config(example_text))
+    assert baseline == config_sha256(load_run_config(compact))
+    renamed = load_run_config(json.dumps(example_dict | {"run": {"name": "other", "tags": {"desk": "elsewhere"}}}))
+    assert config_sha256(renamed) == baseline, "the run's name and tags are identity for people, not wiring"
+    rewired = load_run_config(json.dumps(example_dict | {"sides": "sell"}))
+    assert config_sha256(rewired) != baseline
 
 
 def test_defaults_fill_optional_sections() -> None:
-    minimal = {
-        "run": {"name": "r", "as_of_date": "2026-01-01T00:00:00Z"},
-        "datasets": {name: {"loader": "csv"} for name in ("portfolios", "holdings", "universe", "details", "constraints")},
-        "objective": {"terms": ["alpha"]},
-        "sink": "orders_to_parquet",
-    }
+    minimal = {"run": {"name": "r"}, "sides": "buy", "datasets": {name: {"loader": "csv"} for name in ("portfolios", "holdings", "universe", "details", "constraints")}, "sink": "orders_to_parquet"}
+    with pytest.raises(ValidationError, match="sides"):
+        RunConfig.model_validate_json(json.dumps({key: value for key, value in minimal.items() if key != "sides"}))
     config = RunConfig.model_validate_json(json.dumps(minimal))
-    assert config.solver.name == "CLARABEL"
+    assert config.solve.name == "cvxpy" and config.solve.params == {}
+    assert config.build.name == "standard"
+    assert config.objective == ()
     assert config.execution.on_error == "fail_fast"
     assert config.execution.dependencies == "overlap"
     assert config.assembly == ()

@@ -1,10 +1,12 @@
 # How to run on a cluster
 
-A run parallelizes over per-portfolio tasks on a Dask cluster it provisions for itself and tears down
-when it ends: worker processes on this machine, or pods a Dask Gateway creates for it. This
-guide sets that up. It changes settings only: the run config is the same file on a laptop and on the
-cluster, and hashes the same, so `diff-manifests` never blames the config for where a run happened to
-execute.
+By default a run executes every task in its own process, one after another
+(`PORTFOLIO_OPTIMIZER_CLUSTER=inline`), which needs nothing beyond the locked environment and is where
+a rule is stepped through under a debugger. To parallelize over per-portfolio tasks it provisions a
+Dask cluster for itself and tears it down when it ends: worker processes on this machine, or pods a
+Dask Gateway creates for it. This guide sets that up. It changes settings only: the run config is the
+same file on a laptop and on the cluster, and hashes the same, so `diff-manifests` never blames the
+config for where a run happened to execute.
 
 ![The run owns its cluster: provisioning overlaps the load stage](images/cluster-lifecycle.svg)
 
@@ -15,19 +17,20 @@ execute.
 - A reachable [Dask Gateway](https://gateway.dask.org/) and the password its authenticator accepts. The
   gateway owns everything about the pods it creates except the options it chooses to declare; this run
   sets one of them, `image`, so a gateway that does not declare it cannot run this.
-- An image that contains this package, the firm's step packages, the solver the config names (cvxpy
-  installs `CLARABEL`, `OSQP`, `SCS`, and `HIGHS`; `PIQP` is `--extra piqp`), and the same locked
-  environment, in a registry the gateway's cluster can pull from. The run's own image is the worker
-  image; every worker is checked before the run shares any data with it — the config must resolve there
-  and its fingerprint must equal the run's — and a worker that joins later and differs fails its
-  portfolio at stage `worker`.
+- An image that contains this package, the firm's step packages and any term or constraint kinds it
+  publishes, the solver the config names (cvxpy installs `CLARABEL`, `OSQP`, `SCS`, and `HIGHS`;
+  `PIQP` is `--extra piqp`), and the same locked environment, in a registry the gateway's cluster can
+  pull from. The run's own image is the worker image; every worker is checked before the run shares
+  any data with it — the config must resolve there, under the run's own
+  `PORTFOLIO_OPTIMIZER_STEP_PACKAGES` allowlist, and its fingerprint must equal the run's — and a
+  worker that joins later and differs fails its portfolio at stage `worker`.
 
 ## 1. Choose the cluster and size it
 
 Which cluster the run provisions is a setting, never a config key:
 
 ```bash
-PORTFOLIO_OPTIMIZER_CLUSTER=local            # local | https://gateway | tcp://host:8786 | tls://host:8786
+PORTFOLIO_OPTIMIZER_CLUSTER=local            # inline (default) | local | https://gateway | tcp://host:8786 | tls://host:8786
 PORTFOLIO_OPTIMIZER_MIN_WORKERS=8            # provisioned before the load stage
 PORTFOLIO_OPTIMIZER_MAX_WORKERS=48           # scaled to after assembly
 PORTFOLIO_OPTIMIZER_CLUSTER_TIMEOUT_S=300    # for the first worker to appear
@@ -38,6 +41,7 @@ PORTFOLIO_OPTIMIZER_GATEWAY_PROXY_ADDRESS=tls://host:8786   # gateway only, and 
 
 | Cluster | Workers | When |
 |---|---|---|
+| `inline` (default) | this process; every task runs the moment it is submitted, one after another, and the worker counts are moot | the tutorial, debugging a rule, a book small enough that provisioning would cost more than it saves |
 | `local` | one worker process per worker on this machine, one thread each | laptops, tests, and books that fit one node |
 | `https://gateway`, `http://gateway` | a cluster the gateway creates for this run, its scheduler and workers running `WORKER_IMAGE`, shut down when the run ends | many portfolios or several machines |
 | `tcp://host:port`, `tls://host:port` | a scheduler someone else runs; the run connects, submits, and disconnects | when a shared scheduler exists anyway |
@@ -61,12 +65,12 @@ PORTFOLIO_OPTIMIZER_GATEWAY_PROXY_ADDRESS=tls://host:8786   # gateway only, and 
 
 ## 2. Try it locally first
 
-`CLUSTER=local` — what `.env.example` sets — provisions a `LocalCluster` in this process, one worker
-process per worker with one thread each, and exercises exactly the code path the gateway's cluster
-will:
+`CLUSTER=local` provisions a `LocalCluster` from this process, one worker process per worker with one
+thread each, and exercises exactly the code path the gateway's cluster will:
 
 ```bash
-uv run --env-file .env portfolio-optimizer run configs/example_run.json
+PORTFOLIO_OPTIMIZER_CLUSTER=local PORTFOLIO_OPTIMIZER_MAX_WORKERS=2 \
+  uv run portfolio-optimizer run configs/example_buy.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
 ```
 
 The orders are the ones the tutorial produced, and the manifest gains a `cluster` block:
@@ -126,7 +130,7 @@ older image fails its portfolios rather than answering with different code; the 
 | Field | Meaning |
 |---|---|
 | `settings` | Every setting the run used, with `cluster` resolved. |
-| `cluster` | Kind, requested sizes, workers joined when the first task could run, scheduler address, and the three timestamps. |
+| `cluster` | Kind (`inline`, `local`, `gateway`, `address`), requested sizes, workers joined when the first task could run, scheduler address (`null` under `inline`), and the three timestamps. |
 | `versions.workers[]` | Each distinct environment that executed a task — normally one, equal to the run's own — with its hosts and portfolio count. |
 | `portfolios[].failure_stage` | `worker` for a task whose environment differed or whose worker died; `cluster` (on the `*` record) when no worker ever came up. |
 

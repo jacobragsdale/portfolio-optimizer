@@ -9,12 +9,13 @@ twice, with ``dependencies`` ``overlap`` and ``all``.
 import random
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.results import PortfolioResult
 from portfolio_optimizer.engine.runner import EXIT_OK, RunReport
-from tests.conftest import SHIPPED_CONSTRAINTS, example_body
+from tests.conftest import SHIPPED_CONSTRAINTS, constraint_frame, example_body
 from tests.engine.fakes import LazyBackend, factory_for
 from tests.engine.support import execute
 
@@ -46,11 +47,10 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
     (root / "buy_list.csv").write_text("\n".join(buy_list) + "\n")
     (root / "buy_universe_parameters.csv").write_text("name,value\nmin_adv_shares,1000\n")
     (root / "global_parameters.csv").write_text("name,value\nrisk_aversion,2.5\n")
-    universe_rows = (f"{security},{PRICES[security]},TECH,20000,1,false,{ALPHAS[security]}" for security in SECURITIES)
-    (root / "universe.csv").write_text("\n".join(["security_id,price,sector,adv_shares,lot_size,restricted,alpha", *universe_rows]) + "\n")
-    constraints = ["portfolio_id,name,label,params"]
-    constraints.extend(f"{portfolio_id},{name}," for portfolio_id in portfolio_ids for name in SHIPPED_CONSTRAINTS)
-    (root / "constraints.csv").write_text("\n".join(constraints) + "\n")
+    universe_rows = (f"{security},{PRICES[security]},TECH,20000,1,false,{ALPHAS[security]},5" for security in SECURITIES)
+    (root / "universe.csv").write_text("\n".join(["security_id,price,sector,adv_shares,lot_size,restricted,alpha,tcost_bps", *universe_rows]) + "\n")
+    constraint_frame(SHIPPED_CONSTRAINTS, portfolio_id=portfolio_ids[0]).iloc[0:0].to_csv(root / "constraints.csv", index=False)
+    pd.concat([constraint_frame(SHIPPED_CONSTRAINTS, portfolio_id=portfolio_id) for portfolio_id in portfolio_ids]).to_csv(root / "constraints.csv", index=False)
 
 
 def run_book(tmp_path: Path, root: Path, dependencies: str, run_id: str) -> RunReport:
