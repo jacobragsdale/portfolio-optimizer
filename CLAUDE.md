@@ -7,4 +7,5 @@
   prettier for JSON). Regenerate the published schema after config-model changes:
   `uv run portfolio-optimizer schema > configs/run-config.schema.json`.
 - The README's annotated `jsonc` block must parse equal to `configs/example_inflow.json`; a test enforces
-  it, so update both together. `configs/example_outflow.json` is the same wiring for the outflow.
+  it, so update both together. `configs/example_outflow.json` and `configs/example_rebalance.json` are the same wiring for the
+  outflow and the rebalance.

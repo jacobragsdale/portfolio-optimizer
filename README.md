@@ -7,8 +7,9 @@ constraint kinds, solve steps, and sinks as ordinary Python.
 A run is one JSON file, an order flow, and an as-of date. The engine loads the data the file names, assembles it,
 applies your rules per portfolio, builds one problem per portfolio, solves along a dependency graph it
 derives from the data, re-verifies every answer without cvxpy, rounds to whole-share orders, publishes
-them, and writes a manifest that lets anyone reproduce and audit the run. A run is an inflow or an outflow — it buys, or it sells: a desk's
-inflow and its outflow are two runs over one snapshot, and the template ships one of each.
+them, and writes a manifest that lets anyone reproduce and audit the run. A run is an inflow, an outflow, or a rebalance — it buys, it sells, or it does either to get a book
+back inside its bounds: a desk's order flows are separate runs over one snapshot, and the template
+ships one of each.
 
 ## The run config, block by block
 
@@ -19,18 +20,19 @@ The quickest way to see what the engine does is to read the inflow it ships with
 // The inflow that ships with the template, annotated. The real file is strict JSON with no
 // comments — these lines are stripped and the rest compared against it by a test, so this copy
 // cannot drift. `configs/example_outflow.json` is the same wiring with three keys changed: the run's
-// name, `order_flow`, and a `tax_cost` term on what is sold.
+// name, `order_flow`, and a `tax_cost` term on what is sold; `configs/example_rebalance.json` changes
+// the first two only.
 {
   // Identity for people: recorded in the manifest, kept out of the config hash. The instant the
   // run is *as of* is not here either — it is `run --as-of`, so one wiring runs every day under
   // one hash and `diff-manifests` compares Monday with Tuesday.
   "run": {"name": "example_inflow", "tags": {"desk": "template"}},
 
-  // The run's order flow: cash coming into the book or going out. `inflow` buys: every name has one
-  // variable, its target weight, with the buy an expression of it and no sell vector at all;
-  // `outflow` sells, the mirror. Nothing can be bought and sold in one solve, so a term that rewards
-  // selling — a harvestable loss — is exact, and the problem is a third the size of a two-sided
-  // one. Portfolios couple through the side the order flow trades.
+  // The run's order flow: cash coming into the book, going out, or neither. `inflow` buys: every
+  // name has one variable, its target weight, with the buy an expression of it and no sell vector at
+  // all; `outflow` sells, the mirror; `rebalance` may do either, with buy and sell the positive and
+  // negative parts of the change. One variable per name whichever it is, so nothing is bought and
+  // sold in one solve. Portfolios couple through the trades the order flow makes.
   "order_flow": "inflow",
 
   // Every input the run loads. Each dataset starts the moment the datasets its `depends_on` names
@@ -127,9 +129,11 @@ optional `params` (see [the one convention](#the-one-convention)). Top to bottom
 
 - **`run`** — the run's identity. `name` and `tags` go into the manifest and nothing else; they are kept
   out of the config hash, as is the as-of date, which is a run argument.
-- **`order_flow`** — `inflow` or `outflow`: whether cash comes into the book or goes out, so whether the
-  run buys or sells. It fixes what a trade means, which side portfolios couple through, and which
-  direction cash can move. The other side does not exist in the
+- **`order_flow`** — `inflow`, `outflow`, or `rebalance`: whether cash comes into the book, goes out, or
+  neither, so whether the run buys, sells, or may do either. It fixes what a trade means, which trades
+  portfolios couple through, and which direction cash can move. A term or row that reads a side an
+  inflow or an outflow lacks is refused before any data loads, and so is a term that rewards a side
+  under a rebalance, where buy and sell are convex rather than affine. The other side does not exist in the
   problem, and a term or row that reads it is refused before any data loads.
 - **`datasets`** — everything the run loads, every one a frame, scheduled as the dependency DAG the
   entries declare. `portfolios` is the required first fact; `holdings`, `universe`, and `details` are
@@ -213,6 +217,7 @@ uv sync --locked
 uv run portfolio-optimizer validate-config configs/example_inflow.json
 uv run portfolio-optimizer run configs/example_inflow.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
 uv run portfolio-optimizer run configs/example_outflow.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
+uv run portfolio-optimizer run configs/example_rebalance.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
 ```
 
 No settings are needed: every one has a default, and the default cluster is `inline` — every task in
@@ -220,7 +225,8 @@ this process, one after another, which is also where a rule is stepped through u
 example is a hundred accounts over three securities, and each order flow takes about half a minute, of
 which almost all is the shipped loaders pretending to be the services they stand in for. The inflow
 puts each account's cash to work inside the book's shared liquidity; the outflow harvests
-the lots held at a loss. The first two accounts have a hand-checkable optimum under each; see
+the lots held at a loss; the rebalance does the inflow's buys and sells the negative-alpha name down
+to its sector floor in the same solve. The first two accounts have a hand-checkable optimum under each; see
 [the tutorial](docs/tutorial-first-run.md) for what to expect at each step.
 `portfolio-optimizer steps` lists every step and every term and constraint kind the environment can name.
 
@@ -270,7 +276,7 @@ an editor; the engine accepts the key and ignores it.
 | `src/portfolio_optimizer/config/` | The run-config models, the step resolver, and the JSON Schema generator. |
 | `src/portfolio_optimizer/cvx/` | `adapter.py`, the only module that imports cvxpy, and `order_flow.py`, the order-flow profiles' cvxpy half: each order flow's decision variable and trade identity. |
 | `src/portfolio_optimizer/solving.py` | The solve step's contract: `SolveRequest` in, `SolveResult` out; the solver table. |
-| `configs/example_inflow.json`, `configs/example_outflow.json`, `configs/run-config.schema.json`, `examples/data/` | The shipped example — an inflow and an outflow over one book of a hundred accounts and three securities, one CSV table per source — and the generated JSON Schema. |
+| `configs/example_inflow.json`, `configs/example_outflow.json`, `configs/example_rebalance.json`, `configs/run-config.schema.json`, `examples/data/` | The shipped example — an inflow, an outflow, and a rebalance over one book of a hundred accounts and three securities, one CSV table per source — and the generated JSON Schema. |
 | `benchmarks/` | `profile_portfolio.py` times one portfolio through the pipeline stage by stage at a chosen book size and order flow; `run_book.py` and `run_state_book.py` run a synthetic book of *N* portfolios on a local cluster and report the derived schedule and the timing spans, sharing the run harness in `harness.py`. The numbers in `IDEAS.md` come from them. |
 | `docs/` | Tutorial, how-to guides, reference, and explanation. |
 | `IDEAS.md` | Threads that are not yet decisions, and known defects waiting to be fixed. |
@@ -284,7 +290,7 @@ an editor; the engine accepts the key and ignores it.
 - [How to add security analytics columns to holdings and the universe](docs/how-to-add-security-analytics.md)
 - [How to add an objective term or a constraint kind](docs/how-to-add-a-term.md)
 - [How to set the solve order](docs/how-to-set-the-solve-order.md)
-- [How to run the inflow and the outflow](docs/how-to-run-an-order-flow.md)
+- [How to run an order flow: inflow, outflow, rebalance](docs/how-to-run-an-order-flow.md)
 - [How to replace the cvxpy solve with your own function or library](docs/how-to-write-a-solve-step.md)
 - [How to run on a cluster](docs/how-to-run-on-a-cluster.md)
 - [Reference: the run config](docs/reference-run-config.md)

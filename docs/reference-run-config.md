@@ -77,11 +77,12 @@ key on) and `weight` (a string, default `"1"`; negative for a reward). The shipp
 
 | Kind | Fields | Meaning |
 |---|---|---|
-| `linear` | `column` (optional), `vector` (`w` default, `trade`, or the side the run has — `buy` or `sell`) | `weight · columnᵀvector` over a per-security column of the spec — the exported `alpha`, the derived `tax_per_dollar` or `tcost_per_dollar`, any exported universe column. Omitted, every name counts once, so `trade` alone is a turnover penalty. |
+| `linear` | `column` (optional), `vector` (`w` default, `trade`, or a side the run has — `buy` or `sell`; both under `rebalance`, where they are convex and a reward on any of the three is refused) | `weight · columnᵀvector` over a per-security column of the spec — the exported `alpha`, the derived `tax_per_dollar` or `tcost_per_dollar`, any exported universe column. Omitted, every name counts once, so `trade` alone is a turnover penalty. |
 
 A kind an installed package publishes in the entry-point group `portfolio_optimizer.term` is accepted
 by name like a shipped one. Under the shipped `cvxpy` step the objective needs at least one term, and a
-term that reads a decision vector the run's `order_flow` lacks, or is not convex, is refused at resolve.
+term that reads a decision vector the run's `order_flow` lacks, rewards a convex one under `rebalance`, or
+is not convex, is refused — at resolve where the config shows it, at solve where only the data does.
 
 ## `solve`
 
@@ -208,7 +209,8 @@ spec's own vectors or an exported universe column. The numbers stay in the data;
 The per-security box `lb ≤ w ≤ ub` — the bounds the build derives from the style's `max_weight`, the
 universe's optional `min_weight`/`max_weight` columns, and the `restricted` flag — is part of every
 solve's trade identity, not a row; so is what the trade means under the run's `order_flow` — `w ≥ w0` with
-`buy = w − w0`, or `w ≤ w0` with `sell = w0 − w`.
+`buy = w − w0`, `w ≤ w0` with `sell = w0 − w`, or `w` free in the box with `buy = max(w − w0, 0)` and
+`sell = max(w0 − w, 0)` under `rebalance`.
 
 The shipped example's rows for one account (`examples/data/constraints.csv`):
 

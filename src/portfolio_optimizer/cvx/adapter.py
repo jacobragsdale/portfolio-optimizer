@@ -48,10 +48,10 @@ class SideUnavailableError(LookupError):
 class DecisionVars:
     """The decision variables of one solve, as fractions of NAV; what each is depends on the run's order flow.
 
-    ``w`` is always a variable, the target weight. ``buy`` or ``sell`` is what the order-flow profile made
-    it — an affine expression of ``w`` on the side the run has — and absent on the side it lacks,
-    where reading it raises :class:`SideUnavailableError` (dry construction at ``validate-config`` is
-    where that surfaces). A term that means "the amount traded" reads ``trade``, and one that means
+    ``w`` is always a variable, the target weight. ``buy`` and ``sell`` are what the order-flow profile made
+    them — an affine expression of ``w`` on the side an inflow or an outflow has, absent on the side it
+    lacks, where reading it raises :class:`SideUnavailableError` (dry construction at ``validate-config``
+    is where that surfaces), and the convex positive and negative parts of the change under a rebalance. A term that means "the amount traded" reads ``trade``, and one that means
     "the amount traded on the side the run couples through" reads ``coupled``; both exist under
     every order flow, and under either they are the one side's vector.
     """
@@ -66,14 +66,14 @@ class DecisionVars:
 
     @property
     def buy(self) -> Expr:
-        """The non-negative buy, as a fraction of NAV; absent in an outflow."""
+        """The non-negative buy, as a fraction of NAV; affine in an inflow, convex in a rebalance, absent in an outflow."""
         if self._buy is None:
             raise SideUnavailableError(side="buy", order_flow=self.order_flow)
         return self._buy
 
     @property
     def sell(self) -> Expr:
-        """The non-negative sell, as a fraction of NAV; absent in an inflow."""
+        """The non-negative sell, as a fraction of NAV; affine in an outflow, convex in a rebalance, absent in an inflow."""
         if self._sell is None:
             raise SideUnavailableError(side="sell", order_flow=self.order_flow)
         return self._sell

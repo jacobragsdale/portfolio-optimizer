@@ -459,9 +459,10 @@ solve → orders. "Did the data change, or did the solver?" is a one-command que
 
 ## The example, stage by stage
 
-The shipped example is two configs over one book: `configs/example_inflow.json`, the desk's inflow
-(`order_flow: inflow`, two `linear` terms — alpha and transaction cost), and `configs/example_outflow.json`, its
-outflow (`order_flow: outflow`, three — alpha, tax cost, transaction cost). Each declares a hundred
+The shipped example is three configs over one book: `configs/example_inflow.json`, the desk's inflow
+(`order_flow: inflow`, two `linear` terms — alpha and transaction cost), `configs/example_outflow.json`, its
+outflow (`order_flow: outflow`, three — alpha, tax cost, transaction cost), and
+`configs/example_rebalance.json`, the rebalance (`order_flow: rebalance`, the inflow's two terms). Each declares a hundred
 accounts over three securities, five global datasets and two loaded per account (`holdings`, a call
 each with eight in flight — 200 rows in 100 batches — and `details`, twenty-five ids a call, four
 batches), no assembly steps, one rule, up to six typed constraint rows an account (530 rows in all),

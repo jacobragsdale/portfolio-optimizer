@@ -12,8 +12,9 @@ is what decides whether the build path or the solver needs work; scheduling is m
 
 The book is generated from a seed, so two runs of one command time the same problem. ``--order-flow``
 selects the order flow: the inflow invests the tenth of NAV the book starts with in cash under
-the example's inflow terms, and the outflow, under its terms with ``tax_cost`` added, lets the
-book raise cash (a cash cap of one), since it can only add to it.
+the example's inflow terms; the outflow, under its terms with ``tax_cost`` added, lets the
+book raise cash (a cash cap of one), since it can only add to it; the rebalance, under the inflow's
+terms, may do either and gets the same cap.
 """
 
 import argparse
@@ -113,7 +114,7 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
         max_adv_participation=Decimal("0.25"),
         min_trade_notional=Decimal(0),
         cash_lb=Decimal(0),
-        cash_ub=Decimal(1) if order_flow == "outflow" else Decimal(0),
+        cash_ub=Decimal(0) if order_flow == "inflow" else Decimal(1),
     )
     rows = [constraint_row("P1", kind, label, params) for kind, label, params in SHIPPED_CONSTRAINTS]
     rows.append(
@@ -273,7 +274,7 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--sectors", type=int, default=11)
     parser.add_argument("--held", type=int, default=25_000)
     parser.add_argument("--solver", default="CLARABEL")
-    parser.add_argument("--order-flow", default="inflow", choices=sorted(OBJECTIVE), help="the order flow to time: the inflow or the outflow")
+    parser.add_argument("--order-flow", default="inflow", choices=sorted(OBJECTIVE), help="the order flow to time: the inflow, the outflow, or the rebalance")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--verbose", action="store_true", help="let the solver print its iteration log")
     return parser.parse_args(argv)

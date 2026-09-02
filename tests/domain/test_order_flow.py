@@ -1,4 +1,4 @@
-"""Tier 1: the order-flow profiles — the split, the identity residuals, the tradable set, what a dependent receives, and the starts a side cannot trade out of."""
+"""Tier 1: the order-flow profiles — the split, the identity residuals, the tradable set, what a dependent receives, and the starts an order flow cannot trade out of."""
 
 from decimal import Decimal
 from typing import get_args
@@ -7,22 +7,23 @@ import numpy as np
 import pytest
 
 from portfolio_optimizer.cvx.order_flow import ORDER_FLOWS
-from portfolio_optimizer.domain.order_flow import INFLOW, OUTFLOW, PROFILES, OrderFlow, profile_for
+from portfolio_optimizer.domain.order_flow import INFLOW, OUTFLOW, PROFILES, REBALANCE, OrderFlow, profile_for
 from portfolio_optimizer.domain.results import Contribution
 from tests.conftest import Factories, Frames
 
 
 def test_every_profile_has_its_cvxpy_half_and_the_config_can_select_it() -> None:
-    assert set(PROFILES) == set(ORDER_FLOWS) == set(get_args(OrderFlow.__value__)) == {"inflow", "outflow"}
+    assert set(PROFILES) == set(ORDER_FLOWS) == set(get_args(OrderFlow.__value__)) == {"inflow", "outflow", "rebalance"}
     assert profile_for("inflow") is INFLOW
     assert profile_for("outflow") is OUTFLOW
+    assert profile_for("rebalance") is REBALANCE
     with pytest.raises(ValueError, match="order_flow 'both' is not one the engine knows"):
         profile_for("both")
 
 
 def test_every_profile_holds_the_specs_box(make: Factories) -> None:
     spec = make.spec(lb=np.array([0.1, 0.0, 0.0]), ub=np.array([0.5, 0.5, 0.5]))
-    for profile in (INFLOW, OUTFLOW):
+    for profile in (INFLOW, OUTFLOW, REBALANCE):
         residuals = dict(profile.identity_residuals(spec, make.solution(spec, w=np.array([0.05, 0.6, 0.35]))))
         np.testing.assert_allclose(residuals["lb"], [0.05, -0.6, -0.35], err_msg="S0 sits below its floor")
         np.testing.assert_allclose(residuals["ub"], [-0.45, 0.1, -0.15], err_msg="S1 sits above its cap")
@@ -123,6 +124,54 @@ def test_outflow_names_the_starts_it_cannot_trade_out_of(make: Factories) -> Non
     assert OUTFLOW.infeasible_starts(high_cash) == ["the book starts with cash 0.100000 above cash_ub 0.050000, and an outflow can only raise cash"]
     under_floor = make.spec(w0=np.array([0.1, 0.3, 0.6]), lb=np.array([0.2, 0.3, 0.0]))
     assert OUTFLOW.infeasible_starts(under_floor) == ["names whose floor is above their holding, which this order flow cannot trade out of: ['S0']"], "S1 sits exactly on its floor, which is allowed"
+
+
+# --- rebalance ---
+
+
+def test_a_rebalance_split_is_the_signed_change() -> None:
+    buy, sell = REBALANCE.split(np.array([0.5, 0.2, 0.3]), np.array([0.4, 0.3, 0.3]))
+    np.testing.assert_allclose(buy, [0.1, 0.0, 0.0])
+    np.testing.assert_allclose(sell, [0.0, 0.1, 0.0])
+
+
+@pytest.mark.parametrize(
+    ("w", "buy", "sell", "violated"),
+    [
+        (np.array([0.5, 0.2, 0.3]), np.array([0.1, 0.0, 0.0]), np.array([0.0, 0.1, 0.0]), set()),
+        (np.array([0.5, 0.2, 0.3]), np.array([0.2, 0.0, 0.0]), np.array([0.0, 0.1, 0.0]), {"trade_balance"}),
+        (np.array([0.5, 0.2, 0.3]), np.array([0.1, 0.0, -0.01]), np.array([0.0, 0.1, 0.0]), {"nonneg_buy", "trade_balance"}),
+        (np.array([0.5, 0.2, 0.3]), np.array([0.1, 0.1, 0.0]), np.array([0.0, 0.2, 0.0]), {"no_round_trip"}),
+    ],
+    ids=["buy-and-sell", "buy-off-w", "negative-buy", "hidden-round-trip"],
+)
+def test_a_rebalance_identity_residuals_name_what_is_violated(make: Factories, w: np.ndarray, buy: np.ndarray, sell: np.ndarray, violated: set[str]) -> None:
+    spec = make.spec(w0=np.array([0.4, 0.3, 0.3]))
+    residuals = dict(REBALANCE.identity_residuals(spec, make.solution(spec, w=w, buy=buy, sell=sell)))
+    assert set(residuals) == {"trade_balance", "nonneg_buy", "nonneg_sell", "no_round_trip", "lb", "ub"}
+    assert {name for name, residual in residuals.items() if residual.max() > 1e-9} == violated
+
+
+def test_a_rebalance_couples_through_every_trade_on_either_side(make: Factories, frames: Frames) -> None:
+    spec = make.spec(w0=np.array([0.5, 0.5, 0.0]), lb=np.array([0.5, 0.0, 0.0]), ub=np.array([0.5, 1.0, 1.0]))
+    assert REBALANCE.tradable(spec).tolist() == [False, True, True], "S0 is frozen at its holding; S1 can go either way; S2 can only be bought"
+    orders = frames.orders({"security_id": "S1", "side": "SELL", "quantity": 10, "notional": Decimal(1000)}, {"security_id": "S2", "side": "BUY", "quantity": 7, "notional": Decimal(700)})
+    contribution = REBALANCE.contribution("P1", orders)
+    assert (contribution.security_ids, contribution.traded_shares.tolist()) == (("S1", "S2"), [10.0, 7.0]), "a sell reaches a later portfolio the same as a buy"
+    state = REBALANCE.chain_state(spec, [Contribution("P0", ("S0", "S1", "S2"), np.array([5.0, 3.0, 2.0]))], np.ones(3, dtype=np.bool_))
+    assert state.traded_shares.tolist() == [0.0, 3.0, 2.0], "a predecessor's trade in a name this portfolio cannot trade is masked out"
+    assert REBALANCE.order_sides == {"BUY", "SELL"}
+    assert REBALANCE.coupled(make.solution(spec, buy=np.array([0.0, 0.1, 0.0]), sell=np.array([0.2, 0.0, 0.0]))).tolist() == [0.2, 0.1, 0.0]
+
+
+def test_a_rebalance_has_no_start_it_cannot_trade_out_of(make: Factories) -> None:
+    """Every start the one-sided profiles refuse is a rebalance's ordinary business: it sells the over-cap name down, buys the under-floor one up, and moves cash whichever way the bounds need."""
+    over_cap = make.spec(w0=np.array([0.6, 0.3, 0.1]), ub=np.array([0.5, 0.3, 1.0]))
+    under_floor = make.spec(w0=np.array([0.1, 0.3, 0.6]), lb=np.array([0.2, 0.3, 0.0]))
+    low_cash = make.spec(w0=np.array([0.3, 0.3, 0.3]), cash_lb=0.2, cash_ub=0.5)
+    high_cash = make.spec(w0=np.array([0.3, 0.3, 0.3]), cash_lb=0.0, cash_ub=0.05)
+    assert INFLOW.infeasible_starts(over_cap) and OUTFLOW.infeasible_starts(under_floor) and INFLOW.infeasible_starts(low_cash) and OUTFLOW.infeasible_starts(high_cash)
+    assert [REBALANCE.infeasible_starts(spec) for spec in (over_cap, under_floor, low_cash, high_cash)] == [[], [], [], []]
 
 
 def test_chain_state_masks_to_the_consume_set_as_well_as_the_tradable_set(make: Factories) -> None:

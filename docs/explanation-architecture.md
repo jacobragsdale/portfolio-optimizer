@@ -104,44 +104,53 @@ split, names the tradable set the dependency graph and the chain state are built
 solved portfolio to what a dependent receives, says which starting books the order flow cannot trade out of,
 and hands the verifier the identity's numpy twin. Nothing else branches on the order flow.
 
-There are two profiles, `inflow` and `outflow`. Either has one variable per name, `w`, with the trade an
-affine expression of it: `buy = w − w0` under `w ≥ w0`, or `sell = w0 − w` under `w ≤ w0`. The other
-side does not exist — a term that reads it fails at `validate-config`, not on a worker. One variable
-is the whole of the design: no name can be bought and sold in one solve, so a term that *rewards*
-selling — a harvestable loss, a negative `tax_per_dollar` — is exact rather than an invitation to a
-round trip. It is also why the order flow is a config value rather than a pair of bounds: bounding a `sell`
-variable to zero would keep three vectors and a trade identity in the KKT system, while removing it
-makes the problem a third the size. A desk's inflow and its outflow are two runs over one
-snapshot, each a pure function of its inputs with its own manifest; nothing crosses between them
-inside the engine.
+There are three profiles, `inflow`, `outflow`, and `rebalance`, and every one has one variable per
+name, `w`, with the trade a function of it alone. Under `inflow` it is affine: `buy = w − w0` under
+`w ≥ w0`; under `outflow`, `sell = w0 − w` under `w ≤ w0`; the other side does not exist — a term
+that reads it fails at `validate-config`, not on a worker. Under `rebalance`, `w` moves anywhere in
+the box and `buy = max(w − w0, 0)`, `sell = max(w0 − w, 0)`, the trade `|w − w0|`: both sides exist,
+both convex. One variable is the whole of the design: no name can be bought and sold in one solve,
+under any order flow. Under an inflow or an outflow that makes a term that *rewards* selling — a
+harvestable loss, a negative `tax_per_dollar` — exact rather than an invitation to a round trip;
+under a rebalance the same term is a reward on a convex quantity, which is not convex, and the
+shipped `linear` kind refuses it by name (which names, at stage `solve`, since the signs are the
+data's; a negative `weight` on a side at `validate-config`). Harvesting is the outflow's job. It is
+also why the order flow is a config value rather than a pair of bounds: bounding a `sell` variable
+to zero would keep three vectors and a trade identity in the KKT system, while removing it makes the
+problem a third the size. A desk's order flows are separate runs over one snapshot, each a pure
+function of its inputs with its own manifest; nothing crosses between them inside the engine.
 
 The two-sided problem — `w`, `buy`, and `sell` all variables, bound by `w = w0 + buy − sell` — is
 what the engine started with, and it was removed on 2026-09-01. With `buy` and `sell` independent, a
 rewarded sale makes the split loose: the solver can sell and rebuy a name in one solve, and the
-engine's answer to that was a refusal, not a policy for what such a round trip should mean; the desks
-run one order flow at a time in any case. Measured at 100,000 names before its removal, Clarabel took 2.1 s
-under `inflow` and 3.6 s under `outflow` against 7.5 s under `both` (`IDEAS.md`), which is the size of the
-win one variable buys. If it returns it is a third profile in `domain/order_flow.py` and `cvx/order_flow.py`
-plus that policy; the profile protocol, `Solution.buy`/`sell`, the vector names, and the tests
-parameterized over `order_flow` were kept for it. The shipped kinds that mean "the amount traded" read
+engine's answer to that was a refusal, not a policy for what such a round trip should mean. The
+rebalance profile (2026-09-02) is not its return: its buy and sell are the two halves of one change,
+so the round trip is impossible rather than policed, at the price of refusing the rewarded term.
+Measured at 100,000 names (`IDEAS.md`), Clarabel takes about three times as long under `rebalance`
+as under `inflow` — the `max(·, 0)` and `|·|` cost epigraph variables and rows in the canonical form,
+which puts it where the old two-sided problem was — and a third longer than under `outflow`. The
+shipped kinds that mean "the amount traded" read
 `x.trade` — `buy` or `sell`, whichever the run has — and `participation_limit`'s chain half reads
-`x.coupled`, the amount traded on the side the run couples through; both exist under every profile,
-so a kind written against them runs anywhere. `coupled` exists because without it that constraint
-would have to say `buy ≤ remaining` under `inflow` and `sell ≤ remaining` under `outflow`, and its numpy
-twin would need the same quantity — which is why the verifier's twins receive the profile and read
+`x.coupled`, the amount traded on the side the run couples through — the trade itself under a
+rebalance; both exist under every profile, so a kind written against them runs anywhere. `coupled`
+exists because without it that constraint would have to say `buy ≤ remaining` under `inflow`,
+`sell ≤ remaining` under `outflow`, and `buy + sell ≤ remaining` under `rebalance`, and its numpy twin
+would need the same quantity — which is why the verifier's twins receive the profile and read
 `profile.coupled(solution)`.
 
-The two profiles are exact mirrors, and that is testable: the reflection `w' = 1 − w` maps an
-inflow's book onto an outflow's — bounds, cash, sector bounds, ADV budget, the chain, all of it —
-so `tests/engine/test_solve.py` solves a book under `inflow` and its reflection under `outflow` and asserts
-the answers coincide. That symmetry test is what the design asked for, and it is cheap because the
-profile is one object.
+The inflow and the outflow are exact mirrors, and the rebalance is its own: the reflection
+`w' = 1 − w` maps an inflow's book onto an outflow's — bounds, cash, sector bounds, ADV budget, the
+chain, all of it — so `tests/engine/test_solve.py` solves a book under `inflow` and its reflection
+under `outflow` and asserts the answers coincide, and solves a rebalance and its reflection and
+asserts the buys and sells swap. Those symmetry tests are what the design asked for, and they are
+cheap because the profile is one object.
 
 An inflow or an outflow can move cash one way only — an inflow lowers it, an outflow raises it — and
-The cash bounds keep their meaning as the cash after the run, so a book that starts on the wrong side of
+the cash bounds keep their meaning as the cash after the run, so a book that starts on the wrong side of
 its bound is infeasible, and the infeasibility diagnosis says so in words. The same holds for a name
 held past a bound the order flow cannot move it back inside (over its cap in an inflow, under its floor
-in an outflow): the profile lists the names. The box `lb ≤ w ≤ ub` is part of every profile's
+in an outflow): the profile lists the names. A rebalance has no such start — it moves any weight
+either way — which is what makes it the retry for a failed inflow or outflow. The box `lb ≤ w ≤ ub` is part of every profile's
 identity — the schedule's buyable set and the order rounding already assume it — so a start outside it
 is the data's to fix; a typed constraint *row* carries its own start policy, `allow_current_weight`,
 which holds a bound the book already breaches where it is instead of failing the portfolio.
@@ -203,15 +212,16 @@ bound fails the portfolio.
 Portfolios in one run often depend on each other: the second portfolio to trade a thinly traded name
 should see how much of its daily volume the first already used. The engine allows exactly this kind of
 dependency and no other — **what a higher-priority portfolio traded on the side the run couples
-through may limit what a later one trades there; nothing else reaches anyone.** Under `buy` that side
-is buys, under `outflow` it is sells, and a run has no other side. That is a product decision
+through may limit what a later one trades there; nothing else reaches anyone.** Under `inflow` that side
+is buys, under `outflow` it is sells, and under `rebalance` it is both: a sell spends a name's daily
+volume exactly as a buy does, and the chain carries shares traded either way. That is a product decision
 (2026-08-29), and it is what makes the schedule derivable instead of configured.
 
 ![Eight accounts: the line dependencies-all forces, and the graph overlap derives — three components, critical path three, identical orders either way](images/derived-schedule.svg)
 
 Every portfolio builds at once, chain-free: rules never see other portfolios. A build reports its
-**tradable set** — the securities the profile lets it trade on that side: buyable (`ub > w0`) or
-sellable (held, `lb < w0`) — and its solve-order key, a priority from an optional `solve_order` step or
+**tradable set** — the securities the profile lets it trade on that side: buyable (`ub > w0`),
+sellable (held, `lb < w0`), or both under a rebalance — and its solve-order key, a priority from an optional `solve_order` step or
 the portfolios frame's column, ties broken on `portfolio_id`. From those the engine derives the
 dependency graph (`engine/schedule.py`), and the edge test is directional: portfolio *j* depends on
 every higher-priority *i* whose tradable set intersects what *j*'s own chain readers *consume* — the

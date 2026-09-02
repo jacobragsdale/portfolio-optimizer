@@ -21,7 +21,7 @@ version. Read it when you have a config in front of you and want it to make sens
 | [`assembly`](#assembly) | Steps that turn loaded datasets into the tables the build expects | Once, after all loaders return, before schema validation |
 | [`rules`](#rules) | Business logic applied to each portfolio's bundle, in order | Per portfolio, on a worker, before the build |
 | [`solve_order`](#solve_order) | A step that computes each portfolio's priority from its data | Per portfolio, after its rules |
-| [`order_flow`](#order_flow) | Whether the run is an inflow or an outflow, and so what a trade means | At resolve, then at every build, solve, and verification |
+| [`order_flow`](#order_flow) | Whether the run is an inflow, an outflow, or a rebalance, and so what a trade means | At resolve, then at every build, solve, and verification |
 | [`build`](#build) | The step that turns a ruled bundle into a problem | Per portfolio, after its rules |
 | [`objective`](#objective) | The typed terms whose sum is minimized | Parsed and rendered once at resolve, then at every solve and verification |
 | [constraints](#constraints-are-not-a-config-block-at-all) | *Not a config block* — a loaded per-portfolio dataset of typed rows | Sliced per portfolio, adjusted by rules, parsed at build, rendered at every solve |
@@ -367,20 +367,24 @@ config hash, so two runs with different priorities are visibly different runs.
 "order_flow": "inflow"
 ```
 
-The run's order flow, `inflow` or `outflow` — cash into the book, so the run buys, or cash out, so it
-sells; it is required and has no default. Either has one variable
-per name, `w`, with the trade an affine expression of it — `buy = w − w0` under `w ≥ w0`, or
-`sell = w0 − w` under `w ≤ w0` — so no name can be bought and sold in one solve. The value selects the
-*order-flow profile*, the one object in the engine that knows what the order flow means, and it fixes which side
-portfolios couple through — buys under `inflow`, sells under `outflow`. Two things follow for the rest of
-the config: a term that reads the side the run lacks (`example_outflow`'s `tax_cost` reads `sell`, and
-is absent from `example_inflow`) is refused at `validate-config`, and the cash bounds keep their meaning
-as the cash *after* the run while the order flow fixes the direction cash can move. A desk's inflow
-and its outflow are two runs over one snapshot — `configs/example_inflow.json` and
-`configs/example_outflow.json` — each a pure function of its inputs with its own manifest; nothing
-crosses between them inside the engine. [How to run an order flow](how-to-run-an-order-flow.md) walks through
+The run's order flow, `inflow`, `outflow`, or `rebalance` — cash into the book, so the run buys; cash
+out, so it sells; or neither on purpose, so it may do either; it is required and has no default. Every
+one has one variable per name, `w`, with the trade a function of it alone — `buy = w − w0` under
+`w ≥ w0`, `sell = w0 − w` under `w ≤ w0`, or `max(w − w0, 0)` and `max(w0 − w, 0)` with `w` free in
+its bounds — so no name can be bought and sold in one solve. The value selects the *order-flow
+profile*, the one object in the engine that knows what the order flow means, and it fixes which trades
+portfolios couple through — buys under `inflow`, sells under `outflow`, both under `rebalance`. Three
+things follow for the rest of the config: a term that reads a side the run lacks (`example_outflow`'s
+`tax_cost` reads `sell`, and is absent from `example_inflow`) is refused at `validate-config`; under
+`rebalance` both sides exist but are convex, so a term that *rewards* one — `tax_cost` on a name held
+at a loss, a negative `weight` on `trade` — is refused too, by name (`example_rebalance` keeps the
+inflow's terms); and the cash bounds keep their meaning as the cash *after* the run while an inflow or
+an outflow fixes the direction cash can move and a rebalance moves it either way. A desk's order
+flows are separate runs over one snapshot — `configs/example_inflow.json`, `configs/example_outflow.json`,
+and `configs/example_rebalance.json` — each a pure function of its inputs with its own manifest;
+nothing crosses between them inside the engine. [How to run an order flow](how-to-run-an-order-flow.md) walks through
 both; [the architecture explanation](explanation-architecture.md#a-runs-order-flow-is-one-object)
-covers what the profile owns, and why there is no two-sided profile.
+covers what the profile owns, and why the rebalance is not the two-sided profile that was removed.
 
 ## `build`
 

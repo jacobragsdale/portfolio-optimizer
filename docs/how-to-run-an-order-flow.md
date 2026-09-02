@@ -1,17 +1,19 @@
-# How to run the inflow and the outflow
+# How to run an order flow: inflow, outflow, rebalance
 
-A run is one order flow: an inflow buys, an outflow sells. A desk that decides its sells in one process
-and its buys in another runs two configs over one snapshot, and this guide sets them up: what
-`order_flow` fixes, what each order flow's config
-must leave out, how the cash bounds read under each, what a run refuses and why, and what carries
-across between the two. The shipped `configs/example_inflow.json` and `configs/example_outflow.json` are the
-worked pair.
+A run is one order flow: an inflow buys, an outflow sells, a rebalance may do either. A desk that
+decides its sells in one process and its buys in another runs two configs over one snapshot, and
+rebalances a book that starts outside its bounds with a third; this guide sets them up: what
+`order_flow` fixes, what each order flow's config must leave out, how the cash bounds read under each,
+what a run refuses and why, and what carries across between them. The shipped
+`configs/example_inflow.json`, `configs/example_outflow.json`, and `configs/example_rebalance.json` are
+the worked set.
 
 ## Prerequisites
 
 - A working run config ([the tutorial](tutorial-first-run.md) gets you one).
 - You know which order flow each run is and where the cash it raises or spends goes: an inflow
-  can only lower cash, an outflow can only raise it.
+  can only lower cash, an outflow can only raise it, a rebalance moves it whichever way the bounds
+  need.
 
 ## 1. Set `order_flow` in each config
 
@@ -19,14 +21,17 @@ worked pair.
 "order_flow": "inflow"
 ```
 
-or `"outflow"`. The key is required. It selects the order-flow profile that every order-flow-dependent
-decision goes through, and it fixes which side portfolios couple through: buys under `inflow`, sells
-under `outflow`. Under `inflow` the solve has `w` alone with `w ≥ w0` and `buy = w − w0`; under `outflow`, `w ≤ w0` and
-`sell = w0 − w`. The other side does not exist in the problem, so no name can be bought and sold in one
-solve, and a term that rewards selling — a harvestable loss — is exact. The two shipped configs are one
-wiring with three keys changed: the run's name, `order_flow`, and the objective.
+or `"outflow"` or `"rebalance"`. The key is required. It selects the order-flow profile that every
+order-flow-dependent decision goes through, and it fixes which trades portfolios couple through: buys
+under `inflow`, sells under `outflow`, both under `rebalance`. Every order flow has `w` alone as its
+variable. Under `inflow`, `w ≥ w0` and `buy = w − w0`; under `outflow`, `w ≤ w0` and `sell = w0 − w`;
+the other side does not exist in the problem, and a term that rewards selling — a harvestable loss —
+is exact. Under `rebalance`, `w` moves anywhere inside its bounds and `buy = max(w − w0, 0)`,
+`sell = max(w0 − w, 0)`: both sides exist, both are convex rather than affine, and still no name can
+be bought and sold in one solve. The three shipped configs are one wiring with three keys changed at
+most: the run's name, `order_flow`, and the objective.
 
-## 2. Leave out what reads the missing side
+## 2. Leave out what reads the missing side, and what rewards a side under a rebalance
 
 A term that reads `sell` cannot run in an inflow, and `validate-config` says so. The outflow's
 `tax_cost` term is `linear` over `sell`, so an inflow config that lists it is rejected:
@@ -48,6 +53,20 @@ config, so it is not caught here: it fails its own portfolio at stage `solve`. W
 kind, read `x.trade` or `x.coupled` unless it means one side specifically; see
 [how to add a term or constraint kind](how-to-add-a-term.md).
 
+A rebalance has both sides, so `tax_cost` renders — but as a reward on `sell` for every name held at
+a loss, and `sell` is `max(w0 − w, 0)` there, convex, so the reward is not convex. The `linear` kind
+refuses it by name, per portfolio at stage `solve`, since which names are at a loss is the data's:
+
+```text
+  P1: FAILED at solve: TermSpecError: tax_cost: rewards sell on 1 name(s), e.g. ['B']; under a rebalance sell is convex rather than affine, so a reward on it is not convex — a rewarded side belongs to an inflow or an outflow
+```
+
+A reward the config itself writes — a negative `weight` on `buy`, `sell`, or `trade` — is caught at
+`validate-config` the same way. Costs on any of the three are fine under every order flow, and so is a
+`<=` row on them; a `>=` row on `buy`, `sell`, or `trade` under a rebalance is a floor on a convex
+quantity, which cvxpy refuses at solve. Harvesting is the outflow's job: `configs/example_rebalance.json`
+keeps the inflow's two terms.
+
 The shipped `pro_rata_fill` solve step spends cash into the underweights and so belongs to an
 inflow; under `outflow` its answer fails the profile's `no_buys` check.
 
@@ -61,13 +80,15 @@ the bound:
 |---|---|---|---|
 | `inflow` | fall | starting cash ≥ `cash_lb` | `cash_lb` is the floor the run may spend down to; `cash_ub` above the start is irrelevant. |
 | `outflow` | rise | starting cash ≤ `cash_ub` | `cash_ub` is the most it may raise; `cash_lb` above the start is the least it must raise. |
+| `rebalance` | move either way | nothing | The bounds mean what they say: the run ends with cash between `cash_lb` and `cash_ub`, wherever it started. |
 
 Two shapes are common. An inflow that invests the cash it starts with: `cash_lb` at `0` and the
 objective decides how much of it is worth putting to work, or `cash_lb` and `cash_ub` both `0` to force
 every dollar in. An outflow that raises cash to a target: `0.1` and `0.2` raises at least 10% of NAV
 and at most 20%; `0` and `1` lets the objective decide. The shipped book gives every account a band of
-`0` to somewhere above its starting cash, so one `details` table serves both order flows: the inflow
-spends down towards the floor, the outflow raises up towards the cap. An outflow with both
+`0` to somewhere above its starting cash, so one `details` table serves every order flow: the inflow
+spends down towards the floor, the outflow raises up towards the cap, the rebalance lands anywhere in
+the band. An outflow with both
 bounds at the starting cash is feasible and trades nothing — every sell would raise cash above the cap.
 
 ## 4. Validate, then run
@@ -91,7 +112,8 @@ produces is on the one side (`side` is `SELL` throughout the orders frame), the 
   ok   ub                               violation 0.000e+00 (tol 1.0e-06) worst A
 ```
 
-(`no_sells`, `nonneg_buy`, and `sell_absent` for an inflow; the box `lb`/`ub` under either order flow.)
+(`no_sells`, `nonneg_buy`, and `sell_absent` for an inflow; `trade_balance`, `nonneg_buy`, `nonneg_sell`,
+and `no_round_trip` for a rebalance; the box `lb`/`ub` under every order flow.)
 
 ## 5. Read an infeasible start
 
@@ -111,8 +133,11 @@ The messages the order-flow profile can add (`domain/order_flow.py`, `infeasible
 | `names whose cap is below their holding, which this order flow cannot trade out of: [...]` | A name is held above `max_weight` (the style's, or a universe `max_weight` column) and an inflow cannot sell it down. | Sell it down in the outflow first, loosen the cap, or have a rule mark the name `restricted` so it is frozen where it is. |
 | `names whose floor is above their holding, which this order flow cannot trade out of: [...]` | A name is held below a universe `min_weight` floor and an outflow cannot buy it up. | Buy it up in the inflow first, loosen the floor, or mark the name `restricted`. |
 
-The box `lb ≤ w ≤ ub` is part of every solve's identity, so a start outside it is the data's to fix:
-the other order flow, a looser bound, or a rule that freezes the name. A typed constraint *row* — a
+A rebalance adds no message of its own: it can move any weight either way, so every start above is
+its ordinary business — the over-cap name is sold down, the cash floor is raised to — which is why a
+failed inflow or outflow is retried as one. The box `lb ≤ w ≤ ub` is part of every solve's identity,
+so a start outside it is the data's to fix: the other order flow, a rebalance, a looser bound, or a
+rule that freezes the name. A typed constraint *row* — a
 `weight_limit`, a `group_limit`, a `cash_limit` — can instead carry `allow_current_weight`, which holds
 a bound the book already breaches where it is (do not worsen it) rather than failing the portfolio. The
 arithmetic diagnoses that apply to any run — bounds that cannot sum to the required investment, a
@@ -121,7 +146,7 @@ same line.
 
 ## 6. Keep the inflow off what the outflow harvested
 
-Nothing crosses between the two order flows inside the engine, and that includes a wash-sale rule: a name
+Nothing crosses between order flows inside the engine, and that includes a wash-sale rule: a name
 the outflow sold at a loss must not be bought straight back, but the inflow only knows what
 its inputs say. The mechanism is data, the same as every other limit. Give the universe a boolean
 column naming the names to stay out of — from the outflow's orders, a trade-history dataset, or
@@ -137,14 +162,17 @@ in it. A rule that attaches the column is written like any other
 ([how to add a rule](how-to-add-a-rule.md)), and a flag column is also what a `participation_limit`'s
 `scope` reads, so the same column can narrow the chain coupling to those names.
 
-## What couples in an inflow or an outflow
+## What couples under each order flow
 
-The chain couples through the side the order flow trades. Under `outflow`, a portfolio's tradable set is what it can
+The chain couples through the trades the order flow makes. Under `outflow`, a portfolio's tradable set is what it can
 sell — held, with `lb < w0` — and it waits for every higher-priority portfolio that can sell a name its
 own `participation_limit` rows can see; the row then limits its sell in each name to the ADV budget
 predecessors' sells left. Expect a different coupling from the same book under `inflow`: every held name
 is a potential edge, and the names a buy filter took out of the buyable set re-couple accounts through
-the sell side. The manifest's `schedule` record shows the difference. What carries between an outflow
+the sell side. Under `rebalance` the tradable set is both sets together and a contribution is every
+order row, BUY and SELL alike: a predecessor's sell spends a name's daily volume exactly as its buy
+does, and `participation_limit` reads what is left either way. The manifest's `schedule` record shows
+the difference. What carries between an outflow
 and an inflow — the holdings after the sells, the cash raised, the ADV the sells consumed — is a new
 snapshot for the next run, and [the architecture explanation](explanation-architecture.md#a-runs-order-flow-is-one-object)
 covers why the engine holds that line.

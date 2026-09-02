@@ -23,7 +23,7 @@ from portfolio_optimizer.domain.types import Params
 from portfolio_optimizer.engine.build import standard
 from portfolio_optimizer.solving import SolveRequest, SolveResult
 from tests import steps
-from tests.conftest import AS_OF, NOOP_TERMS, SELL_TERMS, resolved_example_real, step_spec
+from tests.conftest import AS_OF, BUY_TERMS, NOOP_TERMS, SELL_TERMS, resolved_example_real, step_spec
 
 # --- functions that follow the convention (and ones that break it), registered as module "fake_steps" ---
 
@@ -340,6 +340,16 @@ def test_a_term_reading_a_side_the_run_lacks_fails_dry_rendering_naming_the_side
         "objective[1]: tax_cost: rendering failed: SideUnavailableError: order flow 'inflow' has no 'sell' vector; this term or constraint reads x.sell, so it cannot run under order_flow='inflow'",
     )
     assert resolved_example_real(order_flow="outflow", objective=SELL_TERMS).profile.order_flow == "outflow"
+
+
+def test_a_term_that_rewards_a_convex_vector_fails_dry_rendering_under_a_rebalance() -> None:
+    """A negative weight on ``trade`` is a reward for churn; affine under an inflow, it is a reward on ``|w - w0|`` under a rebalance and refused before any data loads."""
+    churn = {"kind": "linear", "name": "churn", "weight": "-1", "vector": "trade"}
+    assert resolved_example_real(objective=[*BUY_TERMS, churn]).profile.order_flow == "inflow"
+    with pytest.raises(ConfigResolutionError) as info:
+        resolved_example_real(order_flow="rebalance", objective=[*BUY_TERMS, churn])
+    assert len(info.value.failures) == 1 and info.value.failures[0].startswith("objective[2]: churn: rendering failed: TermSpecError: churn: rewards trade on 1 name(s)")
+    assert resolved_example_real(order_flow="rebalance", objective=BUY_TERMS).profile.order_flow == "rebalance"
 
 
 def test_dry_rendering_surfaces_a_term_that_raises_and_skips_one_that_needs_data(fake_steps: str) -> None:

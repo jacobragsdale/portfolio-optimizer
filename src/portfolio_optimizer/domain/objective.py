@@ -106,6 +106,13 @@ class Linear(TypedTerm):
 
         del chain
         vector = x.vector(self.vector)  # read the side first: a side the run lacks is a config error, a missing column a question for the data
+        signed = float(self.weight) * self.coefficients(spec)
+        if not vector.is_affine() and (signed < 0).any():
+            # Under a rebalance buy, sell, and trade are convex, not affine, so a reward on any of them
+            # is not convex: refused by name here rather than as the solver's DCP error on a worker.
+            rewarded = [spec.security_ids[index] for index in np.flatnonzero(signed < 0)]
+            msg = f"{self.name}: rewards {self.vector} on {len(rewarded)} name(s), e.g. {rewarded[:3]}; under a rebalance {self.vector} is convex rather than affine, so a reward on it is not convex — a rewarded side belongs to an inflow or an outflow"
+            raise TermSpecError(msg)
         return ObjectiveTerm(self.name, scale(float(self.weight), dot(self.coefficients(spec), vector)))
 
 

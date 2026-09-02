@@ -1,4 +1,4 @@
-"""Tier 1: solving — the two hand-checkable order flows over the example's first account, binding limits with known answers, typed constraints and kinds through the shipped step, and every failure path."""
+"""Tier 1: solving — the three hand-checkable order flows over the example's first account, binding limits with known answers, typed constraints and kinds through the shipped step, and every failure path."""
 
 from collections.abc import Sequence
 from dataclasses import replace
@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedConfig
+from portfolio_optimizer.domain.objective import TermSpecError
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus
 from portfolio_optimizer.engine.build import standard
 from portfolio_optimizer.engine.check import constraints_of, verify
@@ -39,7 +40,7 @@ def first_account(make: Factories, frames: Frames, **details: object) -> Problem
     return standard(make.portfolio_data(holdings=holdings, details=account))
 
 
-def test_the_buy_program_over_the_first_account_matches_the_analytic_optimum(make: Factories, frames: Frames) -> None:
+def test_the_inflow_over_the_first_account_matches_the_analytic_optimum(make: Factories, frames: Frames) -> None:
     """C to its ADV budget, a quarter of NAV; then A to its cap; B has turned negative, so the last 5% of cash stays cash."""
     spec = first_account(make, frames)
     solution = solve(spec, ChainState.empty(spec.security_ids), resolved_with(BUY_TERMS))
@@ -55,7 +56,7 @@ def test_the_buy_program_over_the_first_account_matches_the_analytic_optimum(mak
     assert solution.duals["adv"] > 0.0 and solution.duals["cash_floor"] == pytest.approx(0.0, abs=1e-6), "the ADV budget binds and its shadow price says so; the cash floor is not reached"
 
 
-def test_the_sell_program_over_the_first_account_matches_the_analytic_optimum(make: Factories, frames: Frames) -> None:
+def test_the_outflow_over_the_first_account_matches_the_analytic_optimum(make: Factories, frames: Frames) -> None:
     """B is held at a loss its long-term rate turns into 4 cents of tax refund per dollar sold, so it is harvested — down to where the ``TECH`` floor stops it; A is at cost and worth holding."""
     spec = first_account(make, frames)
     solution = solve(spec, ChainState.empty(spec.security_ids), resolved_with(SELL_TERMS, order_flow="outflow"), [*SHIPPED_CONSTRAINTS, SECTOR_FLOOR])
@@ -118,6 +119,30 @@ def test_an_inflow_run_cannot_sell_its_way_back_inside_a_cap_and_says_so(make: F
     )
     with pytest.raises(InfeasibleError, match=r"the book starts with cash 0\.000000 below cash_lb 0\.100000, and an inflow can only lower cash"):
         solve(fully_invested, ChainState.empty(fully_invested.security_ids), resolved)
+
+
+def test_a_rebalance_trades_out_of_the_starts_an_inflow_cannot(make: Factories, frames: Frames) -> None:
+    """The two books the inflow refuses above: the over-cap name is sold down to its cap, and the fully invested book raises the cash its floor asks for — which is why a failed inflow is retried as a rebalance."""
+    resolved = resolved_with(BUY_TERMS, order_flow="rebalance")
+    over_cap = standard(make.portfolio_data(holdings=frames.holdings({"security_id": "A", "quantity": 8000, "avg_cost": Decimal(100)}), details=make.details(max_weight=Decimal("0.6"))))
+    solution = solve(over_cap, ChainState.empty(over_cap.security_ids), resolved)
+    assert solution.w[0] <= 0.6 + 1e-6 and solution.sell[0] >= 0.2 - 1e-6, "A is sold down inside its cap — and past it, to fund C, whose alpha is better"
+    report = verify(over_cap, solution, ChainState.empty(over_cap.security_ids), resolved.terms, constraints_of(solution), profile=resolved.profile)
+    assert report.passed, report.violated
+    assert {check.name for check in report.checks if check.label == "identity"} == {"trade_balance", "nonneg_buy", "nonneg_sell", "no_round_trip", "lb", "ub"}
+    fully_invested = standard(
+        make.portfolio_data(holdings=frames.holdings({"security_id": "A", "quantity": 10000, "avg_cost": Decimal(100)}), details=make.details(cash_lb=Decimal("0.1"), cash_ub=Decimal("0.2")))
+    )
+    raised = solve(fully_invested, ChainState.empty(fully_invested.security_ids), resolved)
+    assert 1.0 - raised.w.sum() >= 0.1 - 1e-6 and raised.sell[0] >= 0.1 - 1e-6, "the cash floor is met by selling A"
+    assert (np.minimum(raised.buy, raised.sell) == 0).all(), "one variable per name: nothing is on both sides"
+
+
+def test_a_term_that_rewards_a_side_is_refused_under_a_rebalance_by_name(make: Factories, frames: Frames) -> None:
+    """``tax_cost`` rewards selling B, held at a loss; under a rebalance ``sell`` is convex, so the reward is not, and the term says which names rather than leaving the solver's DCP error to explain it."""
+    spec = first_account(make, frames)
+    with pytest.raises(TermSpecError, match=r"tax_cost: rewards sell on 1 name\(s\), e.g. \['B'\]; under a rebalance sell is convex rather than affine"):
+        solve(spec, ChainState.empty(spec.security_ids), resolved_with(SELL_TERMS, order_flow="rebalance"))
 
 
 def test_an_outflow_solve_only_sells_and_couples_through_sells(make: Factories, frames: Frames) -> None:
@@ -192,6 +217,32 @@ def test_an_outflow_run_over_the_reflected_book_is_the_inflow_run_over_the_origi
     assert selling.objective == pytest.approx(buying.objective + float(spec.column("alpha").sum()), rel=1e-6), (
         "the mirror's alpha is the negative of the original's, so the two objectives differ by its sum"
     )
+
+
+def test_a_rebalance_over_the_reflected_book_is_the_mirror_of_the_rebalance_over_the_original(make: Factories) -> None:
+    """A rebalance is its own mirror image: the reflection swaps its buys and sells, chain included, and B — sold to its floor here, which an inflow could not do — is bought to its cap there."""
+    spec = make.spec(
+        w0=np.array([0.3, 0.2, 0.1]),
+        columns={"alpha": np.array([0.05, -0.04, 0.0])},
+        lb=np.array([0.1, 0.0, 0.0]),
+        ub=np.array([0.5, 0.35, 0.5]),
+        adv_capacity=np.array([0.05, 1.0, 1.0]),
+        tcost_per_dollar=np.array([0.001, 0.002, 0.0005]),
+        cash_lb=0.0,
+        cash_ub=1.0,
+    )
+    mirrored = reflect(spec)
+    chain = ChainState(spec.security_ids, np.array([200.0, 0.0, 0.0]), predecessors=("P0",))
+    terms = ["alpha", TRANSACTION_COST]
+    original = solve(spec, chain, resolved_with(terms, order_flow="rebalance"))
+    mirror = solve(mirrored, chain, resolved_with(terms, order_flow="rebalance"))
+    assert original.buy[0] == pytest.approx(0.03, abs=1e-6), "A is bound by what the chain left of its ADV budget"
+    assert original.sell[1] == pytest.approx(0.2, abs=1e-6), "B is sold to its floor in the same solve"
+    np.testing.assert_allclose(mirror.w, 1.0 - original.w, atol=1e-6)
+    np.testing.assert_allclose(mirror.sell, original.buy, atol=1e-6)
+    np.testing.assert_allclose(mirror.buy, original.sell, atol=1e-6)
+    assert original.objective is not None and mirror.objective is not None
+    assert mirror.objective == pytest.approx(original.objective + float(spec.column("alpha").sum()), rel=1e-6)
 
 
 def test_infeasible_problem_raises_with_an_arithmetic_diagnosis(make: Factories) -> None:

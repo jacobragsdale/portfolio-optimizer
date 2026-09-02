@@ -1,4 +1,4 @@
-"""Tier 1: the cvxpy half of each order-flow profile — one variable, the trade an expression of it, the side a run refuses to hand out, and the box in the identity."""
+"""Tier 1: the cvxpy half of each order-flow profile — one variable, the trade an expression of it, the side an inflow or an outflow refuses to hand out, both sides convex under a rebalance, and the box in the identity."""
 
 import cvxpy as cp
 import numpy as np
@@ -12,7 +12,10 @@ from tests.conftest import Factories
 W0 = np.array([0.4, 0.3, 0.3])
 
 
-@pytest.mark.parametrize(("order_flow", "direction", "expected"), [("outflow", cp.Minimize, [0.1, 0.0, 0.0]), ("inflow", cp.Maximize, [0.5, 0.5, 0.5])])
+@pytest.mark.parametrize(
+    ("order_flow", "direction", "expected"),
+    [("outflow", cp.Minimize, [0.1, 0.0, 0.0]), ("inflow", cp.Maximize, [0.5, 0.5, 0.5]), ("rebalance", cp.Minimize, [0.1, 0.0, 0.0]), ("rebalance", cp.Maximize, [0.5, 0.5, 0.5])],
+)
 def test_the_identity_of_every_side_holds_the_specs_box(make: Factories, order_flow: OrderFlow, direction: type[cp.Minimize | cp.Maximize], expected: list[float]) -> None:
     """Pushed as far as the identity alone allows, ``w`` stops at the floor selling and at the cap buying: the box is in the identity, not a configurable row."""
     spec = make.spec(w0=W0, lb=np.array([0.1, 0.0, 0.0]), ub=np.array([0.5, 0.5, 0.5]))
@@ -47,3 +50,15 @@ def test_outflow_variables_are_one_vector_and_buy_is_unavailable(make: Factories
     np.testing.assert_allclose(x.sell.value, [0.1, 0.0, 0.0])
     with pytest.raises(SideUnavailableError, match="order flow 'outflow' has no 'buy' vector"):
         _ = x.buy
+
+
+def test_rebalance_variables_are_one_vector_with_both_sides_convex(make: Factories) -> None:
+    x = decision_variables("rebalance", make.spec(w0=W0))
+    assert (x.order_flow, x.n) == ("rebalance", 3)
+    assert x.buy.is_convex() and not x.buy.is_affine() and x.sell.is_convex() and not x.sell.is_affine(), "the positive and negative parts of the change in the one variable"
+    assert x.trade is x.coupled and x.trade.is_convex(), "the trade is |w - w0|, and it is what a rebalance couples through"
+    x.w.value = W0 + np.array([0.1, -0.2, 0.0])
+    assert x.buy.value is not None and x.sell.value is not None and x.trade.value is not None
+    np.testing.assert_allclose(x.buy.value, [0.1, 0.0, 0.0])
+    np.testing.assert_allclose(x.sell.value, [0.0, 0.2, 0.0])
+    np.testing.assert_allclose(x.trade.value, [0.1, 0.2, 0.0])

@@ -49,6 +49,10 @@ SELL_ORDERS_P2: Orders = [{"security_id": "B", "side": "SELL", "quantity": 2000}
 """P2 under the outflow: the same harvest at its short-term rate, to the same floor; B's budget of 250,000 shares a day is nowhere near spent by P1."""
 THIN_B_ORDERS_P2: Orders = [{"security_id": "B", "side": "SELL", "quantity": 1000}]
 """P2 under the outflow over ``thin_b_book``: B trades 12,000 shares a day, a quarter of which is 3,000; P1 sold 2,000, so P2 may sell the 1,000 left."""
+REBALANCE_ORDERS_P1: Orders = [{"security_id": "A", "side": "BUY", "quantity": 1000}, {"security_id": "B", "side": "SELL", "quantity": 4000}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
+"""P1 under the rebalance: the inflow's buys — C to its ADV budget, A to its cap — and, selling now allowed, B sold down to the ``TECH`` floor of 50%: 4,000 shares, leaving 100,000 of it beside A's 400,000."""
+REBALANCE_ORDERS_P2: Orders = [{"security_id": "A", "side": "BUY", "quantity": 3000}, {"security_id": "B", "side": "SELL", "quantity": 6000}]
+"""P2 under the rebalance, behind P1: A to its 60% cap keeps ``TECH`` above the floor on its own, so all of B goes; C's budget for the day was P1's."""
 
 
 def example_book(tmp_path: Path, **files: str) -> Path:

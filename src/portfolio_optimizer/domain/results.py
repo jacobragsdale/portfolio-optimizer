@@ -617,9 +617,9 @@ class Contribution:
         object.__setattr__(self, "traded_shares", _aligned_shares(self.security_ids, self.traded_shares))
 
     @classmethod
-    def from_orders(cls, portfolio_id: str, orders: pd.DataFrame, side: str) -> Self:
-        """The rows of an orders frame on ``side`` (``BUY`` or ``SELL``); the other side never reaches a later portfolio."""
-        rows = orders[orders["side"] == side]
+    def from_orders(cls, portfolio_id: str, orders: pd.DataFrame, side: str | None = None) -> Self:
+        """The rows of an orders frame on ``side`` (``BUY`` or ``SELL``), or every row when ``side`` is ``None`` — a rebalance couples through both."""
+        rows = orders if side is None else orders[orders["side"] == side]
         return cls(
             portfolio_id=portfolio_id,
             security_ids=tuple(str(security) for security in rows["security_id"]),

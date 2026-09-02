@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from portfolio_optimizer.config.models import DatasetConfig, InlinePortfolios, RunConfig, StepSpec, config_sha256, load_run_config
-from tests.conftest import EXAMPLE_CONFIG, SELL_CONFIG, example_body
+from tests.conftest import EXAMPLE_CONFIG, REBALANCE_CONFIG, SELL_CONFIG, example_body
 
 
 @pytest.fixture
@@ -39,6 +39,10 @@ def test_shipped_example_validates(example_text: str) -> None:
     assert sell.run.name == "example_outflow" and sell.order_flow == "outflow"
     assert [term["name"] for term in sell.objective] == ["alpha", "tax_cost", "transaction_cost"], "the outflow adds the tax on what is sold"
     assert sell.model_dump(exclude={"run", "order_flow", "objective"}) == config.model_dump(exclude={"run", "order_flow", "objective"}), "otherwise the two order flows are one wiring"
+    rebalance = load_run_config(REBALANCE_CONFIG.read_text())
+    assert rebalance.run.name == "example_rebalance" and rebalance.order_flow == "rebalance"
+    assert rebalance.objective == config.objective, "the rebalance keeps the inflow's terms: with both sides in the problem a reward on one of them is not convex"
+    assert rebalance.model_dump(exclude={"run", "order_flow"}) == config.model_dump(exclude={"run", "order_flow"}), "otherwise the three order flows are one wiring"
 
 
 def test_step_spec_accepts_bare_names_and_objects() -> None:

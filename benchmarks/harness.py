@@ -36,8 +36,8 @@ SHIPPED_CONSTRAINTS: tuple[tuple[str, str, dict[str, object]], ...] = (
 ALPHA: dict[str, object] = {"kind": "linear", "name": "alpha", "weight": "-1", "column": "alpha"}
 TAX_COST: dict[str, object] = {"kind": "linear", "name": "tax_cost", "weight": "1", "column": "tax_per_dollar", "vector": "sell"}
 TRANSACTION_COST: dict[str, object] = {"kind": "linear", "name": "transaction_cost", "weight": "1", "column": "tcost_per_dollar", "vector": "trade"}
-OBJECTIVE: dict[str, list[dict[str, object]]] = {"inflow": [ALPHA, TRANSACTION_COST], "outflow": [ALPHA, TAX_COST, TRANSACTION_COST]}
-"""The example's objective for each order flow, as the typed records the config carries; ``tax_cost`` reads ``sell`` and so belongs to the outflow."""
+OBJECTIVE: dict[str, list[dict[str, object]]] = {"inflow": [ALPHA, TRANSACTION_COST], "outflow": [ALPHA, TAX_COST, TRANSACTION_COST], "rebalance": [ALPHA, TRANSACTION_COST]}
+"""The example's objective for each order flow, as the typed records the config carries; ``tax_cost`` reads ``sell`` and so belongs to the outflow — under a rebalance it would be a reward on a convex quantity, which is refused."""
 
 
 def constraint_row(portfolio_id: str, kind: str, label: str, params: dict[str, object]) -> tuple[str, str, str, str]:

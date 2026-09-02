@@ -213,7 +213,7 @@ class ExecutionConfig(StrictModel):
     )
     dependencies: Dependencies = Field(
         default="overlap",
-        description="Which higher-priority portfolios a portfolio waits for. `overlap` (default): those that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `outflow`) — and only what its own constraints *declare* they read: a typed constraint row says whether it reads the chain and, through its `scope`, which securities it couples through, so a portfolio whose rows read no chain waits for nobody. A chain-aware objective term or a solve step other than the shipped `cvxpy` one couples conservatively through the whole tradable set; with nothing anywhere reading the chain, nothing waits. `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis.",
+        description="Which higher-priority portfolios a portfolio waits for. `overlap` (default): those that can trade a security it can trade too, on the side the run couples through (buys under `inflow`, sells under `outflow`, either under `rebalance`) — and only what its own constraints *declare* they read: a typed constraint row says whether it reads the chain and, through its `scope`, which securities it couples through, so a portfolio whose rows read no chain waits for nobody. A chain-aware objective term or a solve step other than the shipped `cvxpy` one couples conservatively through the whole tradable set; with nothing anywhere reading the chain, nothing waits. `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis.",
     )
 
 
@@ -247,7 +247,7 @@ class RunConfig(StrictModel):
         description="Optional solve-order step from `solve_order.py`: `(data: PortfolioData[, params]) -> Decimal`, evaluated on each portfolio's ruled bundle. Lower keys solve first; ties break on `portfolio_id`. Replaces the portfolios frame's `solve_order` column.",
     )
     order_flow: OrderFlow = Field(
-        description="The run's order flow: `inflow` — cash comes into the book, so the run buys: one variable per name, `w >= w0`, no sell vector, portfolios coupling through buys — or `outflow`, the mirror: cash goes out, the run sells, coupling through sells. A term or row that reads the side the order flow lacks is refused. A desk's inflow and its outflow are two runs over one snapshot."
+        description="The run's order flow: `inflow` — cash comes into the book, so the run buys: one variable per name, `w >= w0`, no sell vector, portfolios coupling through buys; `outflow`, the mirror: cash goes out, the run sells, coupling through sells; or `rebalance`: no cash moves on purpose, `w` may go either way inside its bounds with `buy` and `sell` the positive and negative parts of the change, portfolios coupling through every trade. A term or row that reads a side an inflow or an outflow lacks is refused, and so is a term that rewards `buy`, `sell`, or `trade` under a rebalance, where they are convex rather than affine. A desk's order flows are separate runs over one snapshot."
     )
     build: StepSpec = Field(
         default_factory=lambda: StepSpec(name="standard"),

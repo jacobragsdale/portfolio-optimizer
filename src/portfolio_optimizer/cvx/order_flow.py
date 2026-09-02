@@ -4,15 +4,16 @@ Neither is a configurable constraint — together they define what ``buy`` or ``
 every cost term, the turnover cap, the ADV constraint, and the verifier rely on that definition — so
 both come from the run's ``order_flow``, and their numpy twins live on the profile in
 ``domain/order_flow.py``. The identity includes the spec's own box, ``lb ≤ w ≤ ub``, which the
-schedule and the order rounding already assume. Either order flow has one variable vector, ``w``,
-with its trade an affine expression of it: no name can be on both sides of one solve, so no term can
-be paid for a round trip.
+schedule and the order rounding already assume. Every order flow has one variable vector, ``w``,
+with its trade a function of it — affine under an inflow or an outflow, the convex ``pos`` of the
+change under a rebalance: no name can be on both sides of one solve, so no term can be paid for a
+round trip.
 """
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, Expr, at_least, at_most, shifted, shortfall, variable
+from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars, Expr, absolute, at_least, at_most, pos, shifted, shortfall, variable
 from portfolio_optimizer.domain.order_flow import OrderFlow
 from portfolio_optimizer.domain.results import ProblemSpec
 
@@ -49,7 +50,24 @@ def _outflow_identity(x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
     return ConstraintSet("no_buys", (at_most(x.w, spec.w0), at_least(x.w, spec.lb), at_most(x.w, spec.ub)))
 
 
-ORDER_FLOWS: Mapping[OrderFlow, CvxOrderFlow] = {"inflow": CvxOrderFlow(_inflow_variables, _inflow_identity), "outflow": CvxOrderFlow(_outflow_variables, _outflow_identity)}
+def _rebalance_variables(spec: ProblemSpec) -> DecisionVars:
+    """``w`` alone; ``buy = pos(w - w0)``, ``sell = pos(w0 - w)``, and the trade is ``|w - w0|`` — convex, so a cost on any of them is fine and a reward is refused."""
+    w = variable(spec.n, "w")
+    change: Expr = shifted(w, spec.w0)
+    trade: Expr = absolute(change)
+    return DecisionVars(w=w, n=spec.n, order_flow="rebalance", trade=trade, coupled=trade, _buy=pos(change), _sell=pos(shortfall(spec.w0, w)))
+
+
+def _rebalance_identity(x: DecisionVars, spec: ProblemSpec) -> ConstraintSet:
+    """The box alone: ``w`` may move either way inside ``lb ≤ w ≤ ub``."""
+    return ConstraintSet("box", (at_least(x.w, spec.lb), at_most(x.w, spec.ub)))
+
+
+ORDER_FLOWS: Mapping[OrderFlow, CvxOrderFlow] = {
+    "inflow": CvxOrderFlow(_inflow_variables, _inflow_identity),
+    "outflow": CvxOrderFlow(_outflow_variables, _outflow_identity),
+    "rebalance": CvxOrderFlow(_rebalance_variables, _rebalance_identity),
+}
 """The cvxpy half for every ``order_flow`` value; a test holds this in step with ``domain.order_flow.PROFILES``."""
 
 

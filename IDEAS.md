@@ -38,6 +38,7 @@ the two-sided profile was removed 2026-09-01, see *Order flow* below):
 | `both` | 400k | 7.5 s | 29 | 8.0 s | 2.1 GB | tracking, tax, tcost; removed 2026-09-01 |
 | `inflow` | 200k | 2.1 s | 12 | 2.8 s | 1.5 GB | `tax_cost` dropped: it reads `sell` |
 | `outflow` | 200k | 3.6 s | 20 | 5.7 s | 1.3 GB | `cash_bounds` `[0, 1]`; the gains-only book sells nothing |
+| `rebalance` | 200k | 9.5 s | 62 | 10.5 s | 1.5 GB | the inflow's terms, `cash_bounds` `[0, 1]`; measured 2026-09-02, when the inflow re-measured at 3.1 s / 27 iterations on the same machine — read the ratio, about 3× |
 
 One variable per name instead of three and no trade identity: Clarabel 3.5× faster under `inflow`, 2×
 under `outflow`, in the 2–4× band the design predicted, with a third less memory. (The benchmark's own
@@ -114,12 +115,14 @@ For the record, since the word is overloaded:
 
 ### Two-sided coupling, if it ever comes
 
-A run is one order flow: an inflow couples through buys, an outflow through sells, the exact mirror
-(see *Order flow*, below, for what is still open). What is not planned, and possibly never, is a run in
-which buys and sells couple *with each other* across portfolios — which would first need the
-two-sided profile back (removed 2026-09-01) and then made chain-aware on both sides. Recorded so the
-one-side guarantee is not silently load-bearing. Everything such a run would add couples across the
-sides, per security:
+A run is one order flow: an inflow couples through buys, an outflow through sells, the exact mirror,
+and a rebalance (2026-09-02) through both as one quantity — the shares traded either way — so within a
+rebalance the first row of the table below exists already: a predecessor's sell spends a name's
+volume like its buy, and `participation_limit` subtracts it whichever way it went. What is not
+planned, and possibly never, is the rest: coupling that tells the sides apart across portfolios — an
+earlier account's sell at a loss closing a later one's buy — which would need `ChainState` to carry
+each side and the steps to say which they read. Recorded so the one-quantity chain is not silently
+load-bearing. Everything such a run would add couples across the sides, per security:
 
 | Effect | Produced by | Consumed by |
 |---|---|---|
@@ -165,7 +168,7 @@ grow to match. The manifest's derived-graph record is how to watch that happen.
 
 ## Order flow: what is still open after the one-sided profiles
 
-`order_flow: "inflow" | "outflow"` is built (2026-08-29; `both` removed 2026-09-01 — status below) and documented: what the profile owns, why the
+`order_flow: "inflow" | "outflow" | "rebalance"` is built (2026-08-29; `both` removed 2026-09-01; `rebalance` added 2026-09-02 — status below) and documented: what the profile owns, why the
 order flow is a config value, and what it costs the solver are in
 [the architecture explanation](docs/explanation-architecture.md#a-runs-order-flow-is-one-object);
 the operating guide is [how to run an order flow](docs/how-to-run-an-order-flow.md); the numbers are in the
@@ -194,9 +197,15 @@ naming the securities and what the round trips were worth.
 variables, and `WashTradeError` was a refusal, not a policy; the desks run one order flow at a time, an
 inflow and an outflow over one snapshot; and what a rewarded round trip *should* mean is
 undecided. Either remaining profile has one variable, so such a term is exact, and the complementarity
-check and the refusal went with the profile. How it comes back: a third profile in `domain/order_flow.py`
-and `cvx/order_flow.py` plus the agreed policy — the profile protocol, `Solution.buy`/`sell`, the vector
-names, and the tests parameterized over `order_flow` were kept for that.
+check and the refusal went with the profile.
+
+*Status 2026-09-02:* the third profile is `rebalance`, and it is not `both`. One variable, `w` free in
+its box, `buy = max(w − w0, 0)` and `sell = max(w0 − w, 0)`: the round trip is impossible by
+construction, so the policy question is closed rather than answered — a term that rewards a side is a
+reward on a convex quantity, not convex, and the `linear` kind refuses it by name (at solve, where the
+data's signs are; at `validate-config` for a negative weight). Harvesting stays the outflow's. The
+rebalance is also the retry for a failed inflow or outflow, since no start is one it cannot trade out
+of. Cost: about 3× the inflow's solve time at 100k names (table above).
 
 ### Future enhancement: the outflow feeds the inflow
 

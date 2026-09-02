@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 
+import numpy as np
 from pandas.testing import assert_frame_equal
 
 from portfolio_optimizer.domain.results import PortfolioFailure, PortfolioResult
@@ -11,7 +12,20 @@ from portfolio_optimizer.engine.environment import environment_for
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_OK, EXIT_PORTFOLIO_FAILED, RunReport
 from tests.conftest import SELL_TERMS, resolved_example_real
 from tests.engine.fakes import LazyBackend, factory_for
-from tests.engine.support import BUY_ORDERS_P1, BUY_ORDERS_P2, SELL_ORDERS_P1, THIN_B_ORDERS_P2, details_csv, details_without, example_book, execute, thin_b_book, uncoupled_book
+from tests.engine.support import (
+    BUY_ORDERS_P1,
+    BUY_ORDERS_P2,
+    REBALANCE_ORDERS_P1,
+    REBALANCE_ORDERS_P2,
+    SELL_ORDERS_P1,
+    THIN_B_ORDERS_P2,
+    details_csv,
+    details_without,
+    example_book,
+    execute,
+    thin_b_book,
+    uncoupled_book,
+)
 
 
 def test_the_runner_submits_every_build_first_then_solves_along_the_schedule(tmp_path: Path) -> None:
@@ -123,7 +137,7 @@ def test_a_pure_function_solve_step_runs_the_whole_pipeline_and_is_verified(tmp_
     assert record.check is not None and record.check.objective_passed
 
 
-def test_the_buy_program_reproduces_the_hand_checked_buys_and_couples_through_them(tmp_path: Path) -> None:
+def test_the_inflow_reproduces_the_hand_checked_buys_and_couples_through_them(tmp_path: Path) -> None:
     report = execute(tmp_path, backend_factory=factory_for(LazyBackend()))
     assert report.exit_code == EXIT_OK, [outcome for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)]
     p1, p2 = report.outcomes
@@ -137,7 +151,7 @@ def test_the_buy_program_reproduces_the_hand_checked_buys_and_couples_through_th
     assert [p.status for p in report.manifest.portfolios] == ["solved", "solved"]
 
 
-def test_the_sell_program_reproduces_the_hand_checked_sells_and_couples_through_them(tmp_path: Path) -> None:
+def test_the_outflow_reproduces_the_hand_checked_sells_and_couples_through_them(tmp_path: Path) -> None:
     report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=thin_b_book(tmp_path), order_flow="outflow", objective=SELL_TERMS)
     assert report.exit_code == EXIT_OK, [outcome for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)]
     p1, p2 = report.outcomes
@@ -149,6 +163,22 @@ def test_the_sell_program_reproduces_the_hand_checked_sells_and_couples_through_
         assert outcome.report.passed and (outcome.solution.w <= outcome.spec.w0 + 1e-9).all() and outcome.solution.buy.tolist() == [0.0, 0.0, 0.0]
     assert "adv/cumulative_participation" in p2.report.active, "what the chain left of B's budget is what stopped P2"
     assert report.manifest.config.resolved["order_flow"] == "outflow"
+    assert [p.status for p in report.manifest.portfolios] == ["solved", "solved"]
+
+
+def test_the_rebalance_reproduces_the_hand_checked_trades_and_couples_through_both_sides(tmp_path: Path) -> None:
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), order_flow="rebalance")
+    assert report.exit_code == EXIT_OK, [outcome for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)]
+    p1, p2 = report.outcomes
+    assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
+    assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == REBALANCE_ORDERS_P1
+    assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == REBALANCE_ORDERS_P2
+    assert p2.chain_state.traded_shares.tolist() == [1000.0, 4000.0, 25000.0] and p2.chain_state.predecessors == ("P1",), (
+        "every trade P1 made, on either side, reaches P2: a sell spends a name's volume like a buy"
+    )
+    for outcome in (p1, p2):
+        assert outcome.report.passed and (np.minimum(outcome.solution.buy, outcome.solution.sell) == 0.0).all(), "one variable per name: nothing is bought and sold in one solve"
+    assert report.manifest.config.resolved["order_flow"] == "rebalance"
     assert [p.status for p in report.manifest.portfolios] == ["solved", "solved"]
 
 

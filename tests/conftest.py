@@ -32,6 +32,7 @@ from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, O
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_inflow.json"
 SELL_CONFIG = REPO_ROOT / "configs" / "example_outflow.json"
+REBALANCE_CONFIG = REPO_ROOT / "configs" / "example_rebalance.json"
 EXAMPLE_DATA = REPO_ROOT / "examples" / "data"
 
 AS_OF = datetime(2026, 8, 28, tzinfo=UTC)
