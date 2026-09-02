@@ -161,6 +161,8 @@ optional `params` (see [the one convention](#the-one-convention)). Top to bottom
 - **`sink`** — where the orders go, called once with every solved portfolio's orders.
 - **`execution`** — what one failed portfolio does to the rest. *Where* the work runs and how many workers
   there are is an environment setting, so a laptop run and a cluster run of one config hash identically.
+  A portfolio an inflow or an outflow could not solve is retried as a clean rebalance over exactly
+  those ids with `run --retry-of MANIFEST`.
 
 Three keys the example leaves at their defaults: `assembly` (steps that reshape the loaded datasets
 before the engine-known frames are validated), `build` (`standard`; the step that turns a bundle into a

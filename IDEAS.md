@@ -206,7 +206,9 @@ construction, so the policy question is closed rather than answered — a term t
 reward on a convex quantity, not convex, and the `linear` kind refuses it by name (at solve, where the
 data's signs are; at `validate-config` for a negative weight). Harvesting stays the outflow's. The
 rebalance is also the retry for a failed inflow or outflow, since no start is one it cannot trade out
-of. Cost: about 3× the inflow's solve time at 100k names (table above).
+of, and `run CONFIG --retry-of MANIFEST` is that retry as one command: the rebalance config over
+exactly the portfolios the manifest recorded as failed at solve, written inline, tagged `retry_of`,
+nothing carried forward. Cost: about 3× the inflow's solve time at 100k names (table above).
 
 ### Future enhancement: the outflow feeds the inflow
 

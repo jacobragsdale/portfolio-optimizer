@@ -180,6 +180,31 @@ one row closes buys on the flagged names and leaves sells open:
 A flag column is also what a `participation_limit`'s `scope` reads, so the same column can narrow the
 chain coupling to those names.
 
+## 7. Retry a failed inflow or outflow as a rebalance
+
+An inflow or an outflow fails a portfolio at stage `solve` when the book starts where it cannot go —
+the starts of step 5 — and the desk's answer is usually a rebalance of that account. `--retry-of`
+is that answer as one command: the rebalance config over exactly the portfolios a run recorded as
+failed at solve, and nothing else.
+
+```bash
+uv run portfolio-optimizer run configs/example_rebalance.json --data-root examples/data --as-of 2026-08-28T00:00:00Z --retry-of out/<failed-run-id>/manifest.json
+```
+
+The retry is clean: a failed solve produced no orders, so the snapshot is the book as it stands, and
+nothing from the failed run reaches the retry but the ids — no cash carried forward, no chain, no
+state. Those ids are written into the retry's config as the inline `portfolios` list, in their
+recorded solve order, so the retry's config hash differs from the original's (it is a different run
+over a different book) and `diff-manifests` says so; the manifest's `tags.retry_of` names the run it
+retries. Two things are refused before any data loads: a config that is not `order_flow: rebalance`
+(the retry *is* a rebalance; write the same wiring under that key, as `example_rebalance.json` is), and
+a manifest in which nothing failed at solve — a load failure, a skipped portfolio, or a clean run is
+not a retry's business:
+
+```text
+no portfolio in run run-b3a1c61b6f8c failed at solve (1 at load, 40 at skipped); --retry-of retries failed solves only
+```
+
 ## What couples under each order flow
 
 The chain couples through the trades the order flow makes. Under `outflow`, a portfolio's tradable set is what it can

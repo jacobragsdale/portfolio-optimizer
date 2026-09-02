@@ -4,16 +4,18 @@ import argparse
 import os
 import sys
 import uuid
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import TextIO
 
 from pydantic import ValidationError
 
-from portfolio_optimizer.config.models import load_run_config
-from portfolio_optimizer.config.resolve import TEMPLATE_MODULES, ConfigResolutionError, published_steps, resolve_config
+from portfolio_optimizer.config.models import InlinePortfolios, RunConfig, load_run_config
+from portfolio_optimizer.config.resolve import TEMPLATE_MODULES, ConfigResolutionError, ResolvedConfig, published_steps, resolve_config
 from portfolio_optimizer.config.schema import installed_steps, run_config_schema, schema_json
 from portfolio_optimizer.config.steps import StepKind
 from portfolio_optimizer.domain.constraints import constraint_kinds, parse_constraint
@@ -25,7 +27,7 @@ from portfolio_optimizer.domain.types import Clock
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.environment import read_git_info
 from portfolio_optimizer.engine.logging import configure_logging
-from portfolio_optimizer.engine.manifest import diff_manifests, failure_report_path, load_manifest
+from portfolio_optimizer.engine.manifest import RunManifest, diff_manifests, failure_report_path, load_manifest
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_INPUT_REJECTED, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunContext, run
 from portfolio_optimizer.settings import Settings, SettingsError, load_settings
 
@@ -76,6 +78,13 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--data-root", type=Path, default=None, help="override PORTFOLIO_OPTIMIZER_DATA_ROOT")
     run_parser.add_argument("--output", type=Path, default=None, help="override PORTFOLIO_OPTIMIZER_OUTPUT_DIR")
     run_parser.add_argument("--max-workers", type=int, default=None, help="override PORTFOLIO_OPTIMIZER_MAX_WORKERS")
+    run_parser.add_argument(
+        "--retry-of",
+        type=Path,
+        default=None,
+        metavar="MANIFEST",
+        help="retry the portfolios that run recorded as failed at solve, as a clean rebalance: this config (order_flow: rebalance) over exactly those ids, in their solve order, tagged retry_of",
+    )
     validate = commands.add_parser("validate-config", help="validate and resolve a config without loading data")
     validate.add_argument("config", type=Path)
     verify_parser = commands.add_parser("verify", help="re-verify a persisted solution without cvxpy")
@@ -87,6 +96,33 @@ def _parser() -> argparse.ArgumentParser:
     diff.add_argument("left", type=Path)
     diff.add_argument("right", type=Path)
     return parser
+
+
+class RetryError(ValueError):
+    """``--retry-of`` has nothing to retry, or the config is not a rebalance."""
+
+
+def retry_of(config: RunConfig, manifest: RunManifest) -> RunConfig:
+    """``config`` over exactly the portfolios ``manifest`` recorded as failed at stage ``solve``, in their solve order, tagged with the run it retries.
+
+    A retry is a clean rebalance and nothing else: no cash carried forward, no state, nothing from
+    the failed run but the ids — a failed solve produced no orders, so the same snapshot is the book
+    as it stands. The ids are written inline, so the retry's config hash differs from the original's:
+    it is a different run over a different book, and the manifest's ``retry_of`` tag says which.
+    """
+    if config.order_flow != "rebalance":
+        msg = f"--retry-of retries the portfolios that failed at solve as a clean rebalance, and this config's order_flow is {config.order_flow!r}; write the same wiring under order_flow: rebalance"
+        raise RetryError(msg)
+    failed = [record for record in manifest.portfolios if record.status == "failed" and record.failure_stage == "solve"]
+    if not failed:
+        by_stage = Counter(record.failure_stage or "unknown" for record in manifest.portfolios if record.status == "failed")
+        detail = ", ".join(f"{count} at {stage}" for stage, count in sorted(by_stage.items())) or "every portfolio solved"
+        msg = f"no portfolio in run {manifest.run_id} failed at solve ({detail}); --retry-of retries failed solves only"
+        raise RetryError(msg)
+    ordered = sorted(failed, key=lambda record: (Decimal(record.solve_order) if record.solve_order is not None else Decimal(0), record.portfolio_id))
+    portfolios = InlinePortfolios(ids=tuple(record.portfolio_id for record in ordered))
+    run = config.run.model_copy(update={"tags": {**config.run.tags, "retry_of": manifest.run_id}})
+    return config.model_copy(update={"datasets": {**config.datasets, "portfolios": portfolios}, "run": run})
 
 
 def parse_as_of(text: str) -> datetime:
@@ -121,14 +157,9 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_
         stderr.write(f"{error}\n")
         return EXIT_INPUT_REJECTED
     config_path = Path(args.config)
-    try:
-        resolved = resolve_config(load_run_config(config_path.read_text()), packages=settings.packages())
-    except OSError as error:
-        stderr.write(f"cannot read config: {error}\n")
-        return EXIT_INFRASTRUCTURE
-    except (ValidationError, ConfigResolutionError) as error:
-        stderr.write(f"config rejected: {error}\n")
-        return EXIT_INPUT_REJECTED
+    resolved = _resolved_config(config_path, args.retry_of, settings, stderr)
+    if isinstance(resolved, int):
+        return resolved
     data_root = Path(args.data_root) if args.data_root is not None else settings.data_root
     output_dir = Path(args.output) if args.output is not None else settings.output_dir
     execution = settings.execution()
@@ -164,6 +195,37 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_
             stdout.write(f"  {outcome.portfolio_id}: FAILED at {outcome.stage}: {outcome.error_type}: {outcome.message}{traceback_hint}\n")
     stdout.write(f"exit code {report.exit_code}\n")
     return report.exit_code
+
+
+def _resolved_config(config_path: Path, retry_of_path: Path | None, settings: Settings, stderr: TextIO) -> ResolvedConfig | int:
+    """The config at ``config_path`` resolved — over the failed solves of ``retry_of_path``'s run when given — or the exit code that stops the run."""
+    try:
+        config = load_run_config(config_path.read_text())
+    except OSError as error:
+        stderr.write(f"cannot read config: {error}\n")
+        return EXIT_INFRASTRUCTURE
+    except ValidationError as error:
+        stderr.write(f"config rejected: {error}\n")
+        return EXIT_INPUT_REJECTED
+    if retry_of_path is not None:
+        try:
+            manifest = load_manifest(retry_of_path.read_text())
+        except OSError as error:
+            stderr.write(f"cannot read manifest: {error}\n")
+            return EXIT_INFRASTRUCTURE
+        except (ValidationError, ValueError) as error:
+            stderr.write(f"manifest rejected: {error}\n")
+            return EXIT_INPUT_REJECTED
+        try:
+            config = retry_of(config, manifest)
+        except RetryError as error:
+            stderr.write(f"{error}\n")
+            return EXIT_INPUT_REJECTED
+    try:
+        return resolve_config(config, packages=settings.packages())
+    except ConfigResolutionError as error:
+        stderr.write(f"config rejected: {error}\n")
+        return EXIT_INPUT_REJECTED
 
 
 def _validate_config(args: argparse.Namespace, *, env: Mapping[str, str], stdout: TextIO, stderr: TextIO) -> int:

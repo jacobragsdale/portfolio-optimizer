@@ -425,7 +425,12 @@ that fails has an unknown tradable set and is treated as overlapping everything 
 **0** when every portfolio solved, **1** when any failed, **2** when the inputs were rejected before
 anything was solved — invalid settings, a bad `--as-of`, a config that does not validate or resolve,
 datasets that fail loading or assembly — and **3** for infrastructure: a sink failure, a cluster that
-never came up, a config file that cannot be read.
+never came up, a config file that cannot be read. A portfolio that failed at `solve` is the one kind
+of failure with a command behind it: `run CONFIG --retry-of MANIFEST` runs a rebalance config over
+exactly the portfolios the manifest recorded as failed at that stage — written inline as the book,
+the run tagged `retry_of` — with nothing carried from the failed run but the ids. A load failure or
+a skipped portfolio is the original run's to re-run; the retry refuses a manifest without a failed
+solve, and a config that is not `order_flow: rebalance`.
 
 ## 11. Persist, publish, record
 

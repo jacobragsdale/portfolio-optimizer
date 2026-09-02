@@ -341,7 +341,10 @@ by position, whatever it had finished, so the manifest never depends on timing. 
 unknown tradable set and is treated as overlapping everything after it. The sink is called once, only when at least one portfolio
 solved, and a sink failure is an infrastructure exit code with the manifest still written. There is no
 path on which the engine returns the current portfolio as a default answer: an infeasible problem raises,
-with an arithmetic diagnosis of why.
+with an arithmetic diagnosis of why. A portfolio that failed at solve under an inflow or an outflow —
+a start the order flow cannot trade out of — is retried by `run --retry-of MANIFEST` with a
+rebalance config: a clean run over exactly those ids, written inline, with nothing carried from the
+failed run but the list.
 
 ## What was left out on purpose
 
