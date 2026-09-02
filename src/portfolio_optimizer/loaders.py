@@ -10,9 +10,9 @@ datasets its entry depends on have loaded, one with no dependencies starts immed
 blocking driver never stalls the loop. A loader never counts its own requests: the config's
 ``batch_size`` cuts the book into calls and ``max_in_flight`` bounds how many of them run at once.
 
-The six loaders here stand in for the services a desk actually has: a book of record, a custodian's
-position service, a security master, the account-master database, a compliance service, and a
-parameter store. Each waits as long as its own source would, drawn from the bands below, and then
+The loaders here stand in for the services a desk actually has: a book of record, a custodian's
+position service, a security master, the account-master database, a compliance service, a trade
+blotter, and a parameter store. Each waits as long as its own source would, drawn from the bands below, and then
 answers from a CSV table under ``request.data_root``, so the template runs against no infrastructure
 at all. Replacing a mock with the real thing changes the middle line and nothing around it: the wait
 becomes the call, ``request.portfolio_ids`` becomes the query's id list, and the frame still comes
@@ -32,7 +32,7 @@ from pydantic import Field, model_validator
 
 from portfolio_optimizer.domain.data import LoadRequest
 from portfolio_optimizer.domain.frames import ColumnSpec, FrameSchema, coerce_frame, empty_frame
-from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, PORTFOLIOS, UNIVERSE
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, ORDER_SIDES, PORTFOLIOS, UNIVERSE
 from portfolio_optimizer.domain.types import Params, PortfolioId
 
 
@@ -65,6 +65,9 @@ COMPLIANCE = Latency(2.0, 9.0)
 
 PARAMETER_STORE = Latency(0.5, 1.5)
 """A named set of runtime settings. Small, cached, and asked for more than once a run."""
+
+BLOTTER = Latency(1.0, 4.0)
+"""What the book traded recently: one query over the accounts asked for."""
 
 PARAMETERS = FrameSchema(name="parameters", columns=(ColumnSpec("name", "string"), ColumnSpec("value", "decimal")), key=("name",))
 """The shape of a parameter set: an extra dataset the engine does not know, typed by the loader that fetches it."""
@@ -184,6 +187,26 @@ async def load_mandates(request: LoadRequest, params: ServiceParams) -> pd.DataF
     """
     await _call(request, params.latency(COMPLIANCE))
     return _rows_for(_table(request, "mandates.csv", MANDATES), request.portfolio_ids)
+
+
+TRADES = FrameSchema(
+    name="trades",
+    columns=(ColumnSpec("portfolio_id", "string"), ColumnSpec("security_id", "string"), ColumnSpec("side", "string", allowed=ORDER_SIDES), ColumnSpec("traded_on", "datetime_utc")),
+    key=(),
+)
+"""The shape of a trade record: which account traded which name, which way, and when — an extra dataset typed by the loader that fetches it. No key: an account may trade a name twice in a day."""
+
+
+async def load_trades(request: LoadRequest, params: ServiceParams) -> pd.DataFrame:
+    """What each account traded recently, from the desk's blotter: one row per fill.
+
+    An extra dataset the engine does not interpret: it is carried to each portfolio's bundle, where
+    :func:`~portfolio_optimizer.rules.restrict_recent_trades` freezes every name the account traded
+    inside the wash-sale window, so a loss the outflow harvested is not bought straight back. Declare
+    ``depends_on: ["portfolios"]`` so the call receives the book's ids.
+    """
+    await _call(request, params.latency(BLOTTER))
+    return _rows_for(_table(request, "trades.csv", TRADES), request.portfolio_ids)
 
 
 async def load_parameters(request: LoadRequest, params: ParametersParams) -> pd.DataFrame:

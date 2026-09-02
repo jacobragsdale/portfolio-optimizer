@@ -1,5 +1,6 @@
 """Tier 1: the shipped rules — boundary, empty, normal — and that restricting is idempotent."""
 
+from datetime import timedelta
 from decimal import Decimal
 
 import pandas as pd
@@ -14,13 +15,15 @@ from portfolio_optimizer.rules import (
     CapSingleNameParams,
     LiquidityParams,
     MandateParams,
+    RecentTradesParams,
     add_zero_alpha,
     attach_universe_columns,
     cap_single_name,
     restrict_low_liquidity,
+    restrict_recent_trades,
     restrict_to_mandate,
 )
-from tests.conftest import Factories, Frames, make_portfolio_data
+from tests.conftest import AS_OF, Factories, Frames, make_portfolio_data
 
 # --- cap_single_name ---
 
@@ -187,3 +190,42 @@ def test_attach_universe_columns_refuses_to_overwrite_a_column_holdings_has(make
     data = make.portfolio_data(holdings=holdings, universe=_scored(frames))
     with pytest.raises(ValueError, match=r"holdings already has column\(s\) \['score'\]"):
         attach_universe_columns(data, AttachUniverseColumnsParams(columns=("score",)))
+
+
+# --- restrict_recent_trades ---
+
+
+def _trades(*rows: tuple[str, str, int]) -> pd.DataFrame:
+    """A trades frame for P1: ``(security_id, side, days_ago)`` rows against the test's as-of instant."""
+    return pd.DataFrame(
+        {
+            "portfolio_id": pd.Series(["P1"] * len(rows), dtype="string"),
+            "security_id": pd.Series([security for security, _, _ in rows], dtype="string"),
+            "side": pd.Series([side for _, side, _ in rows], dtype="string"),
+            "traded_on": pd.Series([AS_OF - timedelta(days=days) for _, _, days in rows], dtype="datetime64[ns, UTC]"),
+        }
+    )
+
+
+def test_restrict_recent_trades_freezes_names_traded_inside_the_window_on_either_side(make: Factories) -> None:
+    trades = _trades(("A", "SELL", 9), ("C", "BUY", 88), ("B", "BUY", 30))
+    result = restrict_recent_trades(make.portfolio_data(extras={"trades": trades}), RecentTradesParams())
+    assert result.universe["restricted"].tolist() == [True, True, False], "A was sold nine days ago and B bought exactly thirty; C's trade is outside the window"
+    assert str(result.universe["restricted"].dtype) == "bool"
+    wider = restrict_recent_trades(make.portfolio_data(extras={"trades": trades}), RecentTradesParams(window_days=90))
+    assert wider.universe["restricted"].tolist() == [True, True, True]
+    nothing = restrict_recent_trades(make.portfolio_data(extras={"trades": _trades()}), RecentTradesParams())
+    assert nothing.universe["restricted"].tolist() == [False, False, False], "no trades, nothing frozen, and the column exists either way"
+
+
+def test_restrict_recent_trades_keeps_names_already_restricted_and_ignores_names_outside_the_universe(make: Factories, frames: Frames) -> None:
+    universe = frames.three_security_universe().assign(restricted=pd.Series([False, True, False], dtype="bool"))
+    result = restrict_recent_trades(make.portfolio_data(universe=universe, extras={"trades": _trades(("C", "SELL", 1), ("ZZZ", "SELL", 1))}), RecentTradesParams())
+    assert result.universe["restricted"].tolist() == [False, True, True]
+
+
+def test_restrict_recent_trades_refuses_a_missing_dataset_or_column(make: Factories) -> None:
+    with pytest.raises(ValueError, match=r"no extra dataset 'trades' to read the trades from; the run carries \[\]"):
+        restrict_recent_trades(make.portfolio_data(), RecentTradesParams())
+    with pytest.raises(ValueError, match=r"trades dataset 'trades' needs column\(s\) \['traded_on'\]"):
+        restrict_recent_trades(make.portfolio_data(extras={"trades": _trades().drop(columns=["traded_on"])}), RecentTradesParams())

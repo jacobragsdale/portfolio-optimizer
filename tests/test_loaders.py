@@ -24,6 +24,7 @@ from portfolio_optimizer.loaders import (
     load_mandates,
     load_parameters,
     load_portfolios,
+    load_trades,
     load_universe,
 )
 from tests.conftest import AS_OF, EXAMPLE_DATA
@@ -85,6 +86,13 @@ def test_compliance_answers_the_mandate_for_the_accounts_asked_for(tmp_path: Pat
     mandates = asyncio.run(load_mandates(request("mandates", "P1", root=tmp_path), INSTANT))
     assert mandates["portfolio_id"].unique().tolist() == ["P1"]
     assert mandates["sector"].tolist() == ["TECH", "HEALTH"]
+
+
+def test_the_blotter_answers_the_trades_for_the_accounts_asked_for(tmp_path: Path) -> None:
+    (tmp_path / "trades.csv").write_text("portfolio_id,security_id,side,traded_on\nP1,A,SELL,2026-08-19T00:00:00Z\nP2,B,BUY,2026-08-20T00:00:00Z\nP1,C,BUY,2026-06-01T00:00:00Z\n")
+    trades = asyncio.run(load_trades(request("trades", "P1", root=tmp_path), INSTANT))
+    assert trades["portfolio_id"].unique().tolist() == ["P1"] and trades["side"].tolist() == ["SELL", "BUY"]
+    assert str(trades["traded_on"].dtype) == "datetime64[ns, UTC]", "a trade is dated with a zone, like a holding"
 
 
 def test_the_parameter_store_fetches_the_set_the_dataset_names() -> None:

@@ -151,13 +151,15 @@ Where the work runs — this process, or a Dask cluster the run provisions for i
 
 Loaders: `load_portfolios`, `load_holdings` (one request per account in the batch, run together),
 `load_universe`, `load_details` (a plain `def`: one query per batch of ids, run in a worker thread),
-`load_constraints`, `load_mandates`, `load_parameters` (`set_name`, default the dataset's own name).
+`load_constraints`, `load_mandates`, `load_trades`, `load_parameters` (`set_name`, default the dataset's own name).
 Every one of them stands in for a service and takes `min_latency_s` and `max_latency_s`, which override
 the wait that source is pretended to take; a real loader has neither. Assembly steps: `join`, `union`,
 `select`, `drop`. Rules: `cap_single_name` (`max_weight`), `add_zero_alpha`, `restrict_low_liquidity`
 (`dataset`, `key`; reads its threshold from a `name`/`value` extra dataset, by default
 `buy_universe_parameters`/`min_adv_shares`), `restrict_to_mandate` (`dataset`, default `mandates`;
-freezes every name whose sector is outside the account's mandate rows), `attach_universe_columns`
+freezes every name whose sector is outside the account's mandate rows), `restrict_recent_trades`
+(`dataset`, default `trades`; `window_days`, default 30; freezes every name the account traded within
+the window of the run's as-of instant), `attach_universe_columns`
 (`columns`; copies per-security columns from the universe onto holdings, matched on `security_id` —
 default every column the universe carries beyond its schema). Solve-order steps:
 `most_uninvested_first`. Build steps: `standard`. Solve steps: `cvxpy` (default), `pro_rata_fill`.

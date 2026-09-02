@@ -252,10 +252,11 @@ Dask enforces the graph: a solve is submitted with its predecessors' contributio
 on the coupled side — as dependencies and runs where its build lives. Outcomes are classified in solve
 order whatever finished first, so the number of workers and the order in which they finish never affect
 the output. Coupling across sides — an outflow's sells limiting an inflow's buys, wash sales,
-internal crossing — is a recorded non-goal; `IDEAS.md` says what it would cost. What a desk can do
-today is hand the inflow a boolean universe column (`sold_at_loss`, from a rule or a loader),
-which the build exports as a flag, and close buys on those names with one constraint row:
-`{"kind": "weight_limit", "vector": "buy", "direction": "<=", "bounds": "0", "scope": "sold_at_loss"}`.
+internal crossing — is a recorded non-goal; `IDEAS.md` says what it would cost. What crosses is data:
+the shipped `trades` dataset is the desk's blotter, and the `restrict_recent_trades` rule freezes
+every name an account traded inside the wash-sale window, so an inflow cannot rebuy what the outflow
+just sold; a boolean universe column and one `weight_limit` row on `buy` (`scope: sold_at_loss`) is
+the directional shape of the same thing.
 
 The shape this produces is measured, not assumed (`benchmarks/run_book.py`, 2026-08-30, 8 local
 workers). A book of 100 accounts across 10 disjoint mandates derives 450 edges, 10 components,

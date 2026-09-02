@@ -463,9 +463,9 @@ The shipped example is three configs over one book: `configs/example_inflow.json
 (`order_flow: inflow`, two `linear` terms — alpha and transaction cost), `configs/example_outflow.json`, its
 outflow (`order_flow: outflow`, three — alpha, tax cost, transaction cost), and
 `configs/example_rebalance.json`, the rebalance (`order_flow: rebalance`, the inflow's two terms). Each declares a hundred
-accounts over three securities, five global datasets and two loaded per account (`holdings`, a call
+accounts over three securities, six global datasets and two loaded per account (`holdings`, a call
 each with eight in flight — 200 rows in 100 batches — and `details`, twenty-five ids a call, four
-batches), no assembly steps, one rule, up to six typed constraint rows an account (530 rows in all),
+batches), no assembly steps, two rules, up to six typed constraint rows an account (530 rows in all),
 the Clarabel solver under the `cvxpy` step, and `fail_fast`; where the work runs is the
 `PORTFOLIO_OPTIMIZER_CLUSTER` setting, this process by default. Each run is a pure function of the
 snapshot with its own manifest; nothing crosses between them. The first two accounts are the ones to
@@ -483,8 +483,9 @@ In the inflow P1 solves first: it takes the quarter of NAV that C's budget allow
 buys 1,000 A up to its 40% cap; B's alpha has turned negative, so the remaining 50,000 stays cash — the
 hand-computable optimum, to the share. P2 can buy the same securities, so it waits for P1; when it
 solves, the chain state says C's budget is spent, so it buys 3,000 A to its 60% cap and the run says
-why C is closed: `adv/cumulative_participation` binds. Across the book that is 55 orders in 53
-accounts — 53 in A, and C only for P1 and P3, whose 30% participation leaves 5,000 shares inside its
+why C is closed: `adv/cumulative_participation` binds. Across the book that is 54 orders in 52
+accounts — 52 in A (P4 has room but sold A nine days earlier, and the blotter rule freezes it), and
+C only for P1 and P3, whose 30% participation leaves 5,000 shares inside its
 own budget. In the outflow neither account waits on C; each harvests B down to the `TECH` floor,
 2,000 shares — P1 at the long-term rate, four cents of refund per dollar sold, P2 at the short-term
 rate — and the term that rewards the sale is exact because nothing can rebuy B in the same solve.

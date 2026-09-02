@@ -148,10 +148,10 @@ def test_manifest_records_provenance_for_every_stage(tmp_path: Path, scheduler_a
     manifest = execute(tmp_path, scheduler_address=scheduler_address).manifest
     assert manifest.git_sha == GIT.sha
     assert manifest.config.sha256 == resolved_example_real(sink="orders_to_parquet").config_sha256
-    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "constraints", "global_parameters", "buy_universe_parameters"}
+    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "constraints", "trades", "global_parameters", "buy_universe_parameters"}
     assert [term["name"] for term in manifest.terms] == ["alpha", "transaction_cost"], "the terms as records, readable by verify without the config"
     p1 = manifest.portfolios[0]
-    assert [r.qualname for r in p1.rules] == ["portfolio_optimizer.rules:restrict_low_liquidity"]
+    assert [r.qualname for r in p1.rules] == ["portfolio_optimizer.rules:restrict_low_liquidity", "portfolio_optimizer.rules:restrict_recent_trades"]
     assert [record["kind"] for record in p1.constraints] == ["cash_limit", "cash_limit", "turnover_limit", "group_limit", "group_limit", "participation_limit"]
     assert p1.solve is not None
     assert p1.solve.status == "optimal"

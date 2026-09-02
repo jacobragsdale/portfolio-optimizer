@@ -49,10 +49,11 @@ uv run portfolio-optimizer validate-config configs/example_inflow.json
 You should see `config ok` followed by one line per step and one per term:
 
 ```text
-config ok (sha256 eb156c9bdfec): 1 rule(s), 2 term(s), dependencies overlap
+config ok (sha256 eb156c9bdfec): 2 rule(s), 2 term(s), dependencies overlap
   loader              portfolio_optimizer.loaders:load_portfolios
   ...
   rule                portfolio_optimizer.rules:restrict_low_liquidity
+  rule                portfolio_optimizer.rules:restrict_recent_trades
   build               portfolio_optimizer.engine.build:standard
   solve               portfolio_optimizer.solvers:cvxpy
   sink                portfolio_optimizer.sinks:orders_to_parquet
@@ -87,6 +88,7 @@ run run-b3a1c61b6f8c: manifest out/run-b3a1c61b6f8c/manifest.json
   P1: solved, 2 order(s); binding: ub, adv/participation, adv/cumulative_participation
   P2: solved, 1 order(s); binding: lb, ub, sector_floor/group_limit, adv/cumulative_participation
   P3: solved, 2 order(s); binding: ub, adv/cumulative_participation
+  P4: solved, 0 order(s); binding: lb, ub, sector_floor/group_limit, adv/cumulative_participation
   ...
 exit code 0
 ```
@@ -140,7 +142,10 @@ A instead: 3,000 shares, up to its wider cap. The output says so: `adv/participa
 `adv/cumulative_participation` bind on P1 — C's budget is what stopped it — and
 `adv/cumulative_participation` binds on P2, the budget P1 used. P3 is the exception that proves the
 rule: its style allows 30% of a day's volume, so it finds 5,000 shares of C still inside its own budget
-after P1's 25,000. Behind them the other accounts buy A up to their caps; about half have room.
+after P1's 25,000. P4 has room in A and buys none: `examples/data/trades.csv` says it sold A nine
+days before the run, and the `restrict_recent_trades` rule freezes a name traded inside the thirty-day
+wash-sale window (its trade in C three months earlier is outside it and changes nothing). Behind them
+the other accounts buy A up to their caps; about half have room.
 
 That is the chain at work, and the manifest's `schedule` block records it: every account in this book
 can buy all three securities, so every one of them waits for all the accounts ahead of it —
@@ -153,7 +158,7 @@ securities is where that graph opens up and the solves run side by side.
 uv run python -c "import pandas as pd, glob; print(pd.read_parquet(glob.glob('out/*/orders/orders.parquet')[0]).to_string())"
 ```
 
-You should see 55 orders across 53 accounts, every one a `BUY`. P1's two are the ones to check: buy
+You should see 54 orders across 52 accounts, every one a `BUY`. P1's two are the ones to check: buy
 1,000 A and buy 25,000 C — the hand-computed optimum, to the share. P2's one is buy 3,000 A.
 
 ## 5. Run the outflow over the same book

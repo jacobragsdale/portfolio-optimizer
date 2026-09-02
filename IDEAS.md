@@ -131,11 +131,12 @@ load-bearing. Everything such a run would add couples across the sides, per secu
 | Wash sales, mirrored: do not sell at a loss what an earlier account bought | buys | sells |
 | Internal crossing: an earlier sell of *X* makes a later buy of *X* cheaper — a *term* | sells | buys |
 
-The wash-sale rows have a cross-run answer today, outside the engine: the inflow takes a boolean
-universe column (`sold_at_loss`, from a rule or a loader), the build exports it as a flag, and one
-constraint row — `{"kind": "weight_limit", "vector": "buy", "direction": "<=", "bounds": "0", "scope":
-"sold_at_loss"}` — closes buys on those names. Producing that column from the outflow's orders is
-part of the handoff sketched under *the outflow feeds the inflow*.
+The wash-sale rows have a cross-run answer today, outside the engine (2026-09-02): the `trades`
+dataset is the blotter and `restrict_recent_trades` freezes every name an account traded inside the
+window, on both sides; the directional shape is a boolean universe column (`sold_at_loss`) exported as
+a flag and one constraint row — `{"kind": "weight_limit", "vector": "buy", "direction": "<=",
+"bounds": "0", "scope": "sold_at_loss"}` — closing buys on those names. Feeding the blotter from the
+outflow's orders is part of the handoff sketched under *the outflow feeds the inflow*.
 
 Each simplification the one-side guarantee buys (see the architecture explanation) would need to un-simplify, in this order:
 

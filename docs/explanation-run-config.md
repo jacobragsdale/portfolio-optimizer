@@ -172,11 +172,14 @@ universe the build exports it as a spec column a term can read. **Runtime parame
 a narrow `name`/`value` frame of numbers that change without the config changing.
 
 ```json
+"trades": {"loader": "load_trades", "depends_on": ["portfolios"]},
 "global_parameters": {"loader": "load_parameters"},
 "buy_universe_parameters": {"loader": "load_parameters"}
 ```
 
-The example declares two, both served by one loader that fetches the set named by the dataset itself.
+The example declares three. `trades` is a third shape, a **per-account record** with a `portfolio_id`
+column: the desk's blotter, which the engine reduces to each account's rows on the way into its
+bundle, where `restrict_recent_trades` reads it. The parameter sets are two, both served by one loader that fetches the set named by the dataset itself.
 `buy_universe_parameters` holds the `min_adv_shares` that `restrict_low_liquidity` reads, which is why
 that rule takes no number in the config; `global_parameters` holds settings for a solve step, and
 nothing shipped reads it — the `cvxpy` step has no business interpreting a desk's own settings. Both
@@ -320,7 +323,7 @@ manifest records every step's source hash, parameters, row counts, and the colum
 ## `rules`
 
 ```json
-"rules": ["restrict_low_liquidity", "add_zero_alpha", "attach_universe_columns"]
+"rules": ["restrict_low_liquidity", "restrict_recent_trades", "add_zero_alpha", "attach_universe_columns"]
 ```
 
 Rules are the business-logic layer: functions that take one portfolio's assembled data bundle and
@@ -329,10 +332,12 @@ build. The bundle they receive is already validated, and the only way to return 
 `with_changes(...)`, which re-runs every cross-frame check — so a rule can tighten a cap, freeze a
 name, or add a column, but cannot hand the optimizer something inconsistent.
 
-The example configures the first of these three, and together they show the spectrum.
+The example configures the first two, and together the four show the spectrum.
 `restrict_low_liquidity` reads its threshold from the `buy_universe_parameters` extra dataset — its
 `params` name the dataset and the key, and default to exactly those — and marks names below it
-restricted, which the build then freezes at their current weight. `add_zero_alpha` takes no
+restricted, which the build then freezes at their current weight. `restrict_recent_trades` reads the
+account's rows of the `trades` extra and freezes every name traded within `window_days` of the run's
+as-of instant: the wash-sale rule, as data the desk loads rather than state the engine keeps. `add_zero_alpha` takes no
 parameters and adds an `alpha` column of zeros when the universe has none, so the `alpha` term could
 be enabled without changing the data. `attach_universe_columns` copies that column — and any other
 analytic the universe carries beyond its schema — onto `holdings`, so the two tables stack into one

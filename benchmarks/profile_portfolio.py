@@ -42,6 +42,7 @@ from portfolio_optimizer.cvx.adapter import build_problem
 from portfolio_optimizer.cvx.order_flow import decision_variables, identity_constraints
 from portfolio_optimizer.domain.constraints import parse_constraints
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails
+from portfolio_optimizer.domain.frames import empty_frame
 from portfolio_optimizer.domain.results import VECTOR_FIELDS, ChainState, PortfolioResult, ProblemSpec
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.build import order_inputs, standard
@@ -50,6 +51,7 @@ from portfolio_optimizer.engine.orders import rounding_drift, solution_to_orders
 from portfolio_optimizer.engine.pipeline import apply_rules
 from portfolio_optimizer.engine.solve import solve
 from portfolio_optimizer.engine.tasks import BuildResult
+from portfolio_optimizer.loaders import TRADES
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_inflow.json"
@@ -121,7 +123,7 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
         constraint_row("P1", "group_limit", "sector_caps", {"direction": "<=", "column": "sector", "bounds": dict.fromkeys(sector_names, "0.5")})
     )  # K bands in one row: what the block costs at K is part of what this measures
     constraints = pd.DataFrame({column: pd.Series([row[index] for row in rows], dtype="string") for index, column in enumerate(CONSTRAINT_COLUMNS)})
-    extras = {"buy_universe_parameters": pd.DataFrame({"name": pd.Series(["min_adv_shares"], dtype="string"), "value": pd.Series([Decimal(1000)], dtype="object")})}
+    extras = {"buy_universe_parameters": pd.DataFrame({"name": pd.Series(["min_adv_shares"], dtype="string"), "value": pd.Series([Decimal(1000)], dtype="object")}), "trades": empty_frame(TRADES)}
     return Book(details=details, holdings=holdings, universe=universe, constraints=constraints, extras=extras)
 
 

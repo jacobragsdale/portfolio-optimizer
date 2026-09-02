@@ -505,7 +505,7 @@
       "type": "string"
     },
     "LoaderStep": {
-      "$comment": "Steps this environment can name: ['load_constraints', 'load_details', 'load_holdings', 'load_mandates', 'load_parameters', 'load_portfolios', 'load_universe']",
+      "$comment": "Steps this environment can name: ['load_constraints', 'load_details', 'load_holdings', 'load_mandates', 'load_parameters', 'load_portfolios', 'load_trades', 'load_universe']",
       "anyOf": [
         {
           "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
@@ -839,6 +839,57 @@
               "if": {
                 "properties": {
                   "name": {
+                    "const": "load_trades"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "What every shipped loader accepts: how long its source is pretended to take.\n\nEach loader draws a wait from its own band — :data:`SECURITY_MASTER` is tens of seconds, a\nparameter store is under one — seeded on the run id, the dataset, and the ids in the call, so two\nruns of one config wait the same amounts. Setting both fields overrides that band; setting both to\nzero removes the wait, which is what a test does. A real loader has none of this: delete the field\nand the wait, and keep the rest.",
+                    "properties": {
+                      "max_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Longest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Max Latency S"
+                      },
+                      "min_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Shortest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Min Latency S"
+                      }
+                    },
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
                     "const": "load_universe"
                   }
                 },
@@ -955,7 +1006,7 @@
       "type": "object"
     },
     "RuleStep": {
-      "$comment": "Steps this environment can name: ['add_zero_alpha', 'attach_universe_columns', 'cap_single_name', 'restrict_low_liquidity', 'restrict_to_mandate']",
+      "$comment": "Steps this environment can name: ['add_zero_alpha', 'attach_universe_columns', 'cap_single_name', 'restrict_low_liquidity', 'restrict_recent_trades', 'restrict_to_mandate']",
       "anyOf": [
         {
           "$comment": "These steps have required parameters and must use the object form: ['cap_single_name']",
@@ -1096,6 +1147,42 @@
                         "minLength": 1,
                         "title": "Key",
                         "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "const": "restrict_recent_trades"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "Where :func:`restrict_recent_trades` reads the account's recent trades, and how far back a trade still counts.",
+                    "properties": {
+                      "dataset": {
+                        "default": "trades",
+                        "minLength": 1,
+                        "title": "Dataset",
+                        "type": "string"
+                      },
+                      "window_days": {
+                        "default": 30,
+                        "description": "A name traded within this many days of the run's as-of instant is frozen; thirty is the US wash-sale window.",
+                        "minimum": 0,
+                        "title": "Window Days",
+                        "type": "integer"
                       }
                     },
                     "type": "object"

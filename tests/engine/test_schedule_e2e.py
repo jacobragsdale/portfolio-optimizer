@@ -46,6 +46,7 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
     (root / "portfolios.csv").write_text("\n".join(["portfolio_id,solve_order", *(f"{portfolio_id},{rng.randint(0, 1)}" for portfolio_id in portfolio_ids)]) + "\n")
     (root / "buy_list.csv").write_text("\n".join(buy_list) + "\n")
     (root / "buy_universe_parameters.csv").write_text("name,value\nmin_adv_shares,1000\n")
+    (root / "trades.csv").write_text("portfolio_id,security_id,side,traded_on\n")
     (root / "global_parameters.csv").write_text("name,value\nrisk_aversion,2.5\n")
     universe_rows = (f"{security},{PRICES[security]},TECH,20000,1,false,{ALPHAS[security]},5" for security in SECURITIES)
     (root / "universe.csv").write_text("\n".join(["security_id,price,sector,adv_shares,lot_size,restricted,alpha,tcost_bps", *universe_rows]) + "\n")

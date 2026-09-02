@@ -11,6 +11,7 @@ concurrently: two portfolios wait on each other only when they can both trade th
 that side.
 """
 
+from datetime import timedelta
 from decimal import Decimal
 
 import pandas as pd
@@ -108,6 +109,40 @@ def restrict_to_mandate(data: PortfolioData, params: MandateParams) -> Portfolio
         raise ValueError(msg)
     outside = ~data.universe["sector"].isin(sorted(allowed))
     return data.with_changes(universe=data.universe.assign(restricted=(restricted_flags(data.universe) | outside).astype("bool")))
+
+
+class RecentTradesParams(Params):
+    """Where :func:`restrict_recent_trades` reads the account's recent trades, and how far back a trade still counts."""
+
+    dataset: str = Field(default="trades", min_length=1)
+    window_days: int = Field(default=30, ge=0, description="A name traded within this many days of the run's as-of instant is frozen; thirty is the US wash-sale window.")
+
+
+def restrict_recent_trades(data: PortfolioData, params: RecentTradesParams) -> PortfolioData:
+    """Freeze every universe name the account traded inside the window; it keeps its current weight.
+
+    The wash-sale rule, as data: a name sold at a loss must not be bought back within the window, and
+    a name just bought must not be sold at a loss within it. The trades are loaded
+    (:func:`~portfolio_optimizer.loaders.load_trades` is the shipped source) rather than remembered
+    across runs, so an inflow that follows an outflow stays a pure function of its own snapshot, and
+    the desk's blotter — not the engine — is the record of what was traded. A traded name is frozen
+    on both sides, which is the conservative reading: an inflow cannot rebuy it, an outflow cannot
+    sell it, a rebalance can do neither.
+    """
+    # ponytail: freezes both sides of every traded name; directional — cap a sold name at its
+    # current weight, floor a bought one — if a desk wants to keep trimming what it just bought.
+    try:
+        frame = data.extras[params.dataset]
+    except KeyError:
+        msg = f"no extra dataset {params.dataset!r} to read the trades from; the run carries {sorted(data.extras)}"
+        raise ValueError(msg) from None
+    missing = [column for column in ("security_id", "traded_on") if column not in frame.columns]
+    if missing:
+        msg = f"trades dataset {params.dataset!r} needs column(s) {missing}; it has {sorted(str(column) for column in frame.columns)}"
+        raise ValueError(msg)
+    recent = frame.loc[frame["traded_on"] >= data.as_of_date - timedelta(days=params.window_days), "security_id"]
+    traded = data.universe["security_id"].isin({str(security) for security in recent})
+    return data.with_changes(universe=data.universe.assign(restricted=(restricted_flags(data.universe) | traded).astype("bool")))
 
 
 def restricted_flags(universe: pd.DataFrame) -> pd.Series:

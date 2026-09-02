@@ -148,19 +148,37 @@ same line.
 
 Nothing crosses between order flows inside the engine, and that includes a wash-sale rule: a name
 the outflow sold at a loss must not be bought straight back, but the inflow only knows what
-its inputs say. The mechanism is data, the same as every other limit. Give the universe a boolean
-column naming the names to stay out of — from the outflow's orders, a trade-history dataset, or
-whatever rule your jurisdiction sets — and the build exports it as a flag; one constraint row closes
-buys on the flagged names:
+its inputs say. The mechanism is data, the same as every other limit, and the shipped example wires
+it: the `trades` dataset is the desk's blotter — what each account traded recently, one row per fill
+(`load_trades`, from `examples/data/trades.csv`, asked about the book's ids) — and the
+`restrict_recent_trades` rule freezes every universe name the account traded within `window_days` of
+the run's `--as-of` (thirty by default, the US window) by marking it `restricted`, so it keeps its
+current weight under every order flow:
+
+```json
+"trades": {"loader": "load_trades", "depends_on": ["portfolios"]},
+...
+"rules": ["restrict_low_liquidity", "restrict_recent_trades"]
+```
+
+In the example P4 sold A nine days before the run, so the inflow buys no A for it; its trade in C
+three months earlier is outside the window and changes nothing. The rule freezes both sides — an
+inflow cannot rebuy, an outflow cannot sell, a rebalance does neither — which is the conservative
+reading; a desk that wants to keep trimming what it just bought writes the directional version, a cap
+at the current weight for a sold name and a floor for a bought one, in the same dozen lines. The
+trades are loaded rather than remembered across runs, so the inflow stays a pure function of its own
+snapshot and the blotter, not the engine, is the record.
+
+The other shape is a constraint row. Give the universe a boolean column naming the names to stay out
+of — from a rule, a loader, or whatever your jurisdiction sets — and the build exports it as a flag;
+one row closes buys on the flagged names and leaves sells open:
 
 ```json
 {"kind": "weight_limit", "vector": "buy", "direction": "<=", "bounds": "0", "scope": "sold_at_loss"}
 ```
 
-Who computes the flag and under which rule is the desk's business; the row is the engine's whole part
-in it. A rule that attaches the column is written like any other
-([how to add a rule](how-to-add-a-rule.md)), and a flag column is also what a `participation_limit`'s
-`scope` reads, so the same column can narrow the chain coupling to those names.
+A flag column is also what a `participation_limit`'s `scope` reads, so the same column can narrow the
+chain coupling to those names.
 
 ## What couples under each order flow
 

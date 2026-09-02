@@ -17,10 +17,11 @@
       "max_in_flight": 4
     },
     "constraints": {"loader": "load_constraints", "depends_on": ["portfolios"]},
+    "trades": {"loader": "load_trades", "depends_on": ["portfolios"]},
     "global_parameters": {"loader": "load_parameters"},
     "buy_universe_parameters": {"loader": "load_parameters"}
   },
-  "rules": ["restrict_low_liquidity"],
+  "rules": ["restrict_low_liquidity", "restrict_recent_trades"],
   "objective": [
     {"kind": "linear", "name": "alpha", "column": "alpha", "weight": "-1"},
     {"kind": "linear", "name": "tax_cost", "column": "tax_per_dollar", "vector": "sell"},

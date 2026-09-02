@@ -77,6 +77,10 @@ The quickest way to see what the engine does is to read the inflow it ships with
     // the book's ids as `request.portfolio_ids`, so compliance is asked about the book, not the firm.
     "constraints": {"loader": "load_constraints", "depends_on": ["portfolios"]},
 
+    // The blotter: what each account traded recently, so the wash-sale rule below can keep the run
+    // off those names. An extra dataset the engine does not interpret, asked about the book's ids.
+    "trades": {"loader": "load_trades", "depends_on": ["portfolios"]},
+
     // A name the engine does not know is an extra: carried untouched to the rules and on to the
     // solve step, which is where runtime parameters belong. One loader, two sets, each named by
     // its dataset.
@@ -86,8 +90,9 @@ The quickest way to see what the engine does is to read the inflow it ships with
     "buy_universe_parameters": {"loader": "load_parameters"}
   },
 
-  // Applied in order to each portfolio's bundle; a rule never sees another portfolio.
-  "rules": ["restrict_low_liquidity"],
+  // Applied in order to each portfolio's bundle; a rule never sees another portfolio. The second
+  // freezes every name the account traded in the last thirty days, from the `trades` dataset.
+  "rules": ["restrict_low_liquidity", "restrict_recent_trades"],
 
   // The sum is minimized, so a reward has a negative weight. Every term is a typed model: `linear`
   // is `weight · columnᵀvector` over any per-security column the spec carries — the exported
