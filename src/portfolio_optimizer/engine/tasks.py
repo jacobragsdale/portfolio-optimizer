@@ -30,6 +30,7 @@ from portfolio_optimizer.config.steps import ResolvedStep
 from portfolio_optimizer.domain.constraints import ConstraintSpecError, check_against_spec, consumed_securities, parse_constraints
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDataError
 from portfolio_optimizer.domain.objective import TermSpecError
+from portfolio_optimizer.domain.order_flow import OrderFlowProfile
 from portfolio_optimizer.domain.results import (
     RUN_SCOPED,
     ChainState,
@@ -44,7 +45,6 @@ from portfolio_optimizer.domain.results import (
     RuleAuditRecord,
     Tolerances,
 )
-from portfolio_optimizer.domain.sides import SideProfile
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.backends import SharedRunData, TaskOutput
 from portfolio_optimizer.engine.build import BuildError, order_inputs
@@ -215,7 +215,7 @@ def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainS
         orders = solution_to_orders(built.spec, solution, built.order_inputs, run_id=run_id)
         foreign = sorted({str(side) for side in orders["side"]} - resolved.profile.order_sides)
         if foreign:
-            msg = f"orders on a side a {resolved.profile.sides!r} run does not trade: {foreign}"
+            msg = f"orders on a side order flow {resolved.profile.order_flow!r} does not trade: {foreign}"
             raise SideInvariantError(msg)
         contribution = resolved.profile.contribution(built.portfolio_id, orders)
         outside = sorted(set(contribution.security_ids) - set(built.tradable))
@@ -230,7 +230,7 @@ def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainS
     )
 
 
-def tradable_ids(profile: SideProfile, spec: ProblemSpec) -> tuple[str, ...]:
+def tradable_ids(profile: OrderFlowProfile, spec: ProblemSpec) -> tuple[str, ...]:
     """The securities the profile lets this spec trade on the side it couples through, sorted."""
     return tuple(sorted(security for security, allowed in zip(spec.security_ids, profile.tradable(spec), strict=True) if allowed))
 

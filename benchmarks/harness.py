@@ -36,8 +36,8 @@ SHIPPED_CONSTRAINTS: tuple[tuple[str, str, dict[str, object]], ...] = (
 ALPHA: dict[str, object] = {"kind": "linear", "name": "alpha", "weight": "-1", "column": "alpha"}
 TAX_COST: dict[str, object] = {"kind": "linear", "name": "tax_cost", "weight": "1", "column": "tax_per_dollar", "vector": "sell"}
 TRANSACTION_COST: dict[str, object] = {"kind": "linear", "name": "transaction_cost", "weight": "1", "column": "tcost_per_dollar", "vector": "trade"}
-OBJECTIVE: dict[str, list[dict[str, object]]] = {"buy": [ALPHA, TRANSACTION_COST], "sell": [ALPHA, TAX_COST, TRANSACTION_COST]}
-"""The example's objective for each side, as the typed records the config carries; ``tax_cost`` reads ``sell`` and so belongs to the sell program."""
+OBJECTIVE: dict[str, list[dict[str, object]]] = {"inflow": [ALPHA, TRANSACTION_COST], "outflow": [ALPHA, TAX_COST, TRANSACTION_COST]}
+"""The example's objective for each order flow, as the typed records the config carries; ``tax_cost`` reads ``sell`` and so belongs to the outflow."""
 
 
 def constraint_row(portfolio_id: str, kind: str, label: str, params: dict[str, object]) -> tuple[str, str, str, str]:
@@ -46,12 +46,12 @@ def constraint_row(portfolio_id: str, kind: str, label: str, params: dict[str, o
 
 
 def config_body(dependencies: str) -> dict[str, object]:
-    """The run config a book benchmark executes: the buy program over the shipped loaders with zero latency, the mandate rule, and the example's terms."""
+    """The run config a book benchmark executes: the inflow over the shipped loaders with zero latency, the mandate rule, and the example's terms."""
     loader = lambda name: {"loader": {"name": name, "params": dict(NO_LATENCY)}}  # noqa: E731
     with_book = lambda name: {**loader(name), "depends_on": ["portfolios"]}  # noqa: E731
     return {
         "run": {"name": "book_benchmark", "tags": {"purpose": "benchmark"}},
-        "sides": "buy",
+        "order_flow": "inflow",
         "datasets": {
             "portfolios": loader("load_portfolios"),
             "holdings": with_book("load_holdings"),

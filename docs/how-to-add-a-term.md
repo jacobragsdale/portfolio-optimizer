@@ -38,7 +38,7 @@ from pydantic import Field
 
 from portfolio_optimizer.domain.objective import TypedTerm
 from portfolio_optimizer.domain.results import ChainState, MissingSpecColumnError, ProblemSpec, Solution
-from portfolio_optimizer.domain.sides import SideProfile
+from portfolio_optimizer.domain.order_flow import OrderFlowProfile
 
 if TYPE_CHECKING:
     from portfolio_optimizer.cvx.adapter import DecisionVars, ObjectiveTerm
@@ -58,7 +58,7 @@ class DiagonalRisk(TypedTerm):
             yield str(error)
 
     @override
-    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> float:
+    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> float:
         return float(self.weight) * float((spec.column(self.column) * solution.w**2).sum())
 
     @override
@@ -75,16 +75,16 @@ class DiagonalRisk(TypedTerm):
   solve step's half, and it imports the adapter inside the method so the module stays cvxpy-free and
   `verify` runs without the solver stack. The two must agree; that is the whole contract.
 - `x.w` is the target weight and `x.trade` the amount traded, as fractions of NAV; `x.buy` and
-  `x.sell` are the non-negative split and exist only on a side the run has — reading `x.sell` in a
-  buy-only run raises `SideUnavailableError`, which `validate-config` reports, naming the side.
+  `x.sell` are the non-negative split and exist only on a side the run has — reading `x.sell` in an
+  inflow raises `SideUnavailableError`, which `validate-config` reports, naming the side.
   `x.coupled` is the amount traded on the side the run couples through, and `x.vector(name)` reads any
-  of them by name. Write "the amount traded" as `x.trade` and the term runs under every `sides`.
+  of them by name. Write "the amount traded" as `x.trade` and the term runs under every `order_flow`.
 - Write the math through the atoms in `portfolio_optimizer.cvx.adapter`: the affine `total`, `dot`,
   `matvec`, `scale`, `weighted`, `masked`, `plus`, `minus`, `shifted`, `shortfall`; the convex
   `sum_squares`, `norm1`, `absolute`, `pos`; and the comparisons `equals`, `at_most`, `at_least`. They
   are the whole cvxpy surface the template exposes. A convex atom scaled by a negative weight is not
   DCP, and `validate-config` refuses it: every term is rendered once against a one-security dummy
-  spec under the run's `sides` and the problem is checked for DCP compliance before any data loads.
+  spec under the run's `order_flow` and the problem is checked for DCP compliance before any data loads.
 - A kind that reads `chain.traded_shares` sets `reads_chain: ClassVar[bool] = True`; see step 4.
 - Read numbers from the spec or from the kind's own fields, never from a file or a global: the spec is
   hashed into the manifest and the term's record is written to it, so anything the term used is
@@ -111,7 +111,7 @@ from pydantic import Field, model_validator
 
 from portfolio_optimizer.domain.constraints import ScalarBound, TypedConstraint, bounds_above, scalar_bound
 from portfolio_optimizer.domain.results import F64, ChainState, MissingSpecColumnError, ProblemSpec, Solution
-from portfolio_optimizer.domain.sides import SideProfile
+from portfolio_optimizer.domain.order_flow import OrderFlowProfile
 
 if TYPE_CHECKING:
     from portfolio_optimizer.cvx.adapter import ConstraintSet, DecisionVars
@@ -141,7 +141,7 @@ class TrackingLimit(TypedConstraint):
             yield str(error)
 
     @override
-    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> list[tuple[str, F64]]:
+    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> list[tuple[str, F64]]:
         deviation = float((np.abs(solution.w - spec.column(self.column)) * self.scope_mask(spec)).sum())
         return [("tracking_limit", self._signed(np.array([deviation]), np.array([scalar_bound(self.bounds, spec)])))]
 
@@ -217,11 +217,11 @@ spec scalar; a literal `"0.05"` works too. Two rows of one kind for one account 
 ## 5. If the kind reads earlier portfolios' results
 
 Set `reads_chain: ClassVar[bool] = True` and read `chain.traded_shares`: what higher-priority
-portfolios *traded on the side the run couples through* (bought under `buy`, sold under `sell`), as
+portfolios *traded on the side the run couples through* (bought under `inflow`, sold under `outflow`), as
 whole shares aligned to `spec.security_ids`, zero wherever this portfolio cannot trade the
 name on that side, with `chain.predecessors` naming what was folded. `participation_limit` is the
 worked example: `x.coupled` is the decision vector on that side and `profile.coupled(solution)` its
-numpy twin, so a constraint written against them runs under every `sides`; `adv_remaining(spec, chain)`
+numpy twin, so a constraint written against them runs under every `order_flow`; `adv_remaining(spec, chain)`
 is the budget the chain left. Nothing else reaches a later portfolio; a run has no other side.
 
 The declaration is what the schedule is derived from. A chain-reading *constraint* couples its

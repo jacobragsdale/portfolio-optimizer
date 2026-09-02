@@ -70,7 +70,7 @@ thread each, and exercises exactly the code path the gateway's cluster will:
 
 ```bash
 PORTFOLIO_OPTIMIZER_CLUSTER=local PORTFOLIO_OPTIMIZER_MAX_WORKERS=2 \
-  uv run portfolio-optimizer run configs/example_buy.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
+  uv run portfolio-optimizer run configs/example_inflow.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
 ```
 
 The orders are the ones the tutorial produced, and the manifest gains a `cluster` block:

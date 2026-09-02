@@ -28,7 +28,7 @@ def section(config: dict[str, object], key: str) -> dict[str, object]:
 
 def test_shipped_example_validates(example_text: str) -> None:
     config = load_run_config(example_text)
-    assert config.run.name == "example_buy" and config.sides == "buy"
+    assert config.run.name == "example_inflow" and config.order_flow == "inflow"
     assert config.execution.dependencies == "overlap"
     assert config.solve_order is None
     assert config.rules[0].params == {}, "the liquidity threshold is loaded at runtime, not written into the config"
@@ -36,9 +36,9 @@ def test_shipped_example_validates(example_text: str) -> None:
     assert config.solve.params["solver"] == "CLARABEL", "the solver is the cvxpy step's own parameter"
     assert config.build.name == "standard"
     sell = load_run_config(SELL_CONFIG.read_text())
-    assert sell.run.name == "example_sell" and sell.sides == "sell"
-    assert [term["name"] for term in sell.objective] == ["alpha", "tax_cost", "transaction_cost"], "the sell program adds the tax on what is sold"
-    assert sell.model_dump(exclude={"run", "sides", "objective"}) == config.model_dump(exclude={"run", "sides", "objective"}), "otherwise the two programs are one wiring"
+    assert sell.run.name == "example_outflow" and sell.order_flow == "outflow"
+    assert [term["name"] for term in sell.objective] == ["alpha", "tax_cost", "transaction_cost"], "the outflow adds the tax on what is sold"
+    assert sell.model_dump(exclude={"run", "order_flow", "objective"}) == config.model_dump(exclude={"run", "order_flow", "objective"}), "otherwise the two order flows are one wiring"
 
 
 def test_step_spec_accepts_bare_names_and_objects() -> None:
@@ -126,14 +126,19 @@ def test_config_hash_covers_the_wiring_and_not_the_runs_identity(example_text: s
     assert baseline == config_sha256(load_run_config(compact))
     renamed = load_run_config(json.dumps(example_dict | {"run": {"name": "other", "tags": {"desk": "elsewhere"}}}))
     assert config_sha256(renamed) == baseline, "the run's name and tags are identity for people, not wiring"
-    rewired = load_run_config(json.dumps(example_dict | {"sides": "sell"}))
+    rewired = load_run_config(json.dumps(example_dict | {"order_flow": "outflow"}))
     assert config_sha256(rewired) != baseline
 
 
 def test_defaults_fill_optional_sections() -> None:
-    minimal = {"run": {"name": "r"}, "sides": "buy", "datasets": {name: {"loader": "csv"} for name in ("portfolios", "holdings", "universe", "details", "constraints")}, "sink": "orders_to_parquet"}
-    with pytest.raises(ValidationError, match="sides"):
-        RunConfig.model_validate_json(json.dumps({key: value for key, value in minimal.items() if key != "sides"}))
+    minimal = {
+        "run": {"name": "r"},
+        "order_flow": "inflow",
+        "datasets": {name: {"loader": "csv"} for name in ("portfolios", "holdings", "universe", "details", "constraints")},
+        "sink": "orders_to_parquet",
+    }
+    with pytest.raises(ValidationError, match="order_flow"):
+        RunConfig.model_validate_json(json.dumps({key: value for key, value in minimal.items() if key != "order_flow"}))
     config = RunConfig.model_validate_json(json.dumps(minimal))
     assert config.solve.name == "cvxpy" and config.solve.params == {}
     assert config.build.name == "standard"

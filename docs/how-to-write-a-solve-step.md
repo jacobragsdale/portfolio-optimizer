@@ -20,7 +20,7 @@ makes the step's answer trustworthy.
 A solve step takes a `SolveRequest` and returns a `SolveResult`. Everything it may use is on the
 request: the `ProblemSpec` (every input the solver would see, as numpy arrays aligned to
 `spec.security_ids`), the `ChainState` (what higher-priority portfolios traded on the side the run
-couples through, masked to what this one can trade there), the side profile, the typed terms, this
+couples through, masked to what this one can trade there), the order-flow profile, the typed terms, this
 portfolio's constraint rows, and the run's extra datasets.
 
 ```python
@@ -42,7 +42,7 @@ def buy_the_best_alpha(request: SolveRequest) -> SolveResult:
 
 The rules of the contract:
 
-- **Return weights and nothing else.** `w` must be aligned to `spec.security_ids`; the side profile
+- **Return weights and nothing else.** `w` must be aligned to `spec.security_ids`; the order-flow profile
   derives the trade from it. Leave `objective` unset unless you minimized one — then the verifier
   compares it with the terms' own `value`, as it does for cvxpy.
 - **Raise to refuse.** A book the function cannot handle (cash below the floor, say) is an exception
@@ -67,7 +67,7 @@ Every field but `w` has a default, so a pure function sets `w` and nothing else 
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `w` | `F64 \| None` | — | The weights, aligned to `spec.security_ids`; the side profile derives the trade from them. `None` is only acceptable with a status that is not optimal. |
+| `w` | `F64 \| None` | — | The weights, aligned to `spec.security_ids`; the order-flow profile derives the trade from them. `None` is only acceptable with a status that is not optimal. |
 | `status` | `SolveStatus` | `OPTIMAL` | `optimal` or `optimal_inaccurate` are accepted and verified; `infeasible` raises `InfeasibleError` with an arithmetic diagnosis; `unbounded` raises `UnboundedError`; `solver_error` raises `SolverFailureError` carrying `detail`. |
 | `objective` | `float \| None` | `None` | The value the step minimized, when it minimized one; the verifier compares it with the terms' recomputed sum. Leave it unset and the comparison is skipped. |
 | `iterations` | `int \| None` | `None` | Recorded in the manifest's `solve` record. |
@@ -106,7 +106,7 @@ deliberately. Rows in a vocabulary of your own can be reported too, by building 
 they amount to.
 
 The shipped `solvers.cvxpy` is the worked example: it parses the typed rows, renders each through
-`to_cvxpy`, adds the side profile's identity, and reports the records and the solver's duals back.
+`to_cvxpy`, adds the order-flow profile's identity, and reports the records and the solver's duals back.
 Replacing that one function is how a desk brings its own syntax without touching the engine.
 
 ### Runtime parameters arrive the same way

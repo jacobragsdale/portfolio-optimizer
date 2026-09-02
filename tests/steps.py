@@ -20,8 +20,8 @@ from portfolio_optimizer.domain.constraints import Vector, vector_values
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.frames import ColumnSpec, FrameSchema, coerce_frame
 from portfolio_optimizer.domain.objective import TypedTerm, register_term_kind
+from portfolio_optimizer.domain.order_flow import OrderFlowProfile
 from portfolio_optimizer.domain.results import Artifact, ChainState, MissingSpecColumnError, ProblemSpec, Solution
-from portfolio_optimizer.domain.sides import SideProfile
 from portfolio_optimizer.engine.build import standard
 from portfolio_optimizer.loaders import ServiceParams, load_holdings
 from portfolio_optimizer.rules import parameter
@@ -47,7 +47,7 @@ class Quadratic(TypedTerm):
             yield str(error)
 
     @override
-    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> float:
+    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> float:
         del chain, profile
         return float(self.weight) * float((spec.column(self.column) * vector_values(solution, self.vector) ** 2).sum())
 
@@ -65,7 +65,7 @@ class ChainPenalty(TypedTerm):
     reads_chain = True
 
     @override
-    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> float:
+    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> float:
         del spec, profile
         return float(self.weight) * float((chain.traded_shares * solution.w).sum())
 
@@ -82,7 +82,7 @@ class Lying(TypedTerm):
     kind: Literal["lying"] = "lying"
 
     @override
-    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> float:
+    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> float:
         del spec, solution, chain, profile
         return 0.0
 
@@ -99,7 +99,7 @@ class Raising(TypedTerm):
     kind: Literal["raising"] = "raising"
 
     @override
-    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> float:
+    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> float:
         del spec, solution, chain, profile
         return 0.0
 

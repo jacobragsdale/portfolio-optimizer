@@ -29,18 +29,18 @@ The canonical form is *P* 400k × 400k with 100k nonzeros and *A* 900k × 400k w
 process peaks at 1.4–1.8 GB, canonicalization and the solve each adding about half a gigabyte, which
 is what a worker needs per concurrent solve at this size.
 
-The same book under each side profile (`--sides`, measured 2026-08-29 after the one-sided profiles
+The same book under each order-flow profile (`--order-flow`, measured 2026-08-29 after the one-sided profiles
 landed; `both` re-measured the same day, bitwise the same orders as before them — that row is history,
-the two-sided profile was removed 2026-09-01, see *Sides* below):
+the two-sided profile was removed 2026-09-01, see *Order flow* below):
 
-| `sides` | Variables (*P*) | Clarabel | Iterations | Solve task end to end | Peak RSS | Note |
+| `order_flow` | Variables (*P*) | Clarabel | Iterations | Solve task end to end | Peak RSS | Note |
 |---|---|---:|---:|---:|---:|---|
 | `both` | 400k | 7.5 s | 29 | 8.0 s | 2.1 GB | tracking, tax, tcost; removed 2026-09-01 |
-| `buy` | 200k | 2.1 s | 12 | 2.8 s | 1.5 GB | `tax_cost` dropped: it reads `sell` |
-| `sell` | 200k | 3.6 s | 20 | 5.7 s | 1.3 GB | `cash_bounds` `[0, 1]`; the gains-only book sells nothing |
+| `inflow` | 200k | 2.1 s | 12 | 2.8 s | 1.5 GB | `tax_cost` dropped: it reads `sell` |
+| `outflow` | 200k | 3.6 s | 20 | 5.7 s | 1.3 GB | `cash_bounds` `[0, 1]`; the gains-only book sells nothing |
 
-One variable per name instead of three and no trade identity: Clarabel 3.5× faster under `buy`, 2×
-under `sell`, in the 2–4× band the design predicted, with a third less memory. (The benchmark's own
+One variable per name instead of three and no trade identity: Clarabel 3.5× faster under `inflow`, 2×
+under `outflow`, in the 2–4× band the design predicted, with a third less memory. (The benchmark's own
 `get_problem_data` + `solve_via_data` stage reports `unbounded` after 9 iterations under `both` while
 `problem.solve` on the identical problem is optimal in 29; that was so before the profiles too, so it
 is a quirk of driving cvxpy by hand in the harness, not of the engine's solve — the end-to-end row is
@@ -87,7 +87,7 @@ difference than it sounds — re-measure before leaning on them.) Things to meas
 
 The formulation was the largest solve-time win on this list, and it came with the design rather than
 from solver tuning: the one-sided profiles (table above) have one variable per name and no trade
-identity. `both` itself went on 2026-09-01 (*Sides*, below).
+identity. `both` itself went on 2026-09-01 (*Order flow*, below).
 
 ### The result carries the spec back
 
@@ -114,8 +114,8 @@ For the record, since the word is overloaded:
 
 ### Two-sided coupling, if it ever comes
 
-A run trades one side: a buy run couples through buys, a sell run through sells, the exact mirror
-(see *Sides*, below, for what is still open). What is not planned, and possibly never, is a run in
+A run is one order flow: an inflow couples through buys, an outflow through sells, the exact mirror
+(see *Order flow*, below, for what is still open). What is not planned, and possibly never, is a run in
 which buys and sells couple *with each other* across portfolios — which would first need the
 two-sided profile back (removed 2026-09-01) and then made chain-aware on both sides. Recorded so the
 one-side guarantee is not silently load-bearing. Everything such a run would add couples across the
@@ -128,11 +128,11 @@ sides, per security:
 | Wash sales, mirrored: do not sell at a loss what an earlier account bought | buys | sells |
 | Internal crossing: an earlier sell of *X* makes a later buy of *X* cheaper — a *term* | sells | buys |
 
-The wash-sale rows have a cross-run answer today, outside the engine: the buy program takes a boolean
+The wash-sale rows have a cross-run answer today, outside the engine: the inflow takes a boolean
 universe column (`sold_at_loss`, from a rule or a loader), the build exports it as a flag, and one
 constraint row — `{"kind": "weight_limit", "vector": "buy", "direction": "<=", "bounds": "0", "scope":
-"sold_at_loss"}` — closes buys on those names. Producing that column from the sell program's orders is
-part of the handoff sketched under *the sell run feeds the buy run*.
+"sold_at_loss"}` — closes buys on those names. Producing that column from the outflow's orders is
+part of the handoff sketched under *the outflow feeds the inflow*.
 
 Each simplification the one-side guarantee buys (see the architecture explanation) would need to un-simplify, in this order:
 
@@ -163,26 +163,26 @@ grow to match. The manifest's derived-graph record is how to watch that happen.
   prints the table above for the shipped config; the split between canonicalization and solve is
   solver- and structure-dependent, and a factor term will not look like the diagonal *P* measured here.
 
-## Sides: what is still open after the one-sided profiles
+## Order flow: what is still open after the one-sided profiles
 
-`sides: "buy" | "sell"` is built (2026-08-29; `both` removed 2026-09-01 — status below) and documented: what the profile owns, why the
-side is a config value, and what it costs the solver are in
-[the architecture explanation](docs/explanation-architecture.md#the-side-a-run-trades-is-one-object);
-the operating guide is [how to run one side](docs/how-to-run-one-side.md); the numbers are in the
+`order_flow: "inflow" | "outflow"` is built (2026-08-29; `both` removed 2026-09-01 — status below) and documented: what the profile owns, why the
+order flow is a config value, and what it costs the solver are in
+[the architecture explanation](docs/explanation-architecture.md#a-runs-order-flow-is-one-object);
+the operating guide is [how to run an order flow](docs/how-to-run-an-order-flow.md); the numbers are in the
 table above. Two things are not decided:
 
-1. **A constraint the starting point already violates** — a name over `max_weight` in a buy-only run,
-   a holding under a floor in a sell-only run — is each constraint's own call: it declares `accept`
+1. **A constraint the starting point already violates** — a name over `max_weight` in an inflow,
+   a holding under a floor in an outflow — is each constraint's own call: it declares `accept`
    (hold the name where it is and do not worsen it; the `ub = max(w0, cap)` shape) or `infeasible`
    (fail the portfolio). The declaration is per constraint, never per run. Today every such start is
-   infeasible, and `diagnose_infeasibility` lists the names (`SideProfile.infeasible_starts`), which is
+   infeasible, and `diagnose_infeasibility` lists the names (`OrderFlowProfile.infeasible_starts`), which is
    where the accept policy lands.
    *Status 2026-08-30:* landed on the typed constraint rows as `allow_current_weight`, per row, for
    the `w`-shaped kinds. The spec's own box `lb ≤ w ≤ ub` is part of the trade identity rather than a
-   row — the schedule's buyable set and the order rounding assume it — so a name over its cap in a
-   buy-only run is still an infeasible start the profile names; giving the box a policy would mean
+   row — the schedule's buyable set and the order rounding assume it — so a name over its cap in an
+   inflow is still an infeasible start the profile names; giving the box a policy would mean
    making it a row, and nothing asks for that yet.
-2. **Sells do not feed buys today**, so nothing crosses between a sell run and a buy run; see below.
+2. **Sells do not feed buys today**, so nothing crosses between an outflow and an inflow; see below.
 
 `both` is what existed before the profiles, extracted and not extended. The wash-trade defect it
 carried — a rewarded round trip that the canonical split stripped, so verification failed with a bare
@@ -191,14 +191,14 @@ naming the securities and what the round trips were worth.
 
 *Status 2026-09-01:* `both` removed. Why: a rewarded sale — a harvestable loss, a negative
 `tax_per_dollar` — makes the buy/sell split loose the moment `buy` and `sell` are independent
-variables, and `WashTradeError` was a refusal, not a policy; the desks run one side at a time, a buy
-program and a sell program over one snapshot; and what a rewarded round trip *should* mean is
+variables, and `WashTradeError` was a refusal, not a policy; the desks run one order flow at a time, an
+inflow and an outflow over one snapshot; and what a rewarded round trip *should* mean is
 undecided. Either remaining profile has one variable, so such a term is exact, and the complementarity
-check and the refusal went with the profile. How it comes back: a third profile in `domain/sides.py`
-and `cvx/sides.py` plus the agreed policy — the profile protocol, `Solution.buy`/`sell`, the vector
-names, and the tests parameterized over `sides` were kept for that.
+check and the refusal went with the profile. How it comes back: a third profile in `domain/order_flow.py`
+and `cvx/order_flow.py` plus the agreed policy — the profile protocol, `Solution.buy`/`sell`, the vector
+names, and the tests parameterized over `order_flow` were kept for that.
 
-### Future enhancement: the sell run feeds the buy run
+### Future enhancement: the outflow feeds the inflow
 
 Not needed now — the sell process and the buy run do not exchange anything today. When they do, the
 handoff is three inputs, all content-hashed like every other dataset, so the buy run stays a pure
@@ -403,14 +403,14 @@ to know about a constraint, and nothing a solver does with it:
    twins today.
 
 Nothing about vectors, matrices, or affineness. `constraints: []` is a valid run whose verifier has only
-the side profile's identity checks to make, not a special case.
+the order-flow profile's identity checks to make, not a special case.
 
 ### The solve step is the interpreter
 
 Everything shape-specific belongs to the *consumer*. The solve step receives a `SolveRequest` —
 `spec`, `chain`, `profile`, `terms`, `constraints`, `extras` (`solving.py`) — plus its own `params`
 (the cvxpy solver's name and options are the shipped step's params, not a block of their own, since
-2026-08-31), and returns a `SolveResult` whose `w` is aligned to the spec; the side profile turns `w` into
+2026-08-31), and returns a `SolveResult` whose `w` is aligned to the spec; the order-flow profile turns `w` into
 the trade; the verifier is what makes the answer trustworthy; the manifest records the step where it
 records the solver and its version. Three interpreters, and the engine treats them identically:
 
@@ -420,7 +420,7 @@ records the solver and its version. Three interpreters, and the engine treats th
 | The desk's library, `solve: "firm.optim:solve"` | as dicts (`model_dump`), building cvxpy itself | each model's `residual`; no objective comparison unless the step reports one |
 | A pure function — a pro-rata fill, a cash raise | reads them or ignores them | each model's `residual`; the configured terms evaluated after the fact as a report line, which is how a heuristic is compared with the optimizer on one book |
 
-Side compatibility (a model naming `sell` in a buy-only run), the start policy (`accept` or
+Side compatibility (a model naming `sell` in an inflow), the start policy (`accept` or
 `infeasible` is a *field* on the model; the logic that applies it lives in whichever step consumes the
 model), DCP: all the interpreter's business. What is *not* the interpreter's business, and has to be
 said plainly: the step returns `w` and nothing else — it writes no files, reads no clock, sees no other

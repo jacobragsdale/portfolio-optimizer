@@ -31,9 +31,9 @@ from portfolio_optimizer.domain.constraints import (
     starting_values,
     vector_values,
 )
+from portfolio_optimizer.domain.order_flow import INFLOW, OUTFLOW
 from portfolio_optimizer.domain.registry import kind_name
 from portfolio_optimizer.domain.results import ChainState, Contribution, ProblemSpec
-from portfolio_optimizer.domain.sides import BUY_ONLY, SELL_ONLY
 from tests.conftest import Factories
 
 
@@ -126,29 +126,29 @@ def test_the_registry_holds_the_shipped_kinds_and_accepts_a_registered_one() -> 
 def test_nothing_that_reads_the_chain_means_no_consume_set(make: Factories) -> None:
     spec = flagged_spec(make)
     parsed = parse_constraints(rows({"kind": "weight_limit", "label": "cap", "params": {"direction": "<=", "bounds": "0.9"}}))
-    assert consumed_securities(parsed, spec, BUY_ONLY, chain_aware_terms=False, opaque_solve=False) == ()
-    assert consumed_securities(None, spec, BUY_ONLY, chain_aware_terms=False, opaque_solve=False) == (), "no constraints at all reads nothing"
+    assert consumed_securities(parsed, spec, INFLOW, chain_aware_terms=False, opaque_solve=False) == ()
+    assert consumed_securities(None, spec, INFLOW, chain_aware_terms=False, opaque_solve=False) == (), "no constraints at all reads nothing"
 
 
 def test_a_scoped_chain_constraint_consumes_its_scope_of_the_tradable_set(make: Factories) -> None:
     spec = flagged_spec(make)
     parsed = parse_constraints(rows({"kind": "participation_limit", "label": "adv", "params": {"direction": "<=", "scope": "is_thin"}}))
-    assert consumed_securities(parsed, spec, BUY_ONLY, chain_aware_terms=False, opaque_solve=False) == ("S2",)
+    assert consumed_securities(parsed, spec, INFLOW, chain_aware_terms=False, opaque_solve=False) == ("S2",)
     unscoped = parse_constraints(rows({"kind": "participation_limit", "label": "adv", "params": {"direction": "<="}}))
-    assert consumed_securities(unscoped, spec, BUY_ONLY, chain_aware_terms=False, opaque_solve=False) == ("S0", "S1", "S2")
+    assert consumed_securities(unscoped, spec, INFLOW, chain_aware_terms=False, opaque_solve=False) == ("S0", "S1", "S2")
 
 
 @pytest.mark.parametrize(("chain_aware_terms", "opaque_solve"), [(True, False), (False, True)], ids=["chain-term", "opaque-solve-step"])
 def test_anything_opaque_widens_the_consume_set_to_the_whole_tradable_set(make: Factories, chain_aware_terms: bool, opaque_solve: bool) -> None:
     spec = flagged_spec(make)
-    consumed = consumed_securities(None, spec, BUY_ONLY, chain_aware_terms=chain_aware_terms, opaque_solve=opaque_solve)
+    consumed = consumed_securities(None, spec, INFLOW, chain_aware_terms=chain_aware_terms, opaque_solve=opaque_solve)
     assert consumed == ("S0", "S1", "S2"), "an opaque reader cannot declare a narrower scope"
 
 
 def test_the_consume_set_respects_the_side_profiles_tradable_set(make: Factories) -> None:
     spec = flagged_spec(make, w0=np.array([0.5, 0.5, 0.0]))
     parsed = parse_constraints(rows({"kind": "participation_limit", "label": "adv", "params": {"direction": "<="}}))
-    assert consumed_securities(parsed, spec, SELL_ONLY, chain_aware_terms=False, opaque_solve=False) == ("S0", "S1"), "a sell-only run couples through what is sellable, and S2 is not held"
+    assert consumed_securities(parsed, spec, OUTFLOW, chain_aware_terms=False, opaque_solve=False) == ("S0", "S1"), "an outflow couples through what is sellable, and S2 is not held"
 
 
 def test_a_whole_books_rows_say_whether_anything_reads_the_chain() -> None:
@@ -190,13 +190,13 @@ def test_weight_limit_residual_checks_only_the_scope_and_honours_the_start_polic
     chain = ChainState.empty(spec.security_ids)
     solution = make.solution(spec, w=np.array([0.5, 0.3, 0.2]))
     strict = WeightLimit(name="cap", direction="<=", bounds=Decimal("0.4"))
-    ((_, residual),) = strict.residual(spec, solution, chain, BUY_ONLY)
+    ((_, residual),) = strict.residual(spec, solution, chain, INFLOW)
     np.testing.assert_allclose(residual, [0.1, -0.1, -0.2], err_msg="S0 breaches the cap it started above")
     held = WeightLimit(name="cap", direction="<=", bounds=Decimal("0.4"), allow_current_weight=True)
-    ((_, residual),) = held.residual(spec, solution, chain, BUY_ONLY)
+    ((_, residual),) = held.residual(spec, solution, chain, INFLOW)
     np.testing.assert_allclose(residual, [0.0, -0.1, -0.2], err_msg="the breached start loosens its own bound to the holding, exactly")
     scoped = WeightLimit(name="cap", direction="<=", bounds=Decimal("0.1"), scope="is_thin")
-    ((_, residual),) = scoped.residual(spec, solution, chain, BUY_ONLY)
+    ((_, residual),) = scoped.residual(spec, solution, chain, INFLOW)
     np.testing.assert_allclose(residual, [0.0, 0.0, 0.1], err_msg="outside the scope the residual is zero by construction")
 
 
@@ -205,13 +205,13 @@ def test_bounds_may_come_from_a_spec_column_or_an_account_scalar(make: Factories
     chain = ChainState.empty(spec.security_ids)
     solution = make.solution(spec, w=np.array([0.5, 0.3, 0.2]))
     from_scalar = WeightLimit(name="cap", direction="<=", bounds=ScalarRef(scalar="max_single"))
-    ((_, residual),) = from_scalar.residual(spec, solution, chain, BUY_ONLY)
+    ((_, residual),) = from_scalar.residual(spec, solution, chain, INFLOW)
     np.testing.assert_allclose(residual, [0.1, -0.1, -0.2])
     from_column = WeightLimit(name="cap", direction="<=", bounds=ColumnRef(column="cap"))
-    ((_, residual),) = from_column.residual(spec, solution, chain, BUY_ONLY)
+    ((_, residual),) = from_column.residual(spec, solution, chain, INFLOW)
     np.testing.assert_allclose(residual, [0.3, -0.2, -0.3])
     box = WeightLimit(name="floor", direction=">=", bounds=ColumnRef(column="lb"))
-    ((_, residual),) = box.residual(spec, solution, chain, BUY_ONLY)
+    ((_, residual),) = box.residual(spec, solution, chain, INFLOW)
     np.testing.assert_allclose(residual, [-0.5, -0.3, -0.2], err_msg="the spec's own vectors are columns too")
 
 
@@ -220,22 +220,22 @@ def test_group_limit_residual_bounds_named_groups_and_refuses_unknown_ones(make:
     chain = ChainState.empty(spec.security_ids)
     solution = make.solution(spec)
     bands = GroupLimit(name="bands", direction="<=", column="sector", bounds={"TECH": Decimal("0.8")})
-    ((_, residual),) = bands.residual(spec, solution, chain, BUY_ONLY)
+    ((_, residual),) = bands.residual(spec, solution, chain, INFLOW)
     assert residual[0] == pytest.approx(1.0 - 0.8)
     with pytest.raises(ConstraintSpecError, match=r"group\(s\) \['ENERGY'\]"):
-        GroupLimit(name="bands", direction="<=", column="sector", bounds={"ENERGY": Decimal("0.8")}).residual(spec, solution, chain, BUY_ONLY)
+        GroupLimit(name="bands", direction="<=", column="sector", bounds={"ENERGY": Decimal("0.8")}).residual(spec, solution, chain, INFLOW)
     with pytest.raises(KeyError, match="spec has no grouping 'country'"):
-        GroupLimit(name="bands", direction="<=", column="country", bounds=Decimal("0.5")).residual(spec, solution, chain, BUY_ONLY)
+        GroupLimit(name="bands", direction="<=", column="country", bounds=Decimal("0.5")).residual(spec, solution, chain, INFLOW)
 
 
 def test_exposure_limit_residual_is_the_scoped_dot_product(make: Factories) -> None:
     spec = make.spec(columns={"beta": np.array([1.0, 2.0, 3.0])})
     solution = make.solution(spec)  # w0 = 1/3 each -> beta 2.0
     tight = ExposureLimit(name="beta_cap", direction="<=", column="beta", bounds=Decimal("1.5"))
-    ((_, residual),) = tight.residual(spec, solution, ChainState.empty(spec.security_ids), BUY_ONLY)
+    ((_, residual),) = tight.residual(spec, solution, ChainState.empty(spec.security_ids), INFLOW)
     assert residual[0] == pytest.approx(0.5)
     floor = ExposureLimit(name="beta_floor", direction=">", column="beta", bounds=Decimal("2.5"))  # the strict spelling: same closed bound
-    ((_, residual),) = floor.residual(spec, solution, ChainState.empty(spec.security_ids), BUY_ONLY)
+    ((_, residual),) = floor.residual(spec, solution, ChainState.empty(spec.security_ids), INFLOW)
     assert residual[0] == pytest.approx(0.5), "a ge bound is violated from below"
 
 
@@ -244,23 +244,23 @@ def test_cash_and_turnover_limits_read_the_accounts_scalars(make: Factories) -> 
     chain = ChainState.empty(spec.security_ids)
     solution = make.solution(spec, w=np.array([0.3, 0.3, 0.3]), buy=np.array([0.0, 0.0, 0.0]), sell=np.array([1.0 / 3.0 - 0.3] * 3))
     floor = CashLimit(name="floor", direction=">=", bounds=ScalarRef(scalar="cash_lb"))
-    ((_, residual),) = floor.residual(spec, solution, chain, BUY_ONLY)
+    ((_, residual),) = floor.residual(spec, solution, chain, INFLOW)
     assert residual[0] == pytest.approx(0.05 - 0.1), "cash after the run is 0.1, above the 0.05 floor"
     cap = CashLimit(name="cap", direction="<=", bounds=Decimal("0.05"))
-    ((_, residual),) = cap.residual(spec, solution, chain, BUY_ONLY)
+    ((_, residual),) = cap.residual(spec, solution, chain, INFLOW)
     assert residual[0] == pytest.approx(0.05)
     turnover = TurnoverLimit(name="turnover", direction="<=", bounds=ScalarRef(scalar="max_turnover"))
-    ((_, residual),) = turnover.residual(spec, solution, chain, BUY_ONLY)
+    ((_, residual),) = turnover.residual(spec, solution, chain, INFLOW)
     assert residual[0] == pytest.approx(0.1 - 0.2), "a tenth of NAV was sold against a cap of a fifth"
 
 
 def test_participation_residual_scopes_both_checks_and_reads_the_chain(make: Factories) -> None:
     spec = flagged_spec(make, adv_capacity=np.array([0.05, 0.05, 0.05]), price=np.full(3, 100.0))
     consumed = Contribution("P0", ("S2",), np.array([300.0]))  # 300 shares at 100 on NAV 1e6 = 0.03 of NAV
-    chain = BUY_ONLY.chain_state(spec, [consumed], np.ones(3, dtype=np.bool_))
+    chain = INFLOW.chain_state(spec, [consumed], np.ones(3, dtype=np.bool_))
     adv = ParticipationLimit(name="adv", direction="<=", scope="is_thin")
     solution = make.solution(spec, w=spec.w0 + np.array([0.0, 0.0, 0.04]), buy=np.array([0.0, 0.0, 0.04]))
-    residuals = dict(adv.residual(spec, solution, chain, BUY_ONLY))
+    residuals = dict(adv.residual(spec, solution, chain, INFLOW))
     assert residuals["participation"][2] == pytest.approx(-0.01), "own budget has room in the scoped name; unscoped entries are zero by construction"
     assert residuals["cumulative_participation"][2] == pytest.approx(0.04 - 0.02), "the predecessor left 0.02 of S2's budget"
     assert residuals["cumulative_participation"][:2].max() == 0.0, "unscoped names are not checked"

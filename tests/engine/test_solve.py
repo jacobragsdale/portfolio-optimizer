@@ -1,4 +1,4 @@
-"""Tier 1: solving — the two hand-checkable programs over the example's first account, binding limits with known answers, typed constraints and kinds through the shipped step, and every failure path."""
+"""Tier 1: solving — the two hand-checkable order flows over the example's first account, binding limits with known answers, typed constraints and kinds through the shipped step, and every failure path."""
 
 from collections.abc import Sequence
 from dataclasses import replace
@@ -18,11 +18,11 @@ from tests.conftest import ALPHA, BUY_TERMS, CASH_CAP, CASH_FLOOR, SELL_TERMS, S
 
 CASH: list[Row] = [CASH_FLOOR, CASH_CAP]
 SECTOR_FLOOR: Row = typed_row("group_limit", "sector_floor", direction=">=", column="sector", bounds={"TECH": "0.5"})
-"""The example's ``TECH`` floor: what stops the sell program from harvesting the whole of a loss."""
+"""The example's ``TECH`` floor: what stops the outflow from harvesting the whole of a loss."""
 
 
 def resolved_with(terms: Sequence[object], **overrides: object) -> ResolvedConfig:
-    """The example config over ``terms`` — records, or the example's term names — with any other section replaced; the buy program unless ``sides`` says otherwise."""
+    """The example config over ``terms`` — records, or the example's term names — with any other section replaced; the inflow unless ``order_flow`` says otherwise."""
     named = {str(term["name"]): term for term in SELL_TERMS}
     return resolved_example(objective=[named[term] if isinstance(term, str) else term for term in terms], **overrides)
 
@@ -58,7 +58,7 @@ def test_the_buy_program_over_the_first_account_matches_the_analytic_optimum(mak
 def test_the_sell_program_over_the_first_account_matches_the_analytic_optimum(make: Factories, frames: Frames) -> None:
     """B is held at a loss its long-term rate turns into 4 cents of tax refund per dollar sold, so it is harvested — down to where the ``TECH`` floor stops it; A is at cost and worth holding."""
     spec = first_account(make, frames)
-    solution = solve(spec, ChainState.empty(spec.security_ids), resolved_with(SELL_TERMS, sides="sell"), [*SHIPPED_CONSTRAINTS, SECTOR_FLOOR])
+    solution = solve(spec, ChainState.empty(spec.security_ids), resolved_with(SELL_TERMS, order_flow="outflow"), [*SHIPPED_CONSTRAINTS, SECTOR_FLOOR])
     assert solution.status is SolveStatus.OPTIMAL
     np.testing.assert_allclose(solution.w, [0.3, 0.2, 0.0], atol=1e-6)
     np.testing.assert_allclose(solution.sell, [0.0, 0.1, 0.0], atol=1e-6)
@@ -94,7 +94,7 @@ def test_a_portfolio_whose_predecessors_spent_a_names_budget_cannot_buy_it(make:
     assert fresh.buy[2] == pytest.approx(0.25, abs=1e-6)
 
 
-def test_a_buy_only_solve_only_buys_and_verifies(make: Factories, frames: Frames) -> None:
+def test_an_inflow_solve_only_buys_and_verifies(make: Factories, frames: Frames) -> None:
     holdings = frames.holdings({"security_id": "A", "quantity": 2500, "avg_cost": Decimal(100)}, {"security_id": "B", "quantity": 5000, "avg_cost": Decimal(50)})
     details = make.details(cash=Decimal(500_000), max_weight=Decimal("0.5"), max_adv_participation=Decimal("0.25"))
     spec = standard(make.portfolio_data(holdings=holdings, details=details))
@@ -108,23 +108,23 @@ def test_a_buy_only_solve_only_buys_and_verifies(make: Factories, frames: Frames
     assert {check.name for check in report.checks if check.label == "identity"} == {"no_sells", "trade_balance", "nonneg_buy", "sell_absent", "lb", "ub"}
 
 
-def test_a_buy_only_run_cannot_sell_its_way_back_inside_a_cap_and_says_so(make: Factories, frames: Frames) -> None:
+def test_an_inflow_run_cannot_sell_its_way_back_inside_a_cap_and_says_so(make: Factories, frames: Frames) -> None:
     resolved = resolved_with(BUY_TERMS)
     over_cap = standard(make.portfolio_data(holdings=frames.holdings({"security_id": "A", "quantity": 8000, "avg_cost": Decimal(100)}), details=make.details(max_weight=Decimal("0.6"))))
-    with pytest.raises(InfeasibleError, match=r"names whose cap is below their holding, which this side cannot trade out of: \['A'\]"):
+    with pytest.raises(InfeasibleError, match=r"names whose cap is below their holding, which this order flow cannot trade out of: \['A'\]"):
         solve(over_cap, ChainState.empty(over_cap.security_ids), resolved)
     fully_invested = standard(
         make.portfolio_data(holdings=frames.holdings({"security_id": "A", "quantity": 10000, "avg_cost": Decimal(100)}), details=make.details(cash_lb=Decimal("0.1"), cash_ub=Decimal("0.2")))
     )
-    with pytest.raises(InfeasibleError, match=r"the book starts with cash 0\.000000 below cash_lb 0\.100000, and a buy-only run can only lower cash"):
+    with pytest.raises(InfeasibleError, match=r"the book starts with cash 0\.000000 below cash_lb 0\.100000, and an inflow can only lower cash"):
         solve(fully_invested, ChainState.empty(fully_invested.security_ids), resolved)
 
 
-def test_a_sell_only_solve_only_sells_and_couples_through_sells(make: Factories, frames: Frames) -> None:
+def test_an_outflow_solve_only_sells_and_couples_through_sells(make: Factories, frames: Frames) -> None:
     holdings = frames.holdings({"security_id": "A", "quantity": 5000, "avg_cost": Decimal(100)}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(50)})
     universe = frames.three_security_universe().assign(adv_shares=pd.Series([4000, 1_000_000, 100_000], dtype="Int64"), alpha=pd.Series([-0.03, -0.01, 0.05], dtype="Float64"))
     spec = standard(make.portfolio_data(holdings=holdings, universe=universe, details=make.details(max_adv_participation=Decimal("0.25"), cash_lb=Decimal(0), cash_ub=Decimal(1))))
-    resolved = resolved_with(["alpha"], sides="sell")
+    resolved = resolved_with(["alpha"], order_flow="outflow")
     solution = solve(spec, ChainState.empty(spec.security_ids), resolved)
     np.testing.assert_allclose(solution.w, [0.4, 0.0, 0.0], atol=1e-6, err_msg="both alphas are negative, so A sells its whole ADV budget (0.1) and B, which has budget to spare, sells out")
     assert (solution.w <= spec.w0 + 1e-9).all() and solution.buy.tolist() == [0.0, 0.0, 0.0]
@@ -142,13 +142,13 @@ def _with_sell(solution: Solution, spec: ProblemSpec, sell: np.ndarray) -> Solut
     return replace(solution, w=spec.w0 - sell, sell=sell)
 
 
-def test_a_sell_only_run_cannot_buy_its_way_back_above_a_floor_and_says_so(make: Factories) -> None:
-    resolved = resolved_with(["alpha"], sides="sell")
+def test_an_outflow_run_cannot_buy_its_way_back_above_a_floor_and_says_so(make: Factories) -> None:
+    resolved = resolved_with(["alpha"], order_flow="outflow")
     too_much_cash = make.spec(cash_lb=-0.2, cash_ub=-0.1)
-    with pytest.raises(InfeasibleError, match=r"the book starts with cash 0\.000000 above cash_ub -0\.100000, and a sell-only run can only raise cash"):
+    with pytest.raises(InfeasibleError, match=r"the book starts with cash 0\.000000 above cash_ub -0\.100000, and an outflow can only raise cash"):
         solve(too_much_cash, ChainState.empty(too_much_cash.security_ids), resolved)
     under_floor = make.spec(lb=np.array([0.0, 0.0, 0.5]), cash_ub=1.0)
-    with pytest.raises(InfeasibleError, match=r"names whose floor is above their holding, which this side cannot trade out of: \['S2'\]"):
+    with pytest.raises(InfeasibleError, match=r"names whose floor is above their holding, which this order flow cannot trade out of: \['S2'\]"):
         solve(under_floor, ChainState.empty(under_floor.security_ids), resolved)
 
 
@@ -170,7 +170,7 @@ def reflect(spec: ProblemSpec) -> ProblemSpec:
     )
 
 
-def test_a_sell_only_run_over_the_reflected_book_is_the_buy_only_run_over_the_original(make: Factories) -> None:
+def test_an_outflow_run_over_the_reflected_book_is_the_inflow_run_over_the_original(make: Factories) -> None:
     spec = make.spec(
         w0=np.array([0.3, 0.2, 0.1]),
         columns={"alpha": np.array([0.05, 0.04, 0.0])},
@@ -183,8 +183,8 @@ def test_a_sell_only_run_over_the_reflected_book_is_the_buy_only_run_over_the_or
     mirrored = reflect(spec)
     chain = ChainState(spec.security_ids, np.array([200.0, 0.0, 0.0]), predecessors=("P0",))  # 200 shares at 100 on 1,000,000 is 0.02 of ADV's 0.05
     terms = ["alpha", TRANSACTION_COST]
-    buying = solve(spec, chain, resolved_with(terms, sides="buy"))
-    selling = solve(mirrored, chain, resolved_with(terms, sides="sell"))
+    buying = solve(spec, chain, resolved_with(terms, order_flow="inflow"))
+    selling = solve(mirrored, chain, resolved_with(terms, order_flow="outflow"))
     assert buying.buy[0] == pytest.approx(0.03, abs=1e-6), "A is bound by what the chain left of its ADV budget, so the reflection exercises the coupling too"
     np.testing.assert_allclose(selling.w, 1.0 - buying.w, atol=1e-6)
     np.testing.assert_allclose(selling.sell, buying.buy, atol=1e-6)
@@ -233,10 +233,10 @@ def test_a_solver_this_process_cannot_run_is_refused_when_the_config_resolves_no
         resolved_with(["alpha"], solve={"name": "cvxpy", "params": {"solver": "NOPE"}})
 
 
-def test_a_sell_only_run_harvests_a_loss_exactly(make: Factories) -> None:
+def test_an_outflow_run_harvests_a_loss_exactly(make: Factories) -> None:
     """A rewarded sale is a real sale: one variable per name leaves nothing to rebuy with, so the refund the objective books is the refund the orders earn."""
     spec = make.spec(tax_per_dollar=np.array([-0.05, 0.0, 0.0]), cash_ub=1.0)
-    resolved = resolved_with(["alpha", "tax_cost"], sides="sell")
+    resolved = resolved_with(["alpha", "tax_cost"], order_flow="outflow")
     solution = solve(spec, ChainState.empty(spec.security_ids), resolved)
     assert solution.sell[0] == pytest.approx(spec.w0[0], abs=1e-6), "the whole loss lot goes: nothing else charges for selling it"
     assert solution.buy.tolist() == [0.0, 0.0, 0.0]
@@ -249,8 +249,8 @@ def test_tax_and_transaction_costs_discourage_selling_gains(make: Factories, fra
     universe = frames.three_security_universe().assign(alpha=pd.Series([-0.01, 0.02, 0.05], dtype="Float64"))  # A has turned negative, and is held at a doubling
     details = make.details(max_adv_participation=Decimal("0.25"), cash_ub=Decimal(1))
     spec = standard(make.portfolio_data(holdings=holdings, universe=universe, details=details))
-    taxed = solve(spec, ChainState.empty(spec.security_ids), resolved_with(SELL_TERMS, sides="sell"))
-    untaxed = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["alpha"], sides="sell"))
+    taxed = solve(spec, ChainState.empty(spec.security_ids), resolved_with(SELL_TERMS, order_flow="outflow"))
+    untaxed = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["alpha"], order_flow="outflow"))
     assert untaxed.sell[0] > 0.0 and taxed.sell[0] == pytest.approx(0.0, abs=1e-6), "A is worth leaving on its alpha alone, but the tax on the gain holds the position"
 
 
@@ -270,7 +270,7 @@ def test_typed_rows_are_rendered_and_verified_through_their_own_models(make: Fac
     assert "cap/weight_limit" in report.active, "the cap binds on S1 and S2, and the report says so"
 
 
-def test_allow_current_weight_holds_a_breached_start_a_buy_only_run_cannot_trade_out_of(make: Factories) -> None:
+def test_allow_current_weight_holds_a_breached_start_an_inflow_run_cannot_trade_out_of(make: Factories) -> None:
     spec = make.spec(w0=np.array([0.5, 0.3, 0.2]))
     resolved = resolved_with(["alpha"])
     strict = [typed_row("weight_limit", "cap", direction="<=", bounds="0.4"), *CASH]

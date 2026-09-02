@@ -13,7 +13,7 @@ from tests.engine.fakes import LazyBackend, factory_for
 from tests.engine.support import BUY_ORDERS_P1, BUY_ORDERS_P2, GIT, details_csv, details_without, example_book, execute, uncoupled_book
 
 CAPPED_P1 = {"details.csv": details_csv(P1={"max_weight": "0.25"})}
-"""P1's cap at a quarter: it holds A and B at 0.3 each, and a buy program cannot sell them down, so its solve is infeasible."""
+"""P1's cap at a quarter: it holds A and B at 0.3 each, and an inflow cannot sell them down, so its solve is infeasible."""
 
 
 def test_the_run_reproduces_the_hand_checked_orders(tmp_path: Path, scheduler_address: str) -> None:
@@ -56,7 +56,7 @@ def test_fail_fast_skips_every_lower_priority_portfolio_and_publishes_nothing(tm
     assert isinstance(p1, PortfolioFailure)
     assert p1.stage == "solve"
     assert p1.error_type == "InfeasibleError"
-    assert "names whose cap is below their holding, which this side cannot trade out of: ['A', 'B']" in p1.message
+    assert "names whose cap is below their holding, which this order flow cannot trade out of: ['A', 'B']" in p1.message
     assert isinstance(p2, PortfolioFailure)
     assert p2.stage == "skipped"
     assert not (tmp_path / "run-test" / "run-test" / "orders").exists()

@@ -18,8 +18,8 @@ from typing import Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
+from portfolio_optimizer.domain.order_flow import OrderFlow
 from portfolio_optimizer.domain.schemas import REQUIRED_DATASETS
-from portfolio_optimizer.domain.sides import Sides
 from portfolio_optimizer.domain.types import PortfolioId, StrictModel
 
 STEP_NAME_PATTERN = r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$"
@@ -213,7 +213,7 @@ class ExecutionConfig(StrictModel):
     )
     dependencies: Dependencies = Field(
         default="overlap",
-        description="Which higher-priority portfolios a portfolio waits for. `overlap` (default): those that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `sell`) — and only what its own constraints *declare* they read: a typed constraint row says whether it reads the chain and, through its `scope`, which securities it couples through, so a portfolio whose rows read no chain waits for nobody. A chain-aware objective term or a solve step other than the shipped `cvxpy` one couples conservatively through the whole tradable set; with nothing anywhere reading the chain, nothing waits. `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis.",
+        description="Which higher-priority portfolios a portfolio waits for. `overlap` (default): those that can trade a security it can trade too, on the side the run couples through (buys under `both` and `buy`, sells under `outflow`) — and only what its own constraints *declare* they read: a typed constraint row says whether it reads the chain and, through its `scope`, which securities it couples through, so a portfolio whose rows read no chain waits for nobody. A chain-aware objective term or a solve step other than the shipped `cvxpy` one couples conservatively through the whole tradable set; with nothing anywhere reading the chain, nothing waits. `all`: every higher-priority portfolio is a predecessor, one line — the same answer, for diagnosis.",
     )
 
 
@@ -246,8 +246,8 @@ class RunConfig(StrictModel):
         default=None,
         description="Optional solve-order step from `solve_order.py`: `(data: PortfolioData[, params]) -> Decimal`, evaluated on each portfolio's ruled bundle. Lower keys solve first; ties break on `portfolio_id`. Replaces the portfolios frame's `solve_order` column.",
     )
-    sides: Sides = Field(
-        description="Which side the run trades: `buy` — one variable per name, `w >= w0`, no sell vector, portfolios coupling through buys — or `sell`, the mirror, coupling through sells. A term or row that reads the other side is refused. A desk's buy program and its sell program are two runs over one snapshot."
+    order_flow: OrderFlow = Field(
+        description="The run's order flow: `inflow` — cash comes into the book, so the run buys: one variable per name, `w >= w0`, no sell vector, portfolios coupling through buys — or `outflow`, the mirror: cash goes out, the run sells, coupling through sells. A term or row that reads the side the order flow lacks is refused. A desk's inflow and its outflow are two runs over one snapshot."
     )
     build: StepSpec = Field(
         default_factory=lambda: StepSpec(name="standard"),

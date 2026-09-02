@@ -265,7 +265,7 @@ def fake_config(
 ) -> RunConfig:
     body: dict[str, object] = {
         "run": {"name": "r"},
-        "sides": "buy",
+        "order_flow": "inflow",
         "datasets": {name: {"loader": f"{fake_steps}:loader"} for name in ("portfolios", "holdings", "universe", "details")},
         "rules": rules if rules is not None else [f"{fake_steps}:plain_rule"],
         "objective": objective if objective is not None else NOOP_TERMS,
@@ -337,9 +337,9 @@ def test_a_term_reading_a_side_the_run_lacks_fails_dry_rendering_naming_the_side
     with pytest.raises(ConfigResolutionError) as info:
         resolved_example_real(objective=SELL_TERMS)
     assert info.value.failures == (
-        "objective[1]: tax_cost: rendering failed: SideUnavailableError: a 'buy' run has no 'sell' vector; this term or constraint reads x.sell, so it cannot run under sides='buy'",
+        "objective[1]: tax_cost: rendering failed: SideUnavailableError: order flow 'inflow' has no 'sell' vector; this term or constraint reads x.sell, so it cannot run under order_flow='inflow'",
     )
-    assert resolved_example_real(sides="sell", objective=SELL_TERMS).profile.sides == "sell"
+    assert resolved_example_real(order_flow="outflow", objective=SELL_TERMS).profile.order_flow == "outflow"
 
 
 def test_dry_rendering_surfaces_a_term_that_raises_and_skips_one_that_needs_data(fake_steps: str) -> None:
@@ -385,7 +385,7 @@ def test_a_config_cannot_name_constraints_at_all(fake_steps: str) -> None:
     body = json.loads(fake_config(fake_steps).model_dump_json(by_alias=True, exclude_none=True))
     with pytest.raises(ValueError, match="extra_forbidden"):
         RunConfig.model_validate_json(json.dumps({**body, "constraints": ["long_only"]}))
-    assert resolve_config(fake_config(fake_steps)).profile.sides == "buy", "the trade identity still comes from sides"
+    assert resolve_config(fake_config(fake_steps)).profile.order_flow == "inflow", "the trade identity still comes from order_flow"
 
 
 def test_a_solver_failure_is_reported_together_with_the_step_failures(fake_steps: str) -> None:

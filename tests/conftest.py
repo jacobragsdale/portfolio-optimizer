@@ -30,8 +30,8 @@ from portfolio_optimizer.domain.results import F64, Grouping, ProblemSpec, Solut
 from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, ORDERS, PORTFOLIOS, UNIVERSE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_buy.json"
-SELL_CONFIG = REPO_ROOT / "configs" / "example_sell.json"
+EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_inflow.json"
+SELL_CONFIG = REPO_ROOT / "configs" / "example_outflow.json"
 EXAMPLE_DATA = REPO_ROOT / "examples" / "data"
 
 AS_OF = datetime(2026, 8, 28, tzinfo=UTC)
@@ -280,9 +280,9 @@ ALPHA: dict[str, object] = {"kind": "linear", "name": "alpha", "column": "alpha"
 TAX_COST: dict[str, object] = {"kind": "linear", "name": "tax_cost", "column": "tax_per_dollar", "vector": "sell"}
 TRANSACTION_COST: dict[str, object] = {"kind": "linear", "name": "transaction_cost", "column": "tcost_per_dollar", "vector": "trade"}
 BUY_TERMS: list[dict[str, object]] = [ALPHA, TRANSACTION_COST]
-"""The buy program's objective, as ``configs/example_buy.json`` has it: buy the expected return, pay the trading cost."""
+"""The inflow's objective, as ``configs/example_inflow.json`` has it: buy the expected return, pay the trading cost."""
 SELL_TERMS: list[dict[str, object]] = [ALPHA, TAX_COST, TRANSACTION_COST]
-"""The sell program's objective, as ``configs/example_sell.json`` has it: the buy program's terms plus the tax on what is sold — ``tax_cost`` reads ``sell`` and so cannot run in a buy-only run."""
+"""The outflow's objective, as ``configs/example_outflow.json`` has it: the inflow's terms plus the tax on what is sold — ``tax_cost`` reads ``sell`` and so cannot run in an inflow."""
 NOOP_TERMS: list[dict[str, object]] = [{"kind": "linear", "name": "noop", "weight": "0"}]
 """A zero objective: lets a config resolve and solve without exercising a real term."""
 

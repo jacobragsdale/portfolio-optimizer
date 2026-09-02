@@ -8,11 +8,11 @@ is what decides whether the build path or the solver needs work; scheduling is m
 
     uv run python benchmarks/profile_portfolio.py --securities 100000 --sectors 11
     uv run python benchmarks/profile_portfolio.py --securities 100000 --sectors 160 --solver OSQP
-    uv run python benchmarks/profile_portfolio.py --securities 100000 --sides sell
+    uv run python benchmarks/profile_portfolio.py --securities 100000 --order-flow outflow
 
-The book is generated from a seed, so two runs of one command time the same problem. ``--sides``
-selects the program: the buy program invests the tenth of NAV the book starts with in cash under
-the example's buy terms, and the sell program, under its terms with ``tax_cost`` added, lets the
+The book is generated from a seed, so two runs of one command time the same problem. ``--order-flow``
+selects the order flow: the inflow invests the tenth of NAV the book starts with in cash under
+the example's inflow terms, and the outflow, under its terms with ``tax_cost`` added, lets the
 book raise cash (a cash cap of one), since it can only add to it.
 """
 
@@ -38,7 +38,7 @@ from scipy.sparse import issparse
 from portfolio_optimizer.config.models import load_run_config
 from portfolio_optimizer.config.resolve import ResolvedConfig, resolve_config
 from portfolio_optimizer.cvx.adapter import build_problem
-from portfolio_optimizer.cvx.sides import decision_variables, identity_constraints
+from portfolio_optimizer.cvx.order_flow import decision_variables, identity_constraints
 from portfolio_optimizer.domain.constraints import parse_constraints
 from portfolio_optimizer.domain.data import PortfolioData, PortfolioDetails
 from portfolio_optimizer.domain.results import VECTOR_FIELDS, ChainState, PortfolioResult, ProblemSpec
@@ -51,7 +51,7 @@ from portfolio_optimizer.engine.solve import solve
 from portfolio_optimizer.engine.tasks import BuildResult
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_buy.json"
+EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_inflow.json"
 AS_OF = datetime(2026, 8, 28, tzinfo=UTC)
 NAV = Decimal(1_000_000_000)
 MB = 1e6
@@ -68,7 +68,7 @@ class Book:
     extras: dict[str, pd.DataFrame]
 
 
-def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, held: int, sides: str) -> Book:
+def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, held: int, order_flow: str) -> Book:
     """``securities`` names across ``sectors``, ``held`` of them owned, an alpha on every name, and a cap on every sector."""
     ids = [f"S{index:07d}" for index in range(securities)]
     prices = [Decimal(int(value)) / 100 for value in rng.integers(500, 50_000, size=securities)]
@@ -113,7 +113,7 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
         max_adv_participation=Decimal("0.25"),
         min_trade_notional=Decimal(0),
         cash_lb=Decimal(0),
-        cash_ub=Decimal(1) if sides == "sell" else Decimal(0),
+        cash_ub=Decimal(1) if order_flow == "outflow" else Decimal(0),
     )
     rows = [constraint_row("P1", kind, label, params) for kind, label, params in SHIPPED_CONSTRAINTS]
     rows.append(
@@ -164,12 +164,12 @@ def _peak_rss_mb() -> float:
     return peak / MB if sys.platform == "darwin" else peak * 1024 / MB
 
 
-def _config(solver: str, sides: str, *, verbose: bool) -> ResolvedConfig:
-    """The shipped example's rules with the solver and side replaced and the side's own terms; its loaders and sink are never invoked."""
+def _config(solver: str, order_flow: str, *, verbose: bool) -> ResolvedConfig:
+    """The shipped example's rules with the solver and order flow replaced and the order flow's own terms; its loaders and sink are never invoked."""
     body = json.loads(EXAMPLE_CONFIG.read_text())
     body["solve"] = {"name": "cvxpy", "params": {"solver": solver, "verbose": verbose}}
-    body["sides"] = sides
-    body["objective"] = OBJECTIVE[sides]
+    body["order_flow"] = order_flow
+    body["objective"] = OBJECTIVE[order_flow]
     return resolve_config(load_run_config(json.dumps(body)))
 
 
@@ -195,11 +195,11 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     """Run every stage once over a synthetic book and return the timings."""
     rng = np.random.default_rng(int(args.seed))
     securities, sectors, held = int(args.securities), int(args.sectors), int(args.held)
-    sides = str(args.sides)
-    resolved = _config(str(args.solver), sides, verbose=bool(args.verbose))
-    book = synthetic_book(rng, securities=securities, sectors=sectors, held=held, sides=sides)
+    order_flow = str(args.order_flow)
+    resolved = _config(str(args.solver), order_flow, verbose=bool(args.verbose))
+    book = synthetic_book(rng, securities=securities, sectors=sectors, held=held, order_flow=order_flow)
     report = Report()
-    with report.stage("validate bundle", f"{securities:,} securities in {sectors} sectors, {held:,} held; sides {sides}, terms {', '.join(term.name for term in resolved.terms)}"):
+    with report.stage("validate bundle", f"{securities:,} securities in {sectors} sectors, {held:,} held; order flow {order_flow}, terms {', '.join(term.name for term in resolved.terms)}"):
         data = PortfolioData(details=book.details, holdings=book.holdings, universe=book.universe, constraints=book.constraints, extras=book.extras, as_of_date=AS_OF)
     with report.stage("rules", ", ".join(step.name for step in resolved.rules)):
         ruled, _ = apply_rules(data, resolved.rules)
@@ -214,9 +214,9 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
     parsed = parse_constraints(book.constraints)
     typed = () if parsed is None else parsed.typed
     with report.stage("expression tree") as row:
-        x = decision_variables(resolved.profile.sides, spec)
+        x = decision_variables(resolved.profile.order_flow, spec)
         terms = [term.to_cvxpy(x, spec, chain) for term in resolved.terms]
-        sets = [identity_constraints(resolved.profile.sides, x, spec), *(constraint.to_cvxpy(x, spec, chain) for constraint in typed)]
+        sets = [identity_constraints(resolved.profile.order_flow, x, spec), *(constraint.to_cvxpy(x, spec, chain) for constraint in typed)]
     flat = [constraint for group in sets for constraint in group.constraints]
     row.note = f"{len(terms)} terms, {len(flat)} constraint objects"
     with report.stage("cvxpy Problem + is_dcp"):
@@ -273,7 +273,7 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--sectors", type=int, default=11)
     parser.add_argument("--held", type=int, default=25_000)
     parser.add_argument("--solver", default="CLARABEL")
-    parser.add_argument("--sides", default="buy", choices=sorted(OBJECTIVE), help="the program to time: the buy program or the sell program")
+    parser.add_argument("--order-flow", default="inflow", choices=sorted(OBJECTIVE), help="the order flow to time: the inflow or the outflow")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--verbose", action="store_true", help="let the solver print its iteration log")
     return parser.parse_args(argv)
@@ -284,7 +284,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse(argv)
     report = profile(args)
     total = sum(row.seconds for row in report.rows)
-    sys.stdout.write(f"{report.render()}\n\nsum of stages {total:.1f}s; solver {args.solver}, sides {args.sides}, seed {args.seed}\n")
+    sys.stdout.write(f"{report.render()}\n\nsum of stages {total:.1f}s; solver {args.solver}, order flow {args.order_flow}, seed {args.seed}\n")
     return 0
 
 

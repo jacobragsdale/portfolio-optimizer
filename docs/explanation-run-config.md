@@ -2,8 +2,8 @@
 
 A run config is one JSON document that tells the engine what to load, how to combine it, which rules
 and terms apply, and how to execute. This page reads through that document block by block, in the
-order the shipped `configs/example_buy.json` lists them — its sibling `configs/example_sell.json` is
-the same document with the other `sides`, its own `run.name`, and one more objective term — and for
+order the shipped `configs/example_inflow.json` lists them — its sibling `configs/example_outflow.json` is
+the same document with the other `order_flow`, its own `run.name`, and one more objective term — and for
 each block answers three questions: what is it telling the engine, when does the engine consume it,
 and what changes if you set it differently. It is the companion to two other pages: the [reference](reference-run-config.md) carries what the
 generated JSON Schema cannot — step signatures, load-time behaviour, the constraint rows and style
@@ -21,7 +21,7 @@ version. Read it when you have a config in front of you and want it to make sens
 | [`assembly`](#assembly) | Steps that turn loaded datasets into the tables the build expects | Once, after all loaders return, before schema validation |
 | [`rules`](#rules) | Business logic applied to each portfolio's bundle, in order | Per portfolio, on a worker, before the build |
 | [`solve_order`](#solve_order) | A step that computes each portfolio's priority from its data | Per portfolio, after its rules |
-| [`sides`](#sides) | Which side the run trades, and so what a trade means | At resolve, then at every build, solve, and verification |
+| [`order_flow`](#order_flow) | Whether the run is an inflow or an outflow, and so what a trade means | At resolve, then at every build, solve, and verification |
 | [`build`](#build) | The step that turns a ruled bundle into a problem | Per portfolio, after its rules |
 | [`objective`](#objective) | The typed terms whose sum is minimized | Parsed and rendered once at resolve, then at every solve and verification |
 | [constraints](#constraints-are-not-a-config-block-at-all) | *Not a config block* — a loaded per-portfolio dataset of typed rows | Sliced per portfolio, adjusted by rules, parsed at build, rendered at every solve |
@@ -87,13 +87,13 @@ names by `kind`, covered below.
 ## `run`
 
 ```json
-"run": {"name": "example_buy", "tags": {"desk": "template"}}
+"run": {"name": "example_inflow", "tags": {"desk": "template"}}
 ```
 
 `name` and `tags` are identity: they are copied into the manifest and used for nothing else, and they
 are kept out of the config hash, so renaming or relabelling a run does not make it a different wiring.
 Pick a name that will still mean something when you are comparing two manifests a month later. The
-shipped sell program is `example_sell`: one book, the other side, its own manifest.
+shipped outflow is `example_outflow`: one book, the other order flow, its own manifest.
 
 ## `datasets`
 
@@ -130,8 +130,8 @@ ids where it would hash a loader's source.
 matters only when something reads the chain — when a later portfolio's problem depends on what
 higher-priority ones already *traded* on the side the run couples through. A portfolio waits only for
 higher-priority portfolios that can trade a security it can trade too, on that side, and only where
-its own constraint rows say they read the chain; everything else solves concurrently. In the buy
-program, P2 solves after P1 and finds that P1 has consumed the ADV budget for security C. Swap the
+its own constraint rows say they read the chain; everything else solves concurrently. In the inflow,
+P2 solves after P1 and finds that P1 has consumed the ADV budget for security C. Swap the
 `solve_order` values in the data and P2 gets the budget instead. A [`solve_order` step](#solve_order)
 computes the key from the data instead of reading this column.
 
@@ -361,24 +361,25 @@ answers "who gets first pick of a shared budget" from the data — the shipped s
 the most left to invest first — instead of from a hand-maintained column, and it is part of the
 config hash, so two runs with different priorities are visibly different runs.
 
-## `sides`
+## `order_flow`
 
 ```json
-"sides": "buy"
+"order_flow": "inflow"
 ```
 
-Which side the run trades, `buy` or `sell`; it is required and has no default. Either has one variable
+The run's order flow, `inflow` or `outflow` — cash into the book, so the run buys, or cash out, so it
+sells; it is required and has no default. Either has one variable
 per name, `w`, with the trade an affine expression of it — `buy = w − w0` under `w ≥ w0`, or
 `sell = w0 − w` under `w ≤ w0` — so no name can be bought and sold in one solve. The value selects the
-*side profile*, the one object in the engine that knows what a side means, and it fixes which side
-portfolios couple through — buys under `buy`, sells under `sell`. Two things follow for the rest of
-the config: a term that reads the side the run lacks (`example_sell`'s `tax_cost` reads `sell`, and
-is absent from `example_buy`) is refused at `validate-config`, and the cash bounds keep their meaning
-as the cash *after* the run while the side fixes the direction cash can move. A desk's buy program
-and its sell program are two runs over one snapshot — `configs/example_buy.json` and
-`configs/example_sell.json` — each a pure function of its inputs with its own manifest; nothing
-crosses between them inside the engine. [How to run one side](how-to-run-one-side.md) walks through
-both; [the architecture explanation](explanation-architecture.md#the-side-a-run-trades-is-one-object)
+*order-flow profile*, the one object in the engine that knows what the order flow means, and it fixes which side
+portfolios couple through — buys under `inflow`, sells under `outflow`. Two things follow for the rest of
+the config: a term that reads the side the run lacks (`example_outflow`'s `tax_cost` reads `sell`, and
+is absent from `example_inflow`) is refused at `validate-config`, and the cash bounds keep their meaning
+as the cash *after* the run while the order flow fixes the direction cash can move. A desk's inflow
+and its outflow are two runs over one snapshot — `configs/example_inflow.json` and
+`configs/example_outflow.json` — each a pure function of its inputs with its own manifest; nothing
+crosses between them inside the engine. [How to run an order flow](how-to-run-an-order-flow.md) walks through
+both; [the architecture explanation](explanation-architecture.md#a-runs-order-flow-is-one-object)
 covers what the profile owns, and why there is no two-sided profile.
 
 ## `build`
@@ -418,10 +419,10 @@ it is.
 
 The shipped kind is `linear`: `weight · columnᵀvector` over any per-security column the spec carries
 and one of the decision vectors — `w`, the target weight; `buy` or `sell`, the non-negative trade on
-the side the run has; `trade`, the same amount under either name. The buy config's two terms make the
+the side the run has; `trade`, the same amount under either name. The inflow config's two terms make the
 solver trade the expected return of a name off against the cost of the trade itself: the exported
 `alpha` column against `w` with a negative weight, the derived `tcost_per_dollar` against `trade`. The
-sell config adds a third, the derived `tax_per_dollar` against `sell` — the tax on realising a gain,
+outflow config adds a third, the derived `tax_per_dollar` against `sell` — the tax on realising a gain,
 or the refund on harvesting a loss, which the run prices exactly because a name cannot be sold and
 rebought in one solve; in the buy config the same term would be refused, since that run has no
 `sell`. `column` is
@@ -486,7 +487,7 @@ The trade identity is not a constraint and cannot be. What `buy` or `sell` *mean
 `buy = w − w0`, or `w ≤ w0` with `sell = w0 − w`, the trade an expression of the one variable — and
 the spec's own box `lb ≤ w ≤ ub` are what every cost term,
 the turnover cap, the ADV constraint, the order rounding, and the verifier's identity checks rely on,
-so they come from `sides` and the build and are added to every solve.
+so they come from `order_flow` and the build and are added to every solve.
 
 `participation_limit` is the one shipped kind that reads the chain — it needs to know how much of each
 name's ADV budget higher-priority portfolios have already *traded* on the side the run couples
@@ -539,7 +540,7 @@ enable when a solve is slow or hits its limit. Adding a solver is one row in the
 (name, distribution, time-limit option) and one extra in `pyproject.toml`, so that "install the
 solver" is the same `uv sync --extra` on a laptop and in the worker image.
 
-Whatever the step is, the engine treats its answer the same way: the side profile turns the weights
+Whatever the step is, the engine treats its answer the same way: the order-flow profile turns the weights
 into a trade, the verifier re-checks every constraint the step reported against them, rounding and
 drift run unchanged, and the manifest records the step and its version where it records the solver's.
 A step that minimized nothing reports no objective; the verifier then skips the objective comparison
@@ -554,9 +555,9 @@ verifier's, not the step's — see [how to replace the cvxpy solve](how-to-write
 "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9}
 ```
 
-After every solve the engine re-checks the solution in numpy without cvxpy: the side profile's identity
-checks (`no_sells`, `trade_balance`, `nonneg_buy`, and `sell_absent` under `buy`; `no_buys`,
-`trade_balance`, `nonneg_sell`, and `buy_absent` under `sell`; the spec's box as `lb` and `ub` under
+After every solve the engine re-checks the solution in numpy without cvxpy: the order-flow profile's identity
+checks (`no_sells`, `trade_balance`, `nonneg_buy`, and `sell_absent` under `inflow`; `no_buys`,
+`trade_balance`, `nonneg_sell`, and `buy_absent` under `outflow`; the spec's box as `lb` and `ub` under
 either),
 each reported constraint's residual, the recomputed objective against the solver's reported one, and
 finiteness. These three numbers are its tolerances — `violation_tol` bounds every residual, identity

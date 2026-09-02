@@ -2,10 +2,10 @@
 
 The engine builds the problem as data (a :class:`~portfolio_optimizer.domain.results.ProblemSpec`),
 folds the chain, and then hands *one* step — configured as ``solve`` — everything it needs to decide
-the weights: the spec, the chain, the side profile, the typed terms, this portfolio's constraint
+the weights: the spec, the chain, the order-flow profile, the typed terms, this portfolio's constraint
 rows, and the run's extra datasets. The shipped step (``solvers.cvxpy``) builds and solves a cvxpy
 problem from the terms' and constraints' own renderers; a firm's own library or a pure numpy
-function fits the same contract. Whatever the step does, the side profile turns its ``w`` into the
+function fits the same contract. Whatever the step does, the order-flow profile turns its ``w`` into the
 trade and the verifier decides whether the answer is acceptable — the guarantees are the verifier's,
 not the step's.
 
@@ -21,8 +21,8 @@ import pandas as pd
 
 from portfolio_optimizer.config.models import RunConfig
 from portfolio_optimizer.domain.objective import TypedTerm
+from portfolio_optimizer.domain.order_flow import OrderFlowProfile
 from portfolio_optimizer.domain.results import F64, ChainState, ConstraintRecord, ProblemSpec, SolveStatus
-from portfolio_optimizer.domain.sides import SideProfile
 
 SHIPPED_CVXPY_SOLVE = "portfolio_optimizer.solvers:cvxpy"
 """The one solve step whose chain access is exactly the configured terms and constraints; any other step may read ``request.chain`` however it likes, so its runs couple conservatively."""
@@ -102,7 +102,7 @@ class SolveRequest:
 
     spec: ProblemSpec
     chain: ChainState
-    profile: SideProfile
+    profile: OrderFlowProfile
     terms: tuple[TypedTerm, ...]
     """The configured objective terms as models; the shipped step renders each through its ``to_cvxpy``, a firm's library reads their fields."""
 

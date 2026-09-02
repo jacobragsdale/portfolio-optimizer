@@ -7,10 +7,10 @@ import numpy as np
 import pytest
 
 from portfolio_optimizer.cvx.adapter import ConstraintSet
-from portfolio_optimizer.cvx.sides import decision_variables
+from portfolio_optimizer.cvx.order_flow import decision_variables
 from portfolio_optimizer.domain.constraints import CashLimit, ExposureLimit, GroupLimit, ParticipationLimit, ScalarRef, TurnoverLimit, WeightLimit
+from portfolio_optimizer.domain.order_flow import INFLOW
 from portfolio_optimizer.domain.results import ChainState, Contribution, PortfolioResult, ProblemSpec
-from portfolio_optimizer.domain.sides import BUY_ONLY
 from portfolio_optimizer.engine.build import standard
 from portfolio_optimizer.engine.check import constraints_of, verify
 from portfolio_optimizer.engine.runner import EXIT_OK
@@ -23,7 +23,7 @@ from tests.engine.support import execute
 
 def _request(spec: ProblemSpec, chain: ChainState | None = None) -> SolveRequest:
     resolved = resolved_example_real()
-    return SolveRequest(spec=spec, chain=chain if chain is not None else ChainState.empty(spec.security_ids), profile=BUY_ONLY, terms=resolved.terms, constraints=constraint_frame())
+    return SolveRequest(spec=spec, chain=chain if chain is not None else ChainState.empty(spec.security_ids), profile=INFLOW, terms=resolved.terms, constraints=constraint_frame())
 
 
 def test_pro_rata_fill_spreads_the_cash_evenly_over_the_names_it_may_buy(make: Factories) -> None:
@@ -44,7 +44,7 @@ def test_pro_rata_fill_respects_a_cap_and_gives_the_excess_to_the_rest(make: Fac
 def test_pro_rata_fill_reads_the_chain(make: Factories) -> None:
     spec = make.spec(w0=np.array([0.3, 0.3, 0.3]), adv_capacity=np.array([0.05, 1.0, 1.0]))
     consumed = Contribution("P0", ("S0",), np.array([300.0]))  # 300 shares at 100 on NAV 1e6 is 0.03 of NAV
-    chain = BUY_ONLY.chain_state(spec, [consumed], np.ones(spec.n, dtype=np.bool_))
+    chain = INFLOW.chain_state(spec, [consumed], np.ones(spec.n, dtype=np.bool_))
     result = pro_rata_fill(_request(spec, chain))
     assert result.w is not None
     np.testing.assert_allclose(result.w - spec.w0, [0.02, 0.04, 0.04], atol=1e-12, err_msg="S0 has 0.05 - 0.03 of ADV budget left after its predecessor")
@@ -67,10 +67,10 @@ def test_pro_rata_fill_verifies_like_a_solve(make: Factories) -> None:
     spec = standard(make.portfolio_data(details=details))
     resolved = resolved_example_real(solve="pro_rata_fill")
     chain = ChainState.empty(spec.security_ids)
-    result = pro_rata_fill(SolveRequest(spec=spec, chain=chain, profile=BUY_ONLY, terms=resolved.terms, constraints=constraint_frame()))
+    result = pro_rata_fill(SolveRequest(spec=spec, chain=chain, profile=INFLOW, terms=resolved.terms, constraints=constraint_frame()))
     assert result.w is not None
     solution = make.solution(spec, w=result.w, buy=result.w - spec.w0, objective=None, solver="f", iterations=None)
-    report = verify(spec, solution, chain, resolved.terms, constraints_of(solution), profile=BUY_ONLY)
+    report = verify(spec, solution, chain, resolved.terms, constraints_of(solution), profile=INFLOW)
     assert report.passed, report.violated
     assert result.w.sum() == pytest.approx(1.0), "cash_lb = cash_ub = 0 means every dollar is invested"
 
@@ -80,7 +80,7 @@ def test_the_cvxpy_step_refuses_rows_it_cannot_interpret(make: Factories) -> Non
     request = _request(spec)
     foreign = request.constraints.rename(columns={"kind": "rule"})
     with pytest.raises(SolveSetupError, match="carry no `kind` column"):
-        cvxpy(SolveRequest(spec=spec, chain=request.chain, profile=BUY_ONLY, terms=request.terms, constraints=foreign), CvxpyParams())
+        cvxpy(SolveRequest(spec=spec, chain=request.chain, profile=INFLOW, terms=request.terms, constraints=foreign), CvxpyParams())
 
 
 def test_the_cvxpy_step_reports_what_it_applied_and_the_shadow_price_of_what_bound(make: Factories) -> None:
@@ -106,7 +106,7 @@ def test_the_cvxpy_step_reports_what_it_applied_and_the_shadow_price_of_what_bou
 )
 def test_every_shipped_kind_renders_a_constraint_set_under_its_own_name(make: Factories, model: object) -> None:
     spec = make.spec(flags={"is_thin": np.array([False, False, True])})
-    x = decision_variables("buy", spec)
+    x = decision_variables("inflow", spec)
     rendered = model.to_cvxpy(x, spec, ChainState.empty(spec.security_ids))  # ty: ignore[unresolved-attribute]  # every model in the table is a TypedConstraint
     assert isinstance(rendered, ConstraintSet) and rendered.name == model.name  # ty: ignore[unresolved-attribute]  # see above
     assert all(constraint.is_dcp() for constraint in rendered.constraints)

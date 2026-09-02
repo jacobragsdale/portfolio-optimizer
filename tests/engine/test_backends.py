@@ -133,12 +133,12 @@ def test_the_buy_program_reproduces_the_hand_checked_buys_and_couples_through_th
     assert p2.chain_state.traded_shares.tolist() == [1000.0, 0.0, 25000.0] and p2.chain_state.predecessors == ("P1",), "every buy P1 made reaches P2: the chain carries the whole trade"
     for outcome in (p1, p2):
         assert outcome.report.passed and (outcome.solution.w >= outcome.spec.w0 - 1e-9).all() and outcome.solution.sell.tolist() == [0.0, 0.0, 0.0]
-    assert report.manifest.config.resolved["sides"] == "buy"
+    assert report.manifest.config.resolved["order_flow"] == "inflow"
     assert [p.status for p in report.manifest.portfolios] == ["solved", "solved"]
 
 
 def test_the_sell_program_reproduces_the_hand_checked_sells_and_couples_through_them(tmp_path: Path) -> None:
-    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=thin_b_book(tmp_path), sides="sell", objective=SELL_TERMS)
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=thin_b_book(tmp_path), order_flow="outflow", objective=SELL_TERMS)
     assert report.exit_code == EXIT_OK, [outcome for outcome in report.outcomes if isinstance(outcome, PortfolioFailure)]
     p1, p2 = report.outcomes
     assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
@@ -148,7 +148,7 @@ def test_the_sell_program_reproduces_the_hand_checked_sells_and_couples_through_
     for outcome in (p1, p2):
         assert outcome.report.passed and (outcome.solution.w <= outcome.spec.w0 + 1e-9).all() and outcome.solution.buy.tolist() == [0.0, 0.0, 0.0]
     assert "adv/cumulative_participation" in p2.report.active, "what the chain left of B's budget is what stopped P2"
-    assert report.manifest.config.resolved["sides"] == "sell"
+    assert report.manifest.config.resolved["order_flow"] == "outflow"
     assert [p.status for p in report.manifest.portfolios] == ["solved", "solved"]
 
 

@@ -22,9 +22,9 @@ import numpy as np
 from pydantic import Field
 
 from portfolio_optimizer.domain.constraints import CONSTRAINT_NAME_PATTERN, Vector, vector_values
+from portfolio_optimizer.domain.order_flow import OrderFlowProfile
 from portfolio_optimizer.domain.registry import KindError, kinds_from, parse_kind
 from portfolio_optimizer.domain.results import ChainState, MissingSpecColumnError, ProblemSpec, Solution
-from portfolio_optimizer.domain.sides import SideProfile
 from portfolio_optimizer.domain.types import StrictModel
 
 if TYPE_CHECKING:
@@ -59,7 +59,7 @@ class TypedTerm(StrictModel):
         del spec
         return iter(())
 
-    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> float:
+    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> float:
         """The term's value at the solution, in plain numpy: the verifier's half."""
         raise NotImplementedError
 
@@ -96,7 +96,7 @@ class Linear(TypedTerm):
             yield str(error)
 
     @override
-    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> float:
+    def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> float:
         del chain, profile
         return float(self.weight) * float((self.coefficients(spec) * vector_values(solution, self.vector)).sum())
 

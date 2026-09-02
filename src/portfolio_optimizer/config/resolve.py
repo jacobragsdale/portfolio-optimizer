@@ -14,7 +14,7 @@ steps: each ``objective`` entry is validated against the kind it names.
 
 Resolution is every check a config can pass without data: the solver the shipped cvxpy step names —
 known to the adapter, installed, able to honor ``time_limit_s`` — and, under that step, one dry
-rendering of every term against a one-security dummy spec under the run's side profile, so a term
+rendering of every term against a one-security dummy spec under the run's order-flow profile, so a term
 that raises, reads a side the run lacks, or is not convex is refused here rather than on a worker.
 Every process that will solve resolves the config first: the client at ``validate-config`` and at
 the start of ``run``, and each worker before it does any work, so all of them apply the same checks.
@@ -39,8 +39,8 @@ from portfolio_optimizer.config.models import DatasetConfig, RunConfig, StepSpec
 from portfolio_optimizer.config.steps import ResolvedStep, StepKind
 from portfolio_optimizer.domain.data import Frames, IoContext, LoadRequest, PortfolioData
 from portfolio_optimizer.domain.objective import TermSpecError, TypedTerm, parse_terms
+from portfolio_optimizer.domain.order_flow import OrderFlowProfile, profile_for
 from portfolio_optimizer.domain.results import Artifact, ChainState, MissingSpecColumnError, ProblemSpec
-from portfolio_optimizer.domain.sides import SideProfile, profile_for
 from portfolio_optimizer.domain.types import Params
 from portfolio_optimizer.solving import SHIPPED_CVXPY_SOLVE, SolveRequest, SolveResult, solver_failures
 
@@ -104,7 +104,7 @@ class ResolvedConfig:
     terms: tuple[TypedTerm, ...]
     solve: ResolvedStep
     sink: ResolvedStep
-    profile: SideProfile
+    profile: OrderFlowProfile
 
     @property
     def chain_aware_terms(self) -> tuple[TypedTerm, ...]:
@@ -171,7 +171,7 @@ def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] 
         terms=terms,
         solve=solve,
         sink=sink,
-        profile=profile_for(config.sides),
+        profile=profile_for(config.order_flow),
     )
     construction = _construction_failures(resolved)
     if construction:
@@ -186,7 +186,7 @@ def _installed_solvers() -> tuple[str, ...]:
 
 
 def _construction_failures(resolved: ResolvedConfig) -> list[str]:
-    """Render every objective term once against a one-security dummy spec, under the run's side profile, through the shipped cvxpy step's own machinery.
+    """Render every objective term once against a one-security dummy spec, under the run's order-flow profile, through the shipped cvxpy step's own machinery.
 
     What parsing cannot see — a term that raises when rendered, reaches for a decision vector the
     side does not have, or is not convex — surfaces here instead of on a worker. A term that asks for
@@ -200,11 +200,11 @@ def _construction_failures(resolved: ResolvedConfig) -> list[str]:
     if not resolved.terms:
         return ["objective: the cvxpy solve step minimizes the terms' sum and needs at least one; a run that minimizes nothing wants a solve step that is not an optimizer"]
     from portfolio_optimizer.cvx.adapter import ObjectiveTerm, build_problem
-    from portfolio_optimizer.cvx.sides import decision_variables, identity_constraints
+    from portfolio_optimizer.cvx.order_flow import decision_variables, identity_constraints
 
     spec = _dry_run_spec()
     chain = ChainState.empty(spec.security_ids)
-    x = decision_variables(resolved.profile.sides, spec)
+    x = decision_variables(resolved.profile.order_flow, spec)
     failures: list[str] = []
     rendered: list[ObjectiveTerm] = []
     for index, term in enumerate(resolved.terms):
@@ -222,7 +222,7 @@ def _construction_failures(resolved: ResolvedConfig) -> list[str]:
         rendered.append(result)
     if not failures and rendered:
         try:
-            build_problem(rendered, [identity_constraints(resolved.profile.sides, x, spec)])
+            build_problem(rendered, [identity_constraints(resolved.profile.order_flow, x, spec)])
         except ValueError as error:
             failures.append(f"objective: {error}")
     return failures

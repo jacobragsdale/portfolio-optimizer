@@ -162,4 +162,4 @@ def test_the_readme_annotated_config_is_the_real_one_with_comments() -> None:
     blocks = ANNOTATED_BLOCK.findall(README.read_text())
     assert len(blocks) == 1, "the README should carry exactly one annotated jsonc config block"
     stripped = "\n".join(line for line in blocks[0].splitlines() if not line.lstrip().startswith("//"))
-    assert json.loads(stripped) == json.loads(EXAMPLE_CONFIG.read_text()), "the README's annotated config has drifted from configs/example_buy.json; update the annotated copy"
+    assert json.loads(stripped) == json.loads(EXAMPLE_CONFIG.read_text()), "the README's annotated config has drifted from configs/example_inflow.json; update the annotated copy"

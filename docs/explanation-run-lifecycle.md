@@ -60,8 +60,8 @@ data loads, the resolver:
 - under the shipped `cvxpy` step, checks the solver its params name: known to the adapter, installed
   in this process, and able to honor `time_limit_s`;
 - and, once every step has resolved, renders every term once against a one-security dummy spec under
-  the run's side profile and checks the problem is convex, so a term that raises when rendered, reads a
-  decision vector the side does not have, or is not DCP is refused here. The solve step is not run: a
+  the run's order-flow profile and checks the problem is convex, so a term that raises when rendered, reads a
+  decision vector the order flow does not have, or is not DCP is refused here. The solve step is not run: a
   firm's step may reach a service, and the dummy is not a problem worth solving.
 
 Every failure is collected and reported together. The same resolution runs in every process that will
@@ -238,12 +238,12 @@ frame with no `kind` column at all.
 ## 6. Solve
 
 `engine/solve.py` hands the configured **solve step** a `SolveRequest` — the spec, the chain, the
-side profile, the typed terms, the portfolio's constraint rows, and the run's extra datasets as the
+order-flow profile, the typed terms, the portfolio's constraint rows, and the run's extra datasets as the
 rules left them — and takes back a `SolveResult`: weights aligned to the spec and, if the step
 minimized one, an objective. The constraints and the extras cross the build unchanged for the same
 reason: the engine does not interpret what they mean, so it carries them. The default step,
-`solvers.cvxpy`, creates the side profile's decision variable — `w` alone, a fraction of NAV, with the
-trade an expression of it: `buy = w − w0` under `buy`, `sell = w0 − w` under `sell` — adds the
+`solvers.cvxpy`, creates the order-flow profile's decision variable — `w` alone, a fraction of NAV, with the
+trade an expression of it: `buy = w − w0` under `inflow`, `sell = w0 − w` under `outflow` — adds the
 profile's trade identity (`w ≥ w0` or `w ≤ w0`) and the spec's box `lb ≤ w ≤ ub`, renders each
 configured term and each typed
 constraint row through the model's own `to_cvxpy`, and hands the expressions to the adapter.
@@ -260,13 +260,13 @@ weights the same way and is verified the same way; see
 
 Classification decides what the result means:
 
-- **Optimal.** The side profile turns the weights into the trade the engine reports:
-  `buy = max(w − w0, 0)` under `buy`, `sell = max(w0 − w, 0)` under `sell`, the clip keeping solver
+- **Optimal.** The order-flow profile turns the weights into the trade the engine reports:
+  `buy = max(w − w0, 0)` under `inflow`, `sell = max(w0 − w, 0)` under `outflow`, the clip keeping solver
   noise past `w0` from becoming a few shares on the side the run does not have. One variable per name
   means there is no split to choose and no round trip to strip; a term that rewards a sale is priced
   exactly.
 - **Infeasible.** `InfeasibleError` carries an arithmetic diagnosis computed without another solve,
-  from what the spec carries: does the book start where the side cannot take it? Do the upper bounds
+  from what the spec carries: does the book start where the order flow cannot take it? Do the upper bounds
   even sum to the required investment? Do the lower bounds exceed it? Does moving the current weights
   inside their bounds already exceed `max_turnover`? Is a name that must trade out of ADV budget?
 - **Unbounded.** Impossible inside the box, so it is reported as a bug in a custom term or constraint.
@@ -282,9 +282,9 @@ model's own `residual`; every term is recomputed through its own `value`, the va
 compared with the solver's reported objective. So a kind a package published is checked exactly like a
 shipped one, and nothing typed is ever unverified — a step that reports no constraints has none
 checked, which is the honest answer rather than a silent pass. It also checks finiteness, that the
-solution's `spec_hash` matches the spec it is being checked against, and the side profile's **identity
-checks** — under `buy`, `no_sells` (`w ≥ w0`), `trade_balance` (the reported buy is `w − w0`),
-`nonneg_buy`, and `sell_absent`; under `sell`, `no_buys`, `trade_balance`, `nonneg_sell`, and
+solution's `spec_hash` matches the spec it is being checked against, and the order-flow profile's **identity
+checks** — under `inflow`, `no_sells` (`w ≥ w0`), `trade_balance` (the reported buy is `w − w0`),
+`nonneg_buy`, and `sell_absent`; under `outflow`, `no_buys`, `trade_balance`, `nonneg_sell`, and
 `buy_absent`; under either, the box as `lb` and `ub`. Every check is reported under the label of the constraint
 it belongs to (`identity` and `solution` for the engine's own), as `label/residual` where two rows of
 one kind produce residuals of the same name.
@@ -318,13 +318,13 @@ Portfolios in one run can compete for the same trades. The example's `participat
 "trade in each name no more than the ADV budget that higher-priority portfolios' trades on the side the
 run couples through have not already consumed" (and, chain-free, "trade no more than your own
 participation"). That is the only kind of coupling the engine has: **a run couples through its one
-side** — buys under `buy`, sells under `sell` — and a run has no other side, so nothing else a
+side** — buys under `inflow`, sells under `outflow` — and a run has no other side, so nothing else a
 portfolio did can change what a later one may do: a product decision, and everything in this section
-leans on it. What a sell program sold reaches a buy program only as data the desk hands it, never
+leans on it. What an outflow sold reaches an inflow only as data the desk hands it, never
 through the engine.
 
 The mechanism is small. A build reports its portfolio's solve-order key, its **tradable set** — the
-securities the side profile lets it trade on that side: buyable (`ub > w0`; a name frozen or capped at
+securities the order-flow profile lets it trade on that side: buyable (`ub > w0`; a name frozen or capped at
 its current weight is outside it) or sellable (held and `lb < w0`) — and its **consume set**, what its
 own chain readers can see (§5). Portfolios sort by `(key, portfolio_id)`, and that order is the graph
 (`engine/schedule.py`): portfolio *j* depends on every earlier *i* whose tradable set intersects *j*'s
@@ -459,9 +459,9 @@ solve → orders. "Did the data change, or did the solver?" is a one-command que
 
 ## The example, stage by stage
 
-The shipped example is two configs over one book: `configs/example_buy.json`, the desk's buy program
-(`sides: buy`, two `linear` terms — alpha and transaction cost), and `configs/example_sell.json`, its
-sell program (`sides: sell`, three — alpha, tax cost, transaction cost). Each declares a hundred
+The shipped example is two configs over one book: `configs/example_inflow.json`, the desk's inflow
+(`order_flow: inflow`, two `linear` terms — alpha and transaction cost), and `configs/example_outflow.json`, its
+outflow (`order_flow: outflow`, three — alpha, tax cost, transaction cost). Each declares a hundred
 accounts over three securities, five global datasets and two loaded per account (`holdings`, a call
 each with eight in flight — 200 rows in 100 batches — and `details`, twenty-five ids a call, four
 batches), no assembly steps, one rule, up to six typed constraint rows an account (530 rows in all),
@@ -478,13 +478,13 @@ allows 25% participation, so a portfolio may buy at most 25,000 shares — a qua
 single-name cap is 40%, P2's 60%; the cash band is `[0, 0.6]` and the sector bands `TECH ≥ 0.5`,
 `HEALTH ≤ 0.5`.
 
-In the buy program P1 solves first: it takes the quarter of NAV that C's budget allows, 25,000 C, and
+In the inflow P1 solves first: it takes the quarter of NAV that C's budget allows, 25,000 C, and
 buys 1,000 A up to its 40% cap; B's alpha has turned negative, so the remaining 50,000 stays cash — the
 hand-computable optimum, to the share. P2 can buy the same securities, so it waits for P1; when it
 solves, the chain state says C's budget is spent, so it buys 3,000 A to its 60% cap and the run says
 why C is closed: `adv/cumulative_participation` binds. Across the book that is 55 orders in 53
 accounts — 53 in A, and C only for P1 and P3, whose 30% participation leaves 5,000 shares inside its
-own budget. In the sell program neither account waits on C; each harvests B down to the `TECH` floor,
+own budget. In the outflow neither account waits on C; each harvests B down to the `TECH` floor,
 2,000 shares — P1 at the long-term rate, four cents of refund per dollar sold, P2 at the short-term
 rate — and the term that rewards the sale is exact because nothing can rebuy B in the same solve.
 Across the book: 38 orders in 37 accounts, 23 in B and 15 short-term loss harvests of A, with the
@@ -503,7 +503,7 @@ through exactly this.
 3. **Config** — strict models; money as strings; every objective record names a `kind`.
 4. **Resolver** — the function exists, its signature matches the contract, its params validate; every
    term is a known kind with a unique name; the solver is known and installed; then every term is
-   rendered once against a one-security dummy spec under the run's side profile and the problem is
+   rendered once against a one-security dummy spec under the run's order-flow profile and the problem is
    checked for convexity, so a term that raises, reads a side the run lacks, or is not DCP is refused.
    Run by `validate-config`, at the start of `run` before a backend is asked for, and again on every
    worker before it does any work — the same checks in every process.

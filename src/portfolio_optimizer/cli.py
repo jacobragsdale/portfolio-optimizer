@@ -19,8 +19,8 @@ from portfolio_optimizer.config.steps import StepKind
 from portfolio_optimizer.domain.constraints import constraint_kinds, parse_constraint
 from portfolio_optimizer.domain.data import IoContext
 from portfolio_optimizer.domain.objective import TermSpecError, parse_terms, term_kinds
+from portfolio_optimizer.domain.order_flow import profile_for
 from portfolio_optimizer.domain.results import ChainState, PortfolioResult, ProblemSpec, Solution, Tolerances
-from portfolio_optimizer.domain.sides import profile_for
 from portfolio_optimizer.domain.types import Clock
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.environment import read_git_info
@@ -237,7 +237,7 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
     except (TermSpecError, ValueError) as error:
         stderr.write(f"the manifest names a kind this environment does not know: {error}\n")
         return EXIT_INPUT_REJECTED
-    profile = profile_for(str(manifest.config.resolved["sides"]))
+    profile = profile_for(str(manifest.config.resolved["order_flow"]))
     report = verify(spec, solution, chain, terms, constraints, profile=profile, tolerances=Tolerances(violation=record.check.tolerance))
     stdout.writelines(
         f"  {'ok  ' if check.passed else 'FAIL'} {check.display:32} violation {check.violation:.3e} (tol {check.tolerance:.1e}){' worst ' + check.worst_security if check.worst_security else ''}{' [binding]' if check.active else ''}\n"

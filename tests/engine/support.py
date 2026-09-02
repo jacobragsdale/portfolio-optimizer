@@ -35,20 +35,20 @@ def execution_on(scheduler_address: str, *, max_workers: int = 2) -> ExecutionSe
 # --- the example book, and variations of it with a hand-checked answer each ---
 
 BUY_ORDERS_P1: Orders = [{"security_id": "A", "side": "BUY", "quantity": 1000}, {"security_id": "C", "side": "BUY", "quantity": 25000}]
-"""P1 under the buy program: 400,000 of cash on a NAV of 1,000,000, A 3,000 @100 and B 6,000 @50 held.
+"""P1 under the inflow: 400,000 of cash on a NAV of 1,000,000, A 3,000 @100 and B 6,000 @50 held.
 
 C has the best alpha and is bought to its ADV budget, a quarter of NAV: 25,000 shares. A is next and
 goes to P1's 40% cap: 1,000 shares. B has turned negative, so the last 50,000 stays cash — the cash
 floor is 0, not a target.
 """
 BUY_ORDERS_P2: Orders = [{"security_id": "A", "side": "BUY", "quantity": 3000}]
-"""P2 under the buy program, behind P1: the same book with a 60% cap. P1 spent C's budget for the day, so the cash goes to A, up to the cap: 3,000 shares, and 100,000 stays cash."""
+"""P2 under the inflow, behind P1: the same book with a 60% cap. P1 spent C's budget for the day, so the cash goes to A, up to the cap: 3,000 shares, and 100,000 stays cash."""
 SELL_ORDERS_P1: Orders = [{"security_id": "B", "side": "SELL", "quantity": 2000}]
-"""P1 under the sell program: B is held at 60 against a price of 50, a loss its long-term rate turns into 4 cents of tax refund per dollar sold, so it is harvested — down to where the ``TECH`` floor of 0.5 stops it, 2,000 shares. A is at cost and worth holding."""
+"""P1 under the outflow: B is held at 60 against a price of 50, a loss its long-term rate turns into 4 cents of tax refund per dollar sold, so it is harvested — down to where the ``TECH`` floor of 0.5 stops it, 2,000 shares. A is at cost and worth holding."""
 SELL_ORDERS_P2: Orders = [{"security_id": "B", "side": "SELL", "quantity": 2000}]
-"""P2 under the sell program: the same harvest at its short-term rate, to the same floor; B's budget of 250,000 shares a day is nowhere near spent by P1."""
+"""P2 under the outflow: the same harvest at its short-term rate, to the same floor; B's budget of 250,000 shares a day is nowhere near spent by P1."""
 THIN_B_ORDERS_P2: Orders = [{"security_id": "B", "side": "SELL", "quantity": 1000}]
-"""P2 under the sell program over ``thin_b_book``: B trades 12,000 shares a day, a quarter of which is 3,000; P1 sold 2,000, so P2 may sell the 1,000 left."""
+"""P2 under the outflow over ``thin_b_book``: B trades 12,000 shares a day, a quarter of which is 3,000; P1 sold 2,000, so P2 may sell the 1,000 left."""
 
 
 def example_book(tmp_path: Path, **files: str) -> Path:
@@ -98,7 +98,7 @@ def uncoupled_book(tmp_path: Path, **files: str) -> Path:
 
 
 def thin_b_book(tmp_path: Path) -> Path:
-    """The example data with B's daily volume cut to 12,000 shares: what makes the sell program's two accounts compete for a name's ADV budget (``THIN_B_ORDERS_P2``)."""
+    """The example data with B's daily volume cut to 12,000 shares: what makes the outflow's two accounts compete for a name's ADV budget (``THIN_B_ORDERS_P2``)."""
     universe = "security_id,price,sector,adv_shares,lot_size,restricted,alpha,tcost_bps\nA,100,TECH,1000000,1,false,0.03,5\nB,50,TECH,12000,1,false,-0.01,5\nC,10,HEALTH,100000,1,false,0.05,20\n"
     return example_book(tmp_path, **{"universe.csv": universe})
 

@@ -30,7 +30,7 @@ Ways to validate a config:
 | Method | What it checks |
 |---|---|
 | `"$schema": "./run-config.schema.json"` at the top of the file | Live validation and completion in editors that honor `$schema` (VS Code, JetBrains). The key is accepted and ignored by the engine. |
-| `uv run portfolio-optimizer validate-config CONFIG` | Everything the config can be checked for without data: the models, plus importing every step, checking signatures, validating params (including custom steps), parsing every objective term as its kind, checking the cvxpy solver, and rendering every term once against a one-security dummy spec under the run's side profile. Constraints are loaded data, checked per portfolio at build. Prints the config hash, how dependencies between portfolios will be derived, one line per resolved step, and one per term as `name (Kind)`. The same resolution runs at the start of `run` and on every worker. |
+| `uv run portfolio-optimizer validate-config CONFIG` | Everything the config can be checked for without data: the models, plus importing every step, checking signatures, validating params (including custom steps), parsing every objective term as its kind, checking the cvxpy solver, and rendering every term once against a one-security dummy spec under the run's order-flow profile. Constraints are loaded data, checked per portfolio at build. Prints the config hash, how dependencies between portfolios will be derived, one line per resolved step, and one per term as `name (Kind)`. The same resolution runs at the start of `run` and on every worker. |
 | Any draft 2020-12 validator (`check-jsonschema`, `jsonschema`, `ajv`) against the schema file | The schema alone — suitable for CI pipelines that do not install the engine. |
 
 `uv run portfolio-optimizer steps` lists every step a bare name can resolve to, by kind and with its
@@ -81,7 +81,7 @@ key on) and `weight` (a string, default `"1"`; negative for a reward). The shipp
 
 A kind an installed package publishes in the entry-point group `portfolio_optimizer.term` is accepted
 by name like a shipped one. Under the shipped `cvxpy` step the objective needs at least one term, and a
-term that reads a decision vector the run's `sides` lacks, or is not convex, is refused at resolve.
+term that reads a decision vector the run's `order_flow` lacks, or is not convex, is refused at resolve.
 
 ## `solve`
 
@@ -207,7 +207,7 @@ spec's own vectors or an exported universe column. The numbers stay in the data;
 
 The per-security box `lb ≤ w ≤ ub` — the bounds the build derives from the style's `max_weight`, the
 universe's optional `min_weight`/`max_weight` columns, and the `restricted` flag — is part of every
-solve's trade identity, not a row; so is what the trade means under the run's `sides` — `w ≥ w0` with
+solve's trade identity, not a row; so is what the trade means under the run's `order_flow` — `w ≥ w0` with
 `buy = w − w0`, or `w ≤ w0` with `sell = w0 − w`.
 
 The shipped example's rows for one account (`examples/data/constraints.csv`):

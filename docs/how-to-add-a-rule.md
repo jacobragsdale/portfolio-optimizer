@@ -82,10 +82,10 @@ argument is reported here, with the function's qualified name and the reason.
 ## 4. If you want portfolios to solve concurrently, shrink the tradable set
 
 Portfolios wait on each other only when they can both *trade* the same security on the side the run
-couples through — buys under `sides: buy`, sells under `sell`. A rule that takes a name out of that
+couples through — buys under `order_flow: inflow`, sells under `outflow`. A rule that takes a name out of that
 set removes every dependency that ran through it: marking a name `restricted` freezes it at its
-current weight whichever side the run trades (as `restrict_low_liquidity` does); in a buy run, setting
-its `max_weight` to the current weight takes it out of the buyable set, and in a sell run a
+current weight whichever order flow the run is (as `restrict_low_liquidity` does); in an inflow, setting
+its `max_weight` to the current weight takes it out of the buyable set, and in an outflow a
 per-security `min_weight` at the current weight does the mirror. A
 book where every account holds the same bonds but nobody trades them solves as many independent groups
 once a rule says so; the manifest's `schedule` record shows how many. A rule that needs what other

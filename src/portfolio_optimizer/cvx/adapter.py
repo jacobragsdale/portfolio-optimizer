@@ -17,8 +17,8 @@ from cvxpy.error import SolverError
 from scipy.sparse import csr_array
 
 from portfolio_optimizer.domain.constraints import Vector
+from portfolio_optimizer.domain.order_flow import OrderFlow
 from portfolio_optimizer.domain.results import F64, Flags, SolveStatus
-from portfolio_optimizer.domain.sides import Sides
 from portfolio_optimizer.solving import SOLVERS, SolveResult, solver_failures, solver_version
 
 type Expr = cp.Expression
@@ -38,27 +38,27 @@ _STATUS: Mapping[str, SolveStatus] = {
 class SideUnavailableError(LookupError):
     """A term or constraint reached for a decision vector the run's side does not have."""
 
-    def __init__(self, side: str, sides: Sides) -> None:
+    def __init__(self, side: str, order_flow: OrderFlow) -> None:
         self.side = side
-        self.sides = sides
-        super().__init__(f"a {sides!r} run has no {side!r} vector; this term or constraint reads x.{side}, so it cannot run under sides={sides!r}")
+        self.order_flow = order_flow
+        super().__init__(f"order flow {order_flow!r} has no {side!r} vector; this term or constraint reads x.{side}, so it cannot run under order_flow={order_flow!r}")
 
 
 @dataclass(frozen=True, slots=True, eq=False)
 class DecisionVars:
-    """The decision variables of one solve, as fractions of NAV; what each is depends on the run's side.
+    """The decision variables of one solve, as fractions of NAV; what each is depends on the run's order flow.
 
-    ``w`` is always a variable, the target weight. ``buy`` or ``sell`` is what the side profile made
+    ``w`` is always a variable, the target weight. ``buy`` or ``sell`` is what the order-flow profile made
     it — an affine expression of ``w`` on the side the run has — and absent on the side it lacks,
     where reading it raises :class:`SideUnavailableError` (dry construction at ``validate-config`` is
     where that surfaces). A term that means "the amount traded" reads ``trade``, and one that means
     "the amount traded on the side the run couples through" reads ``coupled``; both exist under
-    every side, and under either they are the one side's vector.
+    every order flow, and under either they are the one side's vector.
     """
 
     w: cp.Variable
     n: int
-    sides: Sides
+    order_flow: OrderFlow
     trade: Expr
     coupled: Expr
     _buy: Expr | None = field(default=None, repr=False)
@@ -66,16 +66,16 @@ class DecisionVars:
 
     @property
     def buy(self) -> Expr:
-        """The non-negative buy, as a fraction of NAV; absent in a sell-only run."""
+        """The non-negative buy, as a fraction of NAV; absent in an outflow."""
         if self._buy is None:
-            raise SideUnavailableError(side="buy", sides=self.sides)
+            raise SideUnavailableError(side="buy", order_flow=self.order_flow)
         return self._buy
 
     @property
     def sell(self) -> Expr:
-        """The non-negative sell, as a fraction of NAV; absent in a buy-only run."""
+        """The non-negative sell, as a fraction of NAV; absent in an inflow."""
         if self._sell is None:
-            raise SideUnavailableError(side="sell", sides=self.sides)
+            raise SideUnavailableError(side="sell", order_flow=self.order_flow)
         return self._sell
 
     def vector(self, name: Vector) -> Expr:
@@ -121,7 +121,7 @@ def _constraint(value: object) -> Constraint:
 
 
 def variable(n: int, name: str) -> cp.Variable:
-    """A fresh vector variable of length ``n``; the side profile decides which ones a solve has."""
+    """A fresh vector variable of length ``n``; the order-flow profile decides which ones a solve has."""
     return cp.Variable(n, name=name)
 
 

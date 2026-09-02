@@ -25,7 +25,7 @@ def cli(argv: Sequence[str], env: dict[str, str] | None = None, run_id: str = "r
 @pytest.fixture
 def config(tmp_path: Path) -> Path:
     """The shipped config with the mock services' latency removed: the file a smoke test can afford to run."""
-    path = tmp_path / "example_buy.json"
+    path = tmp_path / "example_inflow.json"
     path.write_text(json.dumps(example_body()))
     return path
 

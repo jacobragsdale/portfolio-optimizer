@@ -3,7 +3,7 @@
 A solve step takes a :class:`~portfolio_optimizer.solving.SolveRequest` and returns a
 :class:`~portfolio_optimizer.solving.SolveResult`. ``cvxpy`` is the default: it renders the
 portfolio's typed constraint rows and the configured typed terms through their own ``to_cvxpy``,
-adds the side profile's identity, and solves with the solver its ``params`` name. ``pro_rata_fill``
+adds the order-flow profile's identity, and solves with the solver its ``params`` name. ``pro_rata_fill``
 is the other shipped step and the shape to copy for a side that needs no optimizer: a numpy
 function that reads the spec and the chain and returns weights, verified afterwards like any solve.
 
@@ -17,7 +17,7 @@ import numpy as np
 from pydantic import Field
 
 from portfolio_optimizer.cvx.adapter import ConstraintSet, ObjectiveTerm, solve_problem
-from portfolio_optimizer.cvx.sides import decision_variables, identity_constraints
+from portfolio_optimizer.cvx.order_flow import decision_variables, identity_constraints
 from portfolio_optimizer.domain.constraints import adv_remaining, parse_constraints
 from portfolio_optimizer.domain.results import F64, MissingSpecColumnError
 from portfolio_optimizer.domain.types import Params
@@ -56,9 +56,9 @@ def cvxpy(request: SolveRequest, params: CvxpyParams) -> SolveResult:
         msg = f"the constraint rows carry no `kind` column; the cvxpy step interprets typed rows only, and these {len(request.constraints)} row(s) are in another vocabulary"
         raise SolveSetupError(msg)
     typed = parsed.typed if parsed is not None else ()
-    x = decision_variables(request.profile.sides, spec)
+    x = decision_variables(request.profile.order_flow, spec)
     terms = [_term(term.to_cvxpy(x, spec, chain), term.name) for term in request.terms]
-    constraints = [identity_constraints(request.profile.sides, x, spec), *(_constraint_set(model.to_cvxpy(x, spec, chain), model.name) for model in typed)]
+    constraints = [identity_constraints(request.profile.order_flow, x, spec), *(_constraint_set(model.to_cvxpy(x, spec, chain), model.name) for model in typed)]
     result = solve_problem(x, terms, constraints, solver=params.solver, options=params.options, time_limit_s=params.time_limit_s, verbose=params.verbose)
     return SolveResult(
         w=result.w,

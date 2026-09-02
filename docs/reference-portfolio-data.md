@@ -95,7 +95,7 @@ goes into the manifest.
 | `flags` | `Mapping[str, bool[n]]` | Named per-security masks: every boolean universe column, `restricted` included. What a constraint's `scope` names. |
 | `groups` | `Mapping[str, Grouping]` | Every string universe column as a sparse membership matrix: `names`, the sorted distinct values, and `matrix`, *K*-by-*n* CSR with one nonzero per security. What `group_limit` reads. |
 | `scalars` | `Mapping[str, float]` | Every number on the account's `details` row, declared or extra: `cash_lb`, `cash_ub`, `max_turnover`, `max_weight`, `max_adv_participation`, `min_trade_notional`, `nav`, `cash`, the tax rates, and any numeric extra column. What a `{"scalar": ...}` bound names. |
-| `buyable`, `sellable` | properties, `bool[n]` | `ub > w0`; held and `lb < w0`. The sets a side profile couples the portfolio through. |
+| `buyable`, `sellable` | properties, `bool[n]` | `ub > w0`; held and `lb < w0`. The sets a order-flow profile couples the portfolio through. |
 
 Accessors — `spec.column(name)` (a fixed vector or an exported column; `spec.column_names` lists both),
 `spec.flag(name)`, `spec.scalar(name)`, `spec.group(column)` — raise `MissingSpecColumnError` naming

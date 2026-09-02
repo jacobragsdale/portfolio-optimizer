@@ -1,6 +1,6 @@
 # Tutorial: your first run
 
-In this tutorial you will run the shipped example — a buy program and a sell program over one book of a
+In this tutorial you will run the shipped example — an inflow and an outflow over one book of a
 hundred accounts and three securities — inspect the orders each produces, prove a run is reproducible,
 and re-verify a solution without the solver.
 
@@ -24,7 +24,7 @@ or which cluster the run provisions for itself.
 
 ## 2. Read the config, then check it before touching any data
 
-Open `configs/example_buy.json`. That one file is the whole run: the side it trades, the data to load,
+Open `configs/example_inflow.json`. That one file is the whole run: its order flow, the data to load,
 the rules to apply, the terms to minimize, the solve step and its solver, the verifier's tolerances, and
 where the orders go. Each step is named by an ordinary Python function in `src/portfolio_optimizer/` —
 the `load_holdings` loader, the `restrict_low_liquidity` rule, the `cvxpy` solve — and each objective
@@ -33,15 +33,15 @@ term by a typed kind, `linear`. The README walks through the file
 tutorial. One thing is not in the file: the instant the run is *as of*. That is an argument of `run`,
 so one config runs every day under one hash.
 
-Beside it is `configs/example_sell.json`: the same wiring with the run's name, `sides`, and one more
-objective term changed. A run trades one side — a desk's buy program and its sell program are two runs
-over one snapshot — and the sell program's extra term, the tax on what is sold, reads a vector the buy
-program does not have.
+Beside it is `configs/example_outflow.json`: the same wiring with the run's name, `order_flow`, and one more
+objective term changed. A run is one order flow — a desk's inflow and its outflow are two runs
+over one snapshot — and the outflow's extra term, the tax on what is sold, reads a vector the
+inflow does not have.
 
-Now ask the engine to check the buy program:
+Now ask the engine to check the inflow:
 
 ```bash
-uv run portfolio-optimizer validate-config configs/example_buy.json
+uv run portfolio-optimizer validate-config configs/example_inflow.json
 ```
 
 You should see `config ok` followed by one line per step and one per term:
@@ -68,10 +68,10 @@ for the ones ahead of it. `dependencies overlap` on the first line says a portfo
 portfolios it shares a tradable security with. `uv run portfolio-optimizer steps` lists every step and
 every term and constraint kind this environment can name.
 
-## 3. Run the buy program
+## 3. Run the inflow
 
 ```bash
-uv run portfolio-optimizer run configs/example_buy.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
+uv run portfolio-optimizer run configs/example_inflow.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
 ```
 
 `--as-of` is the instant the run is as of — every loader receives it, and the build decides each lot's
@@ -154,13 +154,13 @@ uv run python -c "import pandas as pd, glob; print(pd.read_parquet(glob.glob('ou
 You should see 55 orders across 53 accounts, every one a `BUY`. P1's two are the ones to check: buy
 1,000 A and buy 25,000 C — the hand-computed optimum, to the share. P2's one is buy 3,000 A.
 
-## 5. Run the sell program over the same book
+## 5. Run the outflow over the same book
 
 ```bash
-uv run portfolio-optimizer run configs/example_sell.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
+uv run portfolio-optimizer run configs/example_outflow.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
 ```
 
-Same data, same instant, the other side. Expected:
+Same data, same instant, the other order flow. Expected:
 
 ```text
   P1: solved, 1 order(s); binding: lb, sector_floor/group_limit
@@ -170,24 +170,24 @@ Same data, same instant, the other side. Expected:
 
 Both P1 and P2 hold B at a cost of 60 against a price of 50. That loss is worth money: at P1's
 long-term rate it is 4 cents of tax refund on every dollar sold, far more than the alpha given up, so
-the sell program harvests it — down to where the account's `TECH` floor of 50% stops it, which is
+the outflow harvests it — down to where the account's `TECH` floor of 50% stops it, which is
 2,000 shares each. A is at cost and worth holding, so nothing else moves. The output names the floor as
 what bound. Down the book, accounts holding B at a gain keep it, because the tax on the gain outweighs
 its small negative alpha, and from the thirty-fourth account on `adv/cumulative_participation` binds
 instead: the accounts ahead have sold B's day.
 
 The orders file for this run holds 38 orders across 37 accounts, every one a `SELL`, and its manifest
-records `"sides": "sell"`. Nothing crosses between the two programs inside the engine: each is a pure
-function of the snapshot it was given. A desk that runs the buy program after the sells settle runs it
-over the new snapshot, and [how to run the buy program and the sell program](how-to-run-one-side.md)
-covers what carries across, including keeping the buy program off what the sell program just harvested.
+records `"order_flow": "outflow"`. Nothing crosses between the two order flows inside the engine: each is a pure
+function of the snapshot it was given. A desk that runs the inflow after the sells settle runs it
+over the new snapshot, and [how to run the inflow and the outflow](how-to-run-an-order-flow.md)
+covers what carries across, including keeping the inflow off what the outflow just harvested.
 
 ## 6. Prove the run is reproducible
 
-Run the buy program a second time, as of the same instant, and compare the two manifests:
+Run the inflow a second time, as of the same instant, and compare the two manifests:
 
 ```bash
-uv run portfolio-optimizer run configs/example_buy.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
+uv run portfolio-optimizer run configs/example_inflow.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
 uv run portfolio-optimizer diff-manifests out/<first-run-id>/manifest.json out/<second-run-id>/manifest.json
 ```
 
@@ -208,7 +208,7 @@ objective equals the solver's to nine digits.
 
 ## What you accomplished
 
-You ran the engine end to end on both sides, saw a cross-portfolio constraint change a second
+You ran the engine end to end under both order flows, saw a cross-portfolio constraint change a second
 portfolio's answer, confirmed two runs are byte-for-byte equivalent where it matters, and audited a
 solution independently.
 

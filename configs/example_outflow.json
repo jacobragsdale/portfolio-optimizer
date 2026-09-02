@@ -1,6 +1,6 @@
 {
-  "run": {"name": "example_sell", "tags": {"desk": "template"}},
-  "sides": "sell",
+  "run": {"name": "example_outflow", "tags": {"desk": "template"}},
+  "order_flow": "outflow",
   "datasets": {
     "portfolios": {"loader": "load_portfolios"},
     "holdings": {

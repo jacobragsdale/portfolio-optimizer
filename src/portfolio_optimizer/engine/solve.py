@@ -1,7 +1,7 @@
 """Hand one portfolio to the configured solve step and classify what comes back.
 
 The step — the shipped cvxpy one, a firm's library, a pure function — returns weights; this module
-turns them into a :class:`~portfolio_optimizer.domain.results.Solution` through the side profile's
+turns them into a :class:`~portfolio_optimizer.domain.results.Solution` through the order-flow profile's
 split, explains an infeasibility with arithmetic, and raises for everything else.
 """
 
@@ -13,8 +13,8 @@ import pandas as pd
 
 from portfolio_optimizer.config.resolve import ResolvedConfig
 from portfolio_optimizer.config.steps import ResolvedStep
+from portfolio_optimizer.domain.order_flow import OrderFlowProfile
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus
-from portfolio_optimizer.domain.sides import SideProfile
 from portfolio_optimizer.engine.environment import package_versions
 from portfolio_optimizer.solving import SolveRequest, SolveResult, SolveSetupError
 
@@ -102,7 +102,7 @@ def _step_version(step: ResolvedStep) -> str:
     return next(iter(package_versions([step.qualname.partition(":")[0]]).values()), "unknown")
 
 
-def diagnose_infeasibility(spec: ProblemSpec, chain: ChainState, *, profile: SideProfile) -> InfeasibilityReport:
+def diagnose_infeasibility(spec: ProblemSpec, chain: ChainState, *, profile: OrderFlowProfile) -> InfeasibilityReport:
     """Arithmetic checks that explain the common infeasibilities without another solve; the profile adds the ones its side creates.
 
     Each check reads what the spec carries — the cash bounds, the turnover cap, the ADV capacity —

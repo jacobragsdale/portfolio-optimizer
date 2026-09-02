@@ -123,7 +123,7 @@ class ProblemSpec:
     ``flags`` are per-security booleans, ``groups`` are categorical columns as membership matrices,
     and ``scalars`` are per-account numbers (``cash_ub``, ``max_turnover``, and whatever else the
     account's row carried). A term or constraint reads any of them by name and refuses, by name,
-    what the spec does not carry. :attr:`buyable` and :attr:`sellable` are the sets a side profile
+    what the spec does not carry. :attr:`buyable` and :attr:`sellable` are the sets a order-flow profile
     couples this portfolio through.
     """
 

@@ -35,8 +35,8 @@ _ENUM_DESCRIPTIONS: Mapping[str, str] = {
     "JoinCardinality": "Expected key cardinality of a join, enforced by pandas.",
     "JoinHow": "Join type: keep every left row, or only matched rows.",
     "OnError": "What happens after a portfolio fails.",
-    "Sides": "Which side the run trades: `buy` or `sell`; see `sides`.",
-    "Vector": "The decision quantity a term or constraint reads: the target weight `w`, the `buy` or `sell` split, or `trade`, the amount traded on the sides the run has.",
+    "OrderFlow": "The run's order flow: `inflow` (the run buys) or `outflow` (the run sells); see `order_flow`.",
+    "Vector": "The decision quantity a term or constraint reads: the target weight `w`, the `buy` or `sell` split, or `trade`, the amount traded on the side the run has.",
 }
 
 _STEP_DEFINITIONS: Mapping[StepKind, tuple[str, str]] = {

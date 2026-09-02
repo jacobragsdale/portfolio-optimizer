@@ -15,15 +15,15 @@ import numpy as np
 
 from portfolio_optimizer.domain.constraints import TypedConstraint, parse_constraint
 from portfolio_optimizer.domain.objective import TypedTerm
+from portfolio_optimizer.domain.order_flow import OrderFlowProfile
 from portfolio_optimizer.domain.results import F64, ChainState, ConstraintCheck, ConstraintReport, ProblemSpec, Solution, Tolerances
-from portfolio_optimizer.domain.sides import SideProfile
 
 DEFAULT_TOLERANCES = Tolerances()
 
 SOLUTION_LABEL = "solution"
 """Label of the checks on the solution itself: finiteness and the spec hash."""
 IDENTITY_LABEL = "identity"
-"""Label of the side profile's trade-identity and box checks."""
+"""Label of the order-flow profile's trade-identity and box checks."""
 
 BOX: frozenset[str] = frozenset({"lb", "ub"})
 """The identity checks that can bind in a way worth reporting: the spec's own bounds. The rest hold as equalities or at zero on every name, so "binding" means nothing for them."""
@@ -35,7 +35,14 @@ def constraints_of(solution: Solution) -> tuple[TypedConstraint, ...]:
 
 
 def verify(
-    spec: ProblemSpec, solution: Solution, chain: ChainState, terms: Sequence[TypedTerm], constraints: Sequence[TypedConstraint], *, profile: SideProfile, tolerances: Tolerances = DEFAULT_TOLERANCES
+    spec: ProblemSpec,
+    solution: Solution,
+    chain: ChainState,
+    terms: Sequence[TypedTerm],
+    constraints: Sequence[TypedConstraint],
+    *,
+    profile: OrderFlowProfile,
+    tolerances: Tolerances = DEFAULT_TOLERANCES,
 ) -> ConstraintReport:
     """Recompute the trade identity, every constraint's violation, and the objective, and compare with the solver.
 

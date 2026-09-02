@@ -33,9 +33,9 @@ import pandas as pd
 from pydantic import Field, field_validator, model_validator
 from scipy.sparse import csr_array, vstack
 
+from portfolio_optimizer.domain.order_flow import OrderFlowProfile
 from portfolio_optimizer.domain.registry import KindError, kinds_from, parse_kind
 from portfolio_optimizer.domain.results import F64, ChainState, Flags, MissingSpecColumnError, ProblemSpec, Solution
-from portfolio_optimizer.domain.sides import SideProfile
 from portfolio_optimizer.domain.types import StrictModel
 
 if TYPE_CHECKING:
@@ -55,7 +55,7 @@ def bounds_above(direction: Direction) -> bool:
 
 
 type Vector = Literal["w", "buy", "sell", "trade"]
-"""The decision quantity a constraint or term bounds. ``trade`` is ``buy + sell``, or the one side a one-sided run has."""
+"""The decision quantity a constraint or term bounds. ``trade`` is ``buy + sell``, or the one side the run has."""
 
 type GroupBounds = tuple[tuple[str, Decimal], ...]
 """Per-group bounds as sorted ``(group, bound)`` pairs — the hashable form a bounds dictionary is canonicalized to."""
@@ -119,7 +119,7 @@ def effective_bounds(direction: Direction, allow_current: bool, bounds: F64, cur
 
 
 def vector_values(solution: Solution, vector: Vector) -> F64:
-    """The solved values of a decision quantity; ``trade`` is the two sides' sum, which is the one side's value in a one-sided run."""
+    """The solved values of a decision quantity; ``trade`` is the two sides' sum, which is the one side's value under an inflow or an outflow."""
     if vector == "w":
         return solution.w
     if vector == "buy":
@@ -183,7 +183,7 @@ class TypedConstraint(StrictModel):
     reads_chain: ClassVar[bool] = False
     """Whether this kind reads what higher-priority portfolios traded; the schedule is derived from this."""
 
-    def coupling_securities(self, spec: ProblemSpec, profile: SideProfile) -> Flags:
+    def coupling_securities(self, spec: ProblemSpec, profile: OrderFlowProfile) -> Flags:
         """The securities this constraint couples its portfolio through: none unless it reads the chain, its scope of the tradable set when it does."""
         if not self.reads_chain:
             return np.zeros(spec.n, dtype=np.bool_)
@@ -202,7 +202,7 @@ class TypedConstraint(StrictModel):
         except MissingSpecColumnError as error:
             yield str(error)
 
-    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> list[tuple[str, F64]]:
+    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> list[tuple[str, F64]]:
         """Violation vectors for the verifier, positive where breached beyond ``tolerance``; plain numpy."""
         raise NotImplementedError
 
@@ -247,7 +247,7 @@ class WeightLimit(TypedConstraint):
         return self._effective(vector_bound(self.bounds, spec), starting_values(spec, self.vector)) * mask
 
     @override
-    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> list[tuple[str, F64]]:
+    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> list[tuple[str, F64]]:
         """Per scoped security: the vector against the bound; outside the scope the residual is zero by construction."""
         del chain, profile
         values = vector_values(solution, self.vector) * self.scope_mask(spec).astype(np.float64)
@@ -318,7 +318,7 @@ class GroupLimit(TypedConstraint):
         return self._effective(np.array([float(bound) for _, bound in self.groups(spec)]), current)
 
     @override
-    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> list[tuple[str, F64]]:
+    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> list[tuple[str, F64]]:
         """Per bounded group: the scoped membership row times the vector, against the (possibly start-loosened) bound."""
         del chain, profile
         membership = self._membership(spec)
@@ -359,7 +359,7 @@ class ExposureLimit(TypedConstraint):
         return float(self._effective(np.array([scalar_bound(self.bounds, spec)]), np.array([current]))[0])
 
     @override
-    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> list[tuple[str, F64]]:
+    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> list[tuple[str, F64]]:
         """The scoped dot product against the bound, start-loosened where the policy allows."""
         del chain, profile
         exposure = float((self._loadings(spec) * vector_values(solution, self.vector)).sum())
@@ -401,7 +401,7 @@ class CashLimit(TypedConstraint):
         return float(self._effective(np.array([scalar_bound(self.bounds, spec)]), np.array([current]))[0])
 
     @override
-    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> list[tuple[str, F64]]:
+    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> list[tuple[str, F64]]:
         del chain, profile
         cash = 1.0 - float(solution.w.sum())
         return [("cash_limit", self._signed(np.array([cash]), np.array([self._bound(spec)])))]
@@ -435,7 +435,7 @@ class TurnoverLimit(TypedConstraint):
         return float(self._effective(np.array([scalar_bound(self.bounds, spec)]), np.array([current]))[0])
 
     @override
-    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> list[tuple[str, F64]]:
+    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> list[tuple[str, F64]]:
         del chain, profile
         summed = float((vector_values(solution, self.vector) * self.scope_mask(spec)).sum())
         return [("turnover_limit", self._signed(np.array([summed]), np.array([self._bound(spec)])))]
@@ -491,7 +491,7 @@ class ParticipationLimit(TypedConstraint):
         return adv_remaining(spec, chain, float(self.bounds))
 
     @override
-    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: SideProfile) -> list[tuple[str, F64]]:
+    def residual(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> list[tuple[str, F64]]:
         """Two scoped checks, the twins of the rendered constraints: own trade within the budget, and the coupled side within what predecessors left."""
         mask = self.scope_mask(spec).astype(np.float64)
         trade = (solution.buy + solution.sell) * mask
@@ -578,7 +578,7 @@ def frame_reads_chain(frame: pd.DataFrame) -> bool:
     return any(is_missing(kind) or kind in chain_kinds for kind in frame["kind"])
 
 
-def consumed_securities(parsed: ParsedConstraints | None, spec: ProblemSpec, profile: SideProfile, *, chain_aware_terms: bool, opaque_solve: bool) -> tuple[str, ...]:
+def consumed_securities(parsed: ParsedConstraints | None, spec: ProblemSpec, profile: OrderFlowProfile, *, chain_aware_terms: bool, opaque_solve: bool) -> tuple[str, ...]:
     """The securities predecessors' trades can reach this portfolio through, sorted — the dependency graph's consume side.
 
     Empty when nothing can read the chain: the portfolio then waits for no one. The union of the
