@@ -425,12 +425,16 @@ that fails has an unknown tradable set and is treated as overlapping everything 
 **0** when every portfolio solved, **1** when any failed, **2** when the inputs were rejected before
 anything was solved — invalid settings, a bad `--as-of`, a config that does not validate or resolve,
 datasets that fail loading or assembly — and **3** for infrastructure: a sink failure, a cluster that
-never came up, a config file that cannot be read. A portfolio that failed at `solve` is the one kind
-of failure with a command behind it: `run CONFIG --retry-of MANIFEST` runs a rebalance config over
-exactly the portfolios the manifest recorded as failed at that stage — written inline as the book,
-the run tagged `retry_of` — with nothing carried from the failed run but the ids. A load failure or
-a skipped portfolio is the original run's to re-run; the retry refuses a manifest without a failed
-solve, and a config that is not `order_flow: rebalance`.
+never came up, a config file that cannot be read. A failure has one command behind it:
+`run CONFIG --retry-of MANIFEST` runs *this* config over exactly the portfolios the manifest
+recorded as failed at the stages `--retry-stages` names (`solve` by default; `skipped` is what
+`fail_fast` left behind a failure; `--retry-errors` narrows to exception types) — written inline as
+the book, in their recorded solve order, the run tagged `retry_of` — with nothing carried from the
+failed run but the ids. Which config is the desk's call: the same wiring with the build's
+`hold_breached_starts` on for a start the order flow could not trade out of, a looser `post_solve`
+or another solver for a solve that hit its limit or failed verification, a rebalance, or the
+original config unchanged over the skipped tail. The retry refuses a manifest in which nothing
+matches, naming what did fail.
 
 ## 11. Persist, publish, record
 

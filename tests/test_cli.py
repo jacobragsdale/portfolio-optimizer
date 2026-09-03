@@ -63,8 +63,12 @@ def test_run_produces_the_golden_orders_and_a_manifest(tmp_path: Path, env: dict
     assert manifest["as_of_date"] == AS_OF.isoformat().replace("+00:00", "Z") and manifest["tags"] == {"desk": "template"}
 
 
-def test_retry_of_reruns_the_failed_solves_as_a_clean_rebalance_and_refuses_anything_else(tmp_path: Path, env: dict[str, str], config: Path) -> None:
-    """P1 capped at a quarter holds A and B at 0.3 each, which the inflow cannot sell down; under ``fail_fast`` P2 is skipped behind it. The retry is the rebalance config over P1 alone."""
+def test_retry_of_reruns_the_failed_portfolios_under_whatever_config_the_desk_writes(tmp_path: Path, env: dict[str, str], config: Path) -> None:
+    """P1 capped at a quarter holds A and B at 0.3 each, which the inflow cannot sell down; under ``fail_fast`` P2 is skipped behind it.
+
+    Two retries of that run: the rebalance config over the failed solve alone, the default; and the
+    inflow itself with the box held, over the failed solve and the portfolio skipped behind it.
+    """
     capped = env | {"PORTFOLIO_OPTIMIZER_DATA_ROOT": str(example_book(tmp_path / "capped", **{"details.csv": details_csv(P1={"max_weight": "0.25"})}))}
     code, out, _ = cli(["run", str(config), "--as-of", AS_OF_TEXT], capped, run_id="failed")
     assert code == 1 and "P1: FAILED at solve: InfeasibleError" in out and "P2: FAILED at skipped" in out
@@ -73,16 +77,29 @@ def test_retry_of_reruns_the_failed_solves_as_a_clean_rebalance_and_refuses_anyt
     rebalance.write_text(json.dumps(example_body() | {"order_flow": "rebalance"}))
     code, out, err = cli(["run", str(rebalance), "--as-of", AS_OF_TEXT, "--retry-of", str(failed_manifest)], capped, run_id="retry")
     assert code == 0, err
-    assert "P1: solved" in out and "P2" not in out, "the retry is over the failed solve alone; the skipped portfolio is the original run's business"
+    assert "P1: solved" in out and "P2" not in out, "the default retries the failed solves alone"
     manifest = json.loads((tmp_path / "out" / "retry" / "manifest.json").read_text())
     assert manifest["tags"] == {"desk": "template", "retry_of": "failed"}
     assert manifest["config"]["resolved"]["datasets"]["portfolios"]["ids"] == ["P1"], "the ids are the retry's book, written inline"
     orders = pd.read_parquet(tmp_path / "out" / "retry" / "orders" / "orders.parquet")
     assert set(orders["side"]) == {"BUY", "SELL"} and orders["portfolio_id"].unique().tolist() == ["P1"], "A and B are sold down to the cap and the proceeds go to C"
-    code, _, err = cli(["run", str(config), "--as-of", AS_OF_TEXT, "--retry-of", str(failed_manifest)], capped, run_id="wrong-flow")
-    assert code == 2 and "this config's order_flow is 'inflow'; write the same wiring under order_flow: rebalance" in err
+    held = tmp_path / "example_inflow_held.json"
+    held.write_text(json.dumps(example_body() | {"build": {"name": "standard", "params": {"hold_breached_starts": True}}}))
+    code, out, err = cli(["run", str(held), "--as-of", AS_OF_TEXT, "--retry-of", str(failed_manifest), "--retry-stages", "solve,skipped"], capped, run_id="held")
+    assert code == 0, err
+    assert "P1: solved" in out and "P2: solved" in out, "the same inflow, the box held, over the failed solve and the portfolio fail_fast skipped behind it"
+    manifest = json.loads((tmp_path / "out" / "held" / "manifest.json").read_text())
+    assert manifest["tags"] == {"desk": "template", "retry_of": "failed"} and manifest["config"]["resolved"]["datasets"]["portfolios"]["ids"] == ["P1", "P2"]
+    orders = pd.read_parquet(tmp_path / "out" / "held" / "orders" / "orders.parquet")
+    assert set(orders["side"]) == {"BUY"} and set(orders.loc[orders["portfolio_id"] == "P1", "security_id"]) == {"C"}, "P1 buys C with its cash and neither A nor B, which are held over the cap"
+    code, _, err = cli(["run", str(rebalance), "--as-of", AS_OF_TEXT, "--retry-of", str(failed_manifest), "--retry-stages", "load"], capped, run_id="nothing-at-load")
+    assert code == 2 and "no portfolio in run failed failed at load; the run recorded 1 at skipped (SkippedAfterFailure), 1 at solve (InfeasibleError)" in err
     code, _, err = cli(["run", str(rebalance), "--as-of", AS_OF_TEXT, "--retry-of", str(tmp_path / "out" / "retry" / "manifest.json")], capped, run_id="nothing")
-    assert code == 2 and "no portfolio in run retry failed at solve (every portfolio solved); --retry-of retries failed solves only" in err
+    assert code == 2 and "no portfolio in run retry failed at solve; the run recorded every portfolio solved" in err
+    code, _, err = cli(["run", str(rebalance), "--as-of", AS_OF_TEXT, "--retry-stages", "solve,skipped"], capped, run_id="no-manifest")
+    assert code == 2 and "give it a manifest" in err
+    code, _, err = cli(["run", str(rebalance), "--as-of", AS_OF_TEXT, "--retry-of", str(failed_manifest), "--retry-stages", "solved"], capped, run_id="bad-stage")
+    assert code == 2 and "--retry-stages names ['solved']; a failure stage is one of" in err
     code, _, err = cli(["run", str(rebalance), "--as-of", AS_OF_TEXT, "--retry-of", str(tmp_path / "missing.json")], capped, run_id="missing")
     assert code == 3 and "cannot read manifest" in err
 
@@ -209,38 +226,40 @@ def test_a_failed_run_points_at_the_traceback_it_wrote(tmp_path: Path, env: dict
 # --- retry_of: the pure function behind --retry-of ---
 
 
-def _failed(portfolio_id: str, stage: str, solve_order: str | None = None) -> PortfolioRecord:
-    return PortfolioRecord(portfolio_id=portfolio_id, status="failed", solve_order=solve_order, failure_stage=stage, error=f"{stage} failed")
+def _failed(portfolio_id: str, stage: str, solve_order: str | None = None, error: str = "InfeasibleError") -> PortfolioRecord:
+    return PortfolioRecord(portfolio_id=portfolio_id, status="failed", solve_order=solve_order, failure_stage=stage, error=f"{error}: {stage} failed")
 
 
-def test_retry_of_takes_the_failed_solves_in_solve_order_and_tags_the_run() -> None:
-    config = load_run_config(json.dumps(example_body() | {"order_flow": "rebalance"}))
-    recorded = manifest(
-        run_id="run-failed",
-        portfolios=(
-            _failed("P9", "solve", "2"),
-            _failed("P2", "solve", "1"),
-            _failed("P3", "load"),
-            _failed("P4", "skipped", "3"),
-            _failed("P1", "solve", "1"),
-            PortfolioRecord(portfolio_id="P5", status="solved", solve_order="0"),
-        ),
-    )
+RECORDED = (
+    _failed("P9", "solve", "2", error="VerificationError"),
+    _failed("P2", "solve", "1"),
+    _failed("P3", "load"),
+    _failed("P4", "skipped", "3", error="SkippedAfterFailure"),
+    _failed("P1", "solve", "1"),
+    PortfolioRecord(portfolio_id="P5", status="solved", solve_order="0"),
+)
+
+
+def test_retry_of_takes_the_selected_failures_in_solve_order_and_tags_the_run() -> None:
+    config = load_run_config(json.dumps(example_body()))
+    recorded = manifest(run_id="run-failed", portfolios=RECORDED)
     retried = retry_of(config, recorded)
-    assert retried.datasets["portfolios"] == InlinePortfolios(ids=("P1", "P2", "P9")), (
-        "failed solves only, by their recorded key then id; a load failure and a skipped portfolio are not a retry's business"
-    )
+    assert retried.datasets["portfolios"] == InlinePortfolios(ids=("P1", "P2", "P9")), "the default: failed solves only, by their recorded key then id"
     assert retried.run.tags == {"desk": "template", "retry_of": "run-failed"} and retried.run.name == config.run.name
     assert {name: spec for name, spec in retried.datasets.items() if name != "portfolios"} == {name: spec for name, spec in config.datasets.items() if name != "portfolios"}
-    assert retried.model_dump(exclude={"datasets", "run"}) == config.model_dump(exclude={"datasets", "run"}), "nothing else in the wiring changes"
+    assert retried.model_dump(exclude={"datasets", "run"}) == config.model_dump(exclude={"datasets", "run"}), (
+        "nothing else in the wiring changes; the config is whatever the desk wrote, an inflow included"
+    )
+    assert retry_of(config, recorded, stages=frozenset({"solve", "skipped"})).datasets["portfolios"] == InlinePortfolios(ids=("P1", "P2", "P9", "P4")), "the stages select"
+    assert retry_of(config, recorded, stages=frozenset({"load"})).datasets["portfolios"] == InlinePortfolios(ids=("P3",))
+    assert retry_of(config, recorded, errors=frozenset({"VerificationError"})).datasets["portfolios"] == InlinePortfolios(ids=("P9",)), "the exception type selects within the stages"
 
 
-def test_retry_of_refuses_a_config_that_is_not_a_rebalance_and_a_run_with_no_failed_solve() -> None:
-    inflow = load_run_config(json.dumps(example_body()))
-    with pytest.raises(RetryError, match=r"this config's order_flow is 'inflow'; write the same wiring under order_flow: rebalance"):
-        retry_of(inflow, manifest(portfolios=(_failed("P1", "solve"),)))
-    rebalance = load_run_config(json.dumps(example_body() | {"order_flow": "rebalance"}))
-    with pytest.raises(RetryError, match=r"no portfolio in run run-1 failed at solve \(every portfolio solved\); --retry-of retries failed solves only"):
-        retry_of(rebalance, manifest())
-    with pytest.raises(RetryError, match=r"no portfolio in run run-1 failed at solve \(1 at load, 2 at skipped\)"):
-        retry_of(rebalance, manifest(portfolios=(_failed("P1", "load"), _failed("P2", "skipped"), _failed("P3", "skipped"))))
+def test_retry_of_refuses_a_run_where_nothing_matches_and_says_what_did_fail() -> None:
+    config = load_run_config(json.dumps(example_body()))
+    with pytest.raises(RetryError, match=r"no portfolio in run run-1 failed at solve; the run recorded every portfolio solved"):
+        retry_of(config, manifest())
+    with pytest.raises(RetryError, match=r"no portfolio in run run-1 failed at solve; the run recorded 1 at load \(InfeasibleError\), 2 at skipped \(SkippedAfterFailure\)"):
+        retry_of(config, manifest(portfolios=(_failed("P1", "load"), _failed("P2", "skipped", error="SkippedAfterFailure"), _failed("P3", "skipped", error="SkippedAfterFailure"))))
+    with pytest.raises(RetryError, match=r"no portfolio in run run-1 failed at skipped, solve with DriftError; the run recorded"):
+        retry_of(config, manifest(portfolios=RECORDED), stages=frozenset({"solve", "skipped"}), errors=frozenset({"DriftError"}))

@@ -6,7 +6,7 @@ import sys
 import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -27,7 +27,7 @@ from portfolio_optimizer.domain.types import Clock
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.environment import read_git_info
 from portfolio_optimizer.engine.logging import configure_logging
-from portfolio_optimizer.engine.manifest import RunManifest, diff_manifests, failure_report_path, load_manifest
+from portfolio_optimizer.engine.manifest import PortfolioRecord, RunManifest, diff_manifests, failure_report_path, load_manifest
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_INPUT_REJECTED, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunContext, run
 from portfolio_optimizer.settings import Settings, SettingsError, load_settings
 
@@ -83,7 +83,16 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="MANIFEST",
-        help="retry the portfolios that run recorded as failed at solve, as a clean rebalance: this config (order_flow: rebalance) over exactly those ids, in their solve order, tagged retry_of",
+        help="retry the portfolios that run recorded as failed — at stage solve unless --retry-stages says otherwise — under this config: exactly those ids, in their solve order, written inline as the book and tagged retry_of",
+    )
+    run_parser.add_argument(
+        "--retry-stages",
+        default="solve",
+        metavar="STAGES",
+        help=f"with --retry-of: the failure stages to retry, comma-separated, from {sorted(RETRY_STAGES)}; skipped is what fail_fast left behind a failure (default: solve)",
+    )
+    run_parser.add_argument(
+        "--retry-errors", default=None, metavar="ERRORS", help="with --retry-of: retry only failures of these exception types, comma-separated, e.g. InfeasibleError,VerificationError (default: any)"
     )
     validate = commands.add_parser("validate-config", help="validate and resolve a config without loading data")
     validate.add_argument("config", type=Path)
@@ -98,31 +107,58 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+RETRY_STAGES: frozenset[str] = frozenset({"load", "slice", "build", "solve", "worker", "skipped"})
+"""The stages a portfolio can fail at, and so the ones ``--retry-stages`` may name."""
+
+DEFAULT_RETRY_STAGES: frozenset[str] = frozenset({"solve"})
+
+
 class RetryError(ValueError):
-    """``--retry-of`` has nothing to retry, or the config is not a rebalance."""
+    """``--retry-of`` matched nothing: no portfolio in the manifest failed at the stages, and with the errors, asked for."""
 
 
-def retry_of(config: RunConfig, manifest: RunManifest) -> RunConfig:
-    """``config`` over exactly the portfolios ``manifest`` recorded as failed at stage ``solve``, in their solve order, tagged with the run it retries.
+@dataclass(frozen=True, slots=True)
+class RetrySelection:
+    """What ``--retry-of`` retries: the manifest, the failure stages, and — optionally — the exception types."""
 
-    A retry is a clean rebalance and nothing else: no cash carried forward, no state, nothing from
-    the failed run but the ids — a failed solve produced no orders, so the same snapshot is the book
-    as it stands. The ids are written inline, so the retry's config hash differs from the original's:
-    it is a different run over a different book, and the manifest's ``retry_of`` tag says which.
+    manifest: Path
+    stages: frozenset[str]
+    errors: frozenset[str] | None
+
+
+def retry_of(config: RunConfig, manifest: RunManifest, *, stages: frozenset[str] = DEFAULT_RETRY_STAGES, errors: frozenset[str] | None = None) -> RunConfig:
+    """``config`` over exactly the portfolios ``manifest`` recorded as failed at one of ``stages`` — and, when ``errors`` is given, with one of those exception types — in their solve order, tagged with the run it retries.
+
+    The config is whatever the desk wants the second attempt to be: the same wiring with the build's
+    ``hold_breached_starts`` on for a start the order flow could not trade out of, a looser
+    ``post_solve`` or another solver for a solve that hit its limit or failed verification, a
+    rebalance, or the original config unchanged over the portfolios ``fail_fast`` skipped behind one
+    failure. A retry is a clean run: nothing from the failed run reaches it but the ids — no cash
+    carried forward, no chain, no state; what a run traded reaches a later one only as data it
+    loads. The ids are written inline, so the retry's config hash differs from the original's: it is
+    a different run over a different book, and the manifest's ``retry_of`` tag says which.
     """
-    if config.order_flow != "rebalance":
-        msg = f"--retry-of retries the portfolios that failed at solve as a clean rebalance, and this config's order_flow is {config.order_flow!r}; write the same wiring under order_flow: rebalance"
-        raise RetryError(msg)
-    failed = [record for record in manifest.portfolios if record.status == "failed" and record.failure_stage == "solve"]
+    failed = [record for record in manifest.portfolios if record.status == "failed" and record.failure_stage in stages and (errors is None or _error_type(record) in errors)]
     if not failed:
-        by_stage = Counter(record.failure_stage or "unknown" for record in manifest.portfolios if record.status == "failed")
-        detail = ", ".join(f"{count} at {stage}" for stage, count in sorted(by_stage.items())) or "every portfolio solved"
-        msg = f"no portfolio in run {manifest.run_id} failed at solve ({detail}); --retry-of retries failed solves only"
+        recorded = Counter((record.failure_stage or "unknown", _error_type(record)) for record in manifest.portfolios if record.status == "failed")
+        detail = ", ".join(f"{count} at {stage} ({error})" for (stage, error), count in sorted(recorded.items())) or "every portfolio solved"
+        wanted = f"at {', '.join(sorted(stages))}" + ("" if errors is None else f" with {', '.join(sorted(errors))}")
+        msg = f"no portfolio in run {manifest.run_id} failed {wanted}; the run recorded {detail}"
         raise RetryError(msg)
     ordered = sorted(failed, key=lambda record: (Decimal(record.solve_order) if record.solve_order is not None else Decimal(0), record.portfolio_id))
     portfolios = InlinePortfolios(ids=tuple(record.portfolio_id for record in ordered))
     run = config.run.model_copy(update={"tags": {**config.run.tags, "retry_of": manifest.run_id}})
     return config.model_copy(update={"datasets": {**config.datasets, "portfolios": portfolios}, "run": run})
+
+
+def _error_type(record: PortfolioRecord) -> str:
+    """The exception type a failed record names; the manifest writes ``error`` as ``Type: message``."""
+    return record.error.partition(":")[0] if record.error else "unknown"
+
+
+def _names(text: str) -> frozenset[str]:
+    """A comma-separated flag value as a set of names, blanks dropped."""
+    return frozenset(part.strip() for part in text.split(",") if part.strip())
 
 
 def parse_as_of(text: str) -> datetime:
@@ -157,7 +193,10 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_
         stderr.write(f"{error}\n")
         return EXIT_INPUT_REJECTED
     config_path = Path(args.config)
-    resolved = _resolved_config(config_path, args.retry_of, settings, stderr)
+    retry = _retry_selection(args, stderr)
+    if isinstance(retry, int):
+        return retry
+    resolved = _resolved_config(config_path, retry, settings, stderr)
     if isinstance(resolved, int):
         return resolved
     data_root = Path(args.data_root) if args.data_root is not None else settings.data_root
@@ -197,8 +236,24 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_
     return report.exit_code
 
 
-def _resolved_config(config_path: Path, retry_of_path: Path | None, settings: Settings, stderr: TextIO) -> ResolvedConfig | int:
-    """The config at ``config_path`` resolved — over the failed solves of ``retry_of_path``'s run when given — or the exit code that stops the run."""
+def _retry_selection(args: argparse.Namespace, stderr: TextIO) -> RetrySelection | int | None:
+    """What ``--retry-of`` and its selectors ask for, ``None`` without a manifest, or the exit code that refuses them."""
+    stages = _names(str(args.retry_stages))
+    errors = None if args.retry_errors is None else _names(str(args.retry_errors))
+    if args.retry_of is None:
+        if stages != DEFAULT_RETRY_STAGES or errors is not None:
+            stderr.write("--retry-stages and --retry-errors select what --retry-of retries; give it a manifest\n")
+            return EXIT_INPUT_REJECTED
+        return None
+    unknown = sorted(stages - RETRY_STAGES)
+    if unknown or not stages:
+        stderr.write(f"--retry-stages names {unknown or 'no stage'}; a failure stage is one of {sorted(RETRY_STAGES)}\n")
+        return EXIT_INPUT_REJECTED
+    return RetrySelection(Path(args.retry_of), stages, errors)
+
+
+def _resolved_config(config_path: Path, retry: RetrySelection | None, settings: Settings, stderr: TextIO) -> ResolvedConfig | int:
+    """The config at ``config_path`` resolved — over the failed portfolios ``retry`` selects from its manifest, when given — or the exit code that stops the run."""
     try:
         config = load_run_config(config_path.read_text())
     except OSError as error:
@@ -207,9 +262,9 @@ def _resolved_config(config_path: Path, retry_of_path: Path | None, settings: Se
     except ValidationError as error:
         stderr.write(f"config rejected: {error}\n")
         return EXIT_INPUT_REJECTED
-    if retry_of_path is not None:
+    if retry is not None:
         try:
-            manifest = load_manifest(retry_of_path.read_text())
+            manifest = load_manifest(retry.manifest.read_text())
         except OSError as error:
             stderr.write(f"cannot read manifest: {error}\n")
             return EXIT_INFRASTRUCTURE
@@ -217,7 +272,7 @@ def _resolved_config(config_path: Path, retry_of_path: Path | None, settings: Se
             stderr.write(f"manifest rejected: {error}\n")
             return EXIT_INPUT_REJECTED
         try:
-            config = retry_of(config, manifest)
+            config = retry_of(config, manifest, stages=retry.stages, errors=retry.errors)
         except RetryError as error:
             stderr.write(f"{error}\n")
             return EXIT_INPUT_REJECTED

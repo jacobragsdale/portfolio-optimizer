@@ -183,29 +183,35 @@ one row closes buys on the flagged names and leaves sells open:
 A flag column is also what a `participation_limit`'s `scope` reads, so the same column can narrow the
 chain coupling to those names.
 
-## 7. Retry a failed inflow or outflow as a rebalance
+## 7. Retry a failed run
 
-An inflow or an outflow fails a portfolio at stage `solve` when the book starts where it cannot go —
-the starts of step 5 — and the desk's answer is usually a rebalance of that account. `--retry-of`
-is that answer as one command: the rebalance config over exactly the portfolios a run recorded as
-failed at solve, and nothing else.
+A run's failures are the manifest's to name and `--retry-of`'s to re-run: `run CONFIG --retry-of
+MANIFEST` runs *this* config over exactly the portfolios that manifest recorded as failed, written
+inline as the book in their recorded solve order, the run tagged `retry_of`. Which portfolios is
+`--retry-stages` (default `solve`; comma-separated from `load, slice, build, solve, worker, skipped`)
+and, within those, `--retry-errors` (exception types; a portfolio `fail_fast` skipped is a
+`SkippedAfterFailure`). Which config is yours. The three shapes:
+
+| The failure | The retry |
+|---|---|
+| `InfeasibleError` at `solve`: a start the order flow cannot trade out of (step 5) | The same config with the build's `hold_breached_starts` on — the name is held, the rest of the book trades — or `configs/example_rebalance.json`, which trades the name back inside its bound. |
+| `SolverFailureError` or `VerificationError` at `solve`: the solver hit its limit, or the verifier did not agree with it | The same config with a looser `post_solve`, a higher `max_iter`, or another solver: a visible second attempt with its own manifest, never a silent fallback. |
+| `skipped`: what `fail_fast` left behind the first failure | The original config, unchanged, over `--retry-stages skipped` — or `solve,skipped`, once the failure's remedy is in the config, to take the failure and its tail in one run. |
 
 ```bash
 uv run portfolio-optimizer run configs/example_rebalance.json --data-root examples/data --as-of 2026-08-28T00:00:00Z --retry-of out/<failed-run-id>/manifest.json
+uv run portfolio-optimizer run configs/my_inflow_held.json --data-root examples/data --as-of 2026-08-28T00:00:00Z --retry-of out/<failed-run-id>/manifest.json --retry-stages solve,skipped
 ```
 
-The retry is clean: a failed solve produced no orders, so the snapshot is the book as it stands, and
-nothing from the failed run reaches the retry but the ids — no cash carried forward, no chain, no
-state. Those ids are written into the retry's config as the inline `portfolios` list, in their
-recorded solve order, so the retry's config hash differs from the original's (it is a different run
-over a different book) and `diff-manifests` says so; the manifest's `tags.retry_of` names the run it
-retries. Two things are refused before any data loads: a config that is not `order_flow: rebalance`
-(the retry *is* a rebalance; write the same wiring under that key, as `example_rebalance.json` is), and
-a manifest in which nothing failed at solve — a load failure, a skipped portfolio, or a clean run is
-not a retry's business:
+The retry is clean: nothing from the failed run reaches it but the ids — no cash carried forward, no
+chain, no state; what a run *traded* reaches a later run only as data it loads (step 6). The ids
+are written into the retry's config as the inline `portfolios` list, so the retry's config hash
+differs from the original's (it is a different run over a different book) and `diff-manifests` says
+so; the manifest's `tags.retry_of` names the run it retries. A manifest in which nothing matches is
+refused before any data loads, naming what did fail:
 
 ```text
-no portfolio in run run-b3a1c61b6f8c failed at solve (1 at load, 40 at skipped); --retry-of retries failed solves only
+no portfolio in run run-b3a1c61b6f8c failed at load; the run recorded 1 at skipped (SkippedAfterFailure), 1 at solve (InfeasibleError)
 ```
 
 ## What couples under each order flow

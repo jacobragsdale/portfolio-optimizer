@@ -161,8 +161,10 @@ optional `params` (see [the one convention](#the-one-convention)). Top to bottom
 - **`sink`** — where the orders go, called once with every solved portfolio's orders.
 - **`execution`** — what one failed portfolio does to the rest. *Where* the work runs and how many workers
   there are is an environment setting, so a laptop run and a cluster run of one config hash identically.
-  A portfolio an inflow or an outflow could not solve is retried as a clean rebalance over exactly
-  those ids with `run --retry-of MANIFEST`.
+  A failed run is retried with `run CONFIG --retry-of MANIFEST`: any config — the same wiring with
+  the build's `hold_breached_starts` on, a looser verifier, another solver, a rebalance — over exactly
+  the portfolios the manifest recorded as failed at the stages `--retry-stages` names (`solve` by
+  default; `skipped` is what `fail_fast` left behind), tagged `retry_of`.
 
 Three keys the example leaves at their defaults: `assembly` (steps that reshape the loaded datasets
 before the engine-known frames are validated), `build` (`standard`; the step that turns a bundle into a

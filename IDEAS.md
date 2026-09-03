@@ -210,10 +210,12 @@ its box, `buy = max(w − w0, 0)` and `sell = max(w0 − w, 0)`: the round trip 
 construction, so the policy question is closed rather than answered — a term that rewards a side is a
 reward on a convex quantity, not convex, and the `linear` kind refuses it by name (at solve, where the
 data's signs are; at `validate-config` for a negative weight). Harvesting stays the outflow's. The
-rebalance is also the retry for a failed inflow or outflow, since no start is one it cannot trade out
-of, and `run CONFIG --retry-of MANIFEST` is that retry as one command: the rebalance config over
-exactly the portfolios the manifest recorded as failed at solve, written inline, tagged `retry_of`,
-nothing carried forward. Cost: about 3× the inflow's solve time at 100k names (table above).
+rebalance is one retry for a failed inflow or outflow, since no start is one it cannot trade out
+of; `run CONFIG --retry-of MANIFEST` runs *any* config over the portfolios a manifest recorded as
+failed at the stages `--retry-stages` names (generalized 2026-09-02 from rebalance-only and
+solve-only, once the box's own hold became the build's `hold_breached_starts`, above), written
+inline, tagged `retry_of`, nothing carried forward. Cost of the rebalance: about 3× the inflow's
+solve time at 100k names (table above).
 
 ### Future enhancement: the outflow feeds the inflow
 
@@ -754,4 +756,6 @@ in flight, which is exactly the case that matters most.
   test that needs no data sources at all.
 - **Solver fallback stays out.** A silent second solver changes what the manifest says was solved. A
   visible retry — same solver, relaxed tolerances, recorded in the manifest as a second attempt — is the
-  acceptable variant if one is ever needed.
+  acceptable variant, and it exists (2026-09-02): `run CONFIG --retry-of MANIFEST --retry-errors
+  SolverFailureError,VerificationError` under a config with the looser tolerances or the other
+  solver, with its own manifest and the `retry_of` tag.
