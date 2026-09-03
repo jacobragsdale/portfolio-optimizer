@@ -21,7 +21,8 @@ The quickest way to see what the engine does is to read the inflow it ships with
 // comments — these lines are stripped and the rest compared against it by a test, so this copy
 // cannot drift. `configs/example_outflow.json` is the same wiring with three keys changed: the run's
 // name, `order_flow`, and a `tax_cost` term on what is sold; `configs/example_rebalance.json` changes
-// the first two only.
+// the first two only; `configs/example_inflow_after_outflow.json` is this inflow fed the outflow's
+// orders as its blotter and as the volume each name has already lost.
 {
   // Identity for people: recorded in the manifest, kept out of the config hash. The instant the
   // run is *as of* is not here either — it is `run --as-of`, so one wiring runs every day under
@@ -285,7 +286,7 @@ an editor; the engine accepts the key and ignores it.
 | `src/portfolio_optimizer/config/` | The run-config models, the step resolver, and the JSON Schema generator. |
 | `src/portfolio_optimizer/cvx/` | `adapter.py`, the only module that imports cvxpy, and `order_flow.py`, the order-flow profiles' cvxpy half: each order flow's decision variable and trade identity. |
 | `src/portfolio_optimizer/solving.py` | The solve step's contract: `SolveRequest` in, `SolveResult` out; the solver table. |
-| `configs/example_inflow.json`, `configs/example_outflow.json`, `configs/example_rebalance.json`, `configs/run-config.schema.json`, `examples/data/` | The shipped example — an inflow, an outflow, and a rebalance over one book of a hundred accounts and three securities, one CSV table per source — and the generated JSON Schema. |
+| `configs/example_inflow.json`, `configs/example_outflow.json`, `configs/example_rebalance.json`, `configs/example_inflow_after_outflow.json`, `configs/run-config.schema.json`, `examples/data/` | The shipped example — an inflow, an outflow, a rebalance, and the inflow fed the outflow's orders, over one book of a hundred accounts and three securities, one CSV table per source (`outflow_orders.csv` is what the outflow wrote) — and the generated JSON Schema. |
 | `benchmarks/` | `profile_portfolio.py` times one portfolio through the pipeline stage by stage at a chosen book size and order flow; `run_book.py` and `run_state_book.py` run a synthetic book of *N* portfolios on a local cluster and report the derived schedule and the timing spans, sharing the run harness in `harness.py`. The numbers in `IDEAS.md` come from them. |
 | `docs/` | Tutorial, how-to guides, reference, and explanation. |
 | `IDEAS.md` | Threads that are not yet decisions, and known defects waiting to be fixed. |

@@ -83,6 +83,14 @@ def test_transaction_cost_comes_from_the_optional_bps_column(make: Factories, fr
     np.testing.assert_allclose(spec.column("tcost_per_dollar"), [0.0005, 0.0, 0.00025])
 
 
+def test_adv_capacity_is_net_of_what_an_earlier_run_consumed(make: Factories, frames: Frames) -> None:
+    """A's day is half spent, B's whole day is, and C's is oversubscribed: the budget is the participation times what is left, never negative."""
+    universe = frames.three_security_universe().assign(adv_consumed_shares=pd.Series([500_000, 1_000_000, 200_000], dtype="Int64"))
+    spec = standard(make.portfolio_data(universe=universe))
+    np.testing.assert_allclose(spec.column("adv_capacity"), [50.0, 0.0, 0.0])
+    assert "adv_consumed_shares" not in spec.columns, "folded into the capacity, like adv_shares, not exported again"
+
+
 def test_restricted_names_are_frozen_at_their_current_weight(make: Factories, frames: Frames) -> None:
     universe = frames.three_security_universe()
     universe.loc[0, "restricted"] = True

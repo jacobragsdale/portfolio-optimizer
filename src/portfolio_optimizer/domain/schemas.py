@@ -84,6 +84,7 @@ UNIVERSE = FrameSchema(
         ColumnSpec("price", "decimal", gt=ZERO),
         ColumnSpec("sector", "string", required=False),
         ColumnSpec("adv_shares", "Int64", required=False, ge=ZERO),
+        ColumnSpec("adv_consumed_shares", "Int64", required=False, ge=ZERO),
         ColumnSpec("lot_size", "Int64", required=False, ge=ONE),
         ColumnSpec("restricted", "bool", required=False),
         ColumnSpec("alpha", "Float64", required=False),
@@ -94,7 +95,7 @@ UNIVERSE = FrameSchema(
     key=("security_id",),
     allow_extra=True,  # analytics columns joined or computed per security; the build exports every extra by name
 )
-"""Every security the book may trade. Only ``security_id`` and ``price`` are required: ``sector`` is one grouping among any string column, ``adv_shares`` enables the participation constraints, ``lot_size`` defaults to one share, ``restricted`` to false."""
+"""Every security the book may trade. Only ``security_id`` and ``price`` are required: ``sector`` is one grouping among any string column, ``adv_shares`` enables the participation constraints and ``adv_consumed_shares`` is what an earlier run already took of it, ``lot_size`` defaults to one share, ``restricted`` to false."""
 
 ORDER_SIDES = frozenset({"BUY", "SELL"})
 

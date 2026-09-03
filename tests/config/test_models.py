@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from portfolio_optimizer.config.models import DatasetConfig, InlinePortfolios, RunConfig, StepSpec, config_sha256, load_run_config
-from tests.conftest import EXAMPLE_CONFIG, REBALANCE_CONFIG, SELL_CONFIG, example_body
+from tests.conftest import EXAMPLE_CONFIG, HANDOFF_CONFIG, REBALANCE_CONFIG, SELL_CONFIG, example_body
 
 
 @pytest.fixture
@@ -43,6 +43,14 @@ def test_shipped_example_validates(example_text: str) -> None:
     assert rebalance.run.name == "example_rebalance" and rebalance.order_flow == "rebalance"
     assert rebalance.objective == config.objective, "the rebalance keeps the inflow's terms: with both sides in the problem a reward on one of them is not convex"
     assert rebalance.model_dump(exclude={"run", "order_flow"}) == config.model_dump(exclude={"run", "order_flow"}), "otherwise the three order flows are one wiring"
+    handoff = load_run_config(HANDOFF_CONFIG.read_text())
+    assert handoff.run.name == "example_inflow_after_outflow" and handoff.order_flow == "inflow"
+    assert set(handoff.datasets) == {*config.datasets, "adv_consumed"} and [step.name for step in handoff.assembly] == ["join", "drop"], (
+        "the outflow's orders come in twice: as the blotter and as the volume each name lost"
+    )
+    assert handoff.model_dump(exclude={"run", "datasets", "assembly"}) == config.model_dump(exclude={"run", "datasets", "assembly"}), (
+        "the inflow fed by the outflow differs from the inflow in its inputs alone"
+    )
 
 
 def test_step_spec_accepts_bare_names_and_objects() -> None:

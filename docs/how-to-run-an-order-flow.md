@@ -147,30 +147,73 @@ arithmetic diagnoses that apply to any run — bounds that cannot sum to the req
 turnover cap the start already exceeds, a name with no ADV budget left — follow the profile's on the
 same line.
 
-## 6. Keep the inflow off what the outflow harvested
+## 6. Hand the outflow's orders to the inflow: the blotter, and the volume it used
 
-Nothing crosses between order flows inside the engine, and that includes a wash-sale rule: a name
-the outflow sold at a loss must not be bought straight back, but the inflow only knows what
-its inputs say. The mechanism is data, the same as every other limit, and the shipped example wires
-it: the `trades` dataset is the desk's blotter — what each account traded recently, one row per fill
-(`load_trades`, from `examples/data/trades.csv`, asked about the book's ids) — and the
-`restrict_recent_trades` rule freezes every universe name the account traded within `window_days` of
-the run's `--as-of` (thirty by default, the US window) by marking it `restricted`, so it keeps its
-current weight under every order flow:
+Nothing crosses between order flows inside the engine. What the outflow did reaches the inflow as
+data — loaded, hashed, and recorded like every other input — and two things about it matter to the
+inflow: which names each account just traded, so a loss the outflow harvested is not bought straight
+back (the wash-sale rule), and how much of each name's daily volume the outflow's sells already
+took, so the inflow's participation budget is what is left. The shipped `load_run_orders` reads the
+orders file the outflow's sink wrote in both shapes, and `configs/example_inflow_after_outflow.json`
+is the inflow wired through it:
 
 ```json
-"trades": {"loader": "load_trades", "depends_on": ["portfolios"]},
+"trades": {
+  "loader": {"name": "load_run_orders", "params": {"path": "outflow_orders.csv"}},
+  "depends_on": ["portfolios"]
+},
+"adv_consumed": {
+  "loader": {"name": "load_run_orders", "params": {"path": "outflow_orders.csv", "emit": "adv_consumed"}},
+  "depends_on": ["universe"]
+},
 ...
+"assembly": [
+  {"name": "join", "params": {"into": "universe", "source": "adv_consumed", "on": ["security_id"], "cardinality": "one_to_one", "require_all_matched": true}},
+  {"name": "drop", "params": {"datasets": ["adv_consumed"]}}
+],
 "rules": ["restrict_low_liquidity", "restrict_recent_trades"]
 ```
 
-In the example P4 sold A nine days before the run, so the inflow buys no A for it; its trade in C
-three months earlier is outside the window and changes nothing. The rule freezes both sides — an
-inflow cannot rebuy, an outflow cannot sell, a rebalance does neither — which is the conservative
-reading; a desk that wants to keep trimming what it just bought writes the directional version, a cap
-at the current weight for a sold name and a floor for a bought one, in the same dozen lines. The
-trades are loaded rather than remembered across runs, so the inflow stays a pure function of its own
-snapshot and the blotter, not the engine, is the record.
+`path` is the orders file, relative to the data root — `examples/data/outflow_orders.csv` is what
+`configs/example_outflow.json` writes, checked in so the example runs against no earlier run. As
+`trades` it is the blotter: one row per order for the accounts asked for (`portfolio_id`,
+`security_id`, `side`, `quantity`, and the run's `as_of_date` as `traded_on`), and the
+`restrict_recent_trades` rule freezes every universe name the account traded within `window_days`
+of the run's `--as-of` (thirty by default, the US window) by marking it `restricted`, so it keeps its
+current weight under every order flow. As `adv_consumed` it is one row per universe security with
+`adv_consumed_shares`, the shares the outflow traded in it; the `join` puts the column on the
+universe and the standard build derives `adv_capacity` from the participation times what is left
+of the day. Run the outflow, then this config:
+
+```bash
+uv run portfolio-optimizer run configs/example_outflow.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
+uv run portfolio-optimizer run configs/example_inflow_after_outflow.json --data-root examples/data --as-of 2026-08-28T00:00:00Z
+```
+
+The outflow harvests B in most accounts, so the inflow after it buys no B for those — which it
+would not have anyway, B's alpha being negative — and, the day's volume in B being spent, every
+`participation_limit` on B starts from less. The example keeps the book's holdings as they were; a
+desk's custodian answers with the positions after the sells, and the cash the outflow raised is the
+cash the inflow's `details` row shows. Three things to know before you copy it:
+
+- **The path names the predecessor, so it is in the config hash.** A run fed by a different run is
+  a different run, exactly as a retry's inline ids make it one; `diff-manifests` between two inflows
+  fed by two outflows names the `trades` and `adv_consumed` datasets first. A desk whose blotter is
+  a service writes a loader that asks it, and keeps `emit`'s two shapes.
+- **The same file feeds a retry.** A retry over part of a book (step 7) sees nothing of what the
+  first run's solved portfolios traded unless the data says so; point `load_run_orders` at the first
+  run's orders and the retry's participation budgets are net of them.
+- **An extra dataset with a `portfolio_id` column is cut to each account's own rows.** That is what
+  makes `trades` per-account for free, and what a household-level convention must avoid: a blotter
+  that should show an account its spouse's fills carries a `household_id` and no `portfolio_id`, and
+  the rule matches on the household.
+
+The rule freezes both sides — an inflow cannot rebuy, an outflow cannot sell, a rebalance does
+neither — which is the conservative reading; a desk that wants to keep trimming what it just bought,
+or to bar only names sold at a loss (the run's `problem_specs/<portfolio>.npz` carries
+`tax_per_dollar` per name, so a loader can say which sells were losses), writes the directional
+version in the same dozen lines. The trades are loaded rather than remembered across runs, so the
+inflow stays a pure function of its own snapshot and the blotter, not the engine, is the record.
 
 The other shape is a constraint row. Give the universe a boolean column naming the names to stay out
 of — from a rule, a loader, or whatever your jurisdiction sets — and the build exports it as a flag;

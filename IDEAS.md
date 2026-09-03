@@ -135,8 +135,9 @@ The wash-sale rows have a cross-run answer today, outside the engine (2026-09-02
 dataset is the blotter and `restrict_recent_trades` freezes every name an account traded inside the
 window, on both sides; the directional shape is a boolean universe column (`sold_at_loss`) exported as
 a flag and one constraint row — `{"kind": "weight_limit", "vector": "buy", "direction": "<=",
-"bounds": "0", "scope": "sold_at_loss"}` — closing buys on those names. Feeding the blotter from the
-outflow's orders is part of the handoff sketched under *the outflow feeds the inflow*.
+"bounds": "0", "scope": "sold_at_loss"}` — closing buys on those names. The blotter is fed from the
+outflow's orders by `load_run_orders` (2026-09-02), which also hands the inflow the volume each name
+lost as `adv_consumed_shares`; `configs/example_inflow_after_outflow.json` is the wiring.
 
 Each simplification the one-side guarantee buys (see the architecture explanation) would need to un-simplify, in this order:
 
@@ -217,14 +218,15 @@ solve-only, once the box's own hold became the build's `hold_breached_starts`, a
 inline, tagged `retry_of`, nothing carried forward. Cost of the rebalance: about 3× the inflow's
 solve time at 100k names (table above).
 
-### Future enhancement: the outflow feeds the inflow
+### The outflow feeds the inflow
 
-Not needed now — the sell process and the buy run do not exchange anything today. When they do, the
-handoff is three inputs, all content-hashed like every other dataset, so the buy run stays a pure
-function of a snapshot and `diff-manifests` works across the boundary: holdings *after* the sells
-(already just "holdings as of"), the cash raised as the cash the buy run invests, and the sell run's
-ADV usage as an `adv_consumed` column that `adv_remaining` subtracts alongside predecessors' buys —
-one line in the build, no chain machinery. Two runs, two manifests, one program.
+Done 2026-09-02, as data: `load_run_orders` reads the orders file a run's sink wrote as the next
+run's blotter (`trades`) and as `adv_consumed_shares` on the universe, which the standard build
+subtracts from the day's volume before `adv_capacity` — one line in the build, no chain machinery;
+holdings after the sells are "holdings as of", and the cash raised is the cash the `details` row
+shows. Two runs, two manifests, one program, and the same file is what a retry over part of a book
+loads to see what its solved siblings traded. See [how to run an order
+flow](docs/how-to-run-an-order-flow.md#6-hand-the-outflows-orders-to-the-inflow-the-blotter-and-the-volume-it-used).
 
 ## Solving without cvxpy
 

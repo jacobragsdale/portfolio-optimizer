@@ -512,10 +512,16 @@
       "type": "string"
     },
     "LoaderStep": {
-      "$comment": "Steps this environment can name: ['load_constraints', 'load_details', 'load_holdings', 'load_mandates', 'load_parameters', 'load_portfolios', 'load_trades', 'load_universe']",
+      "$comment": "Steps this environment can name: ['load_constraints', 'load_details', 'load_holdings', 'load_mandates', 'load_parameters', 'load_portfolios', 'load_run_orders', 'load_trades', 'load_universe']",
       "anyOf": [
         {
+          "$comment": "These steps have required parameters and must use the object form: ['load_run_orders']",
           "description": "A step without parameters. A bare function name (`cap_single_name`), resolved in the template module for this kind of step or among the steps installed packages publish, or a qualified `package.module:function` importable by the engine and by any worker process.",
+          "not": {
+            "enum": [
+              "load_run_orders"
+            ]
+          },
           "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:)?[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -840,6 +846,79 @@
                     "type": "object"
                   }
                 }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "const": "load_run_orders"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "additionalProperties": false,
+                    "description": "Parameters for :func:`load_run_orders`: which run's orders, and in which of two shapes.",
+                    "properties": {
+                      "emit": {
+                        "default": "trades",
+                        "description": "`trades`: the orders as blotter rows (`portfolio_id`, `security_id`, `side`, `quantity`, `traded_on`), the shape `restrict_recent_trades` reads. `adv_consumed`: one row per universe security with `adv_consumed_shares`, the shares the run traded in it on either side, for an assembly `join` into the universe, where the standard build subtracts it from the day's volume; needs `depends_on: [\"universe\"]`.",
+                        "enum": [
+                          "trades",
+                          "adv_consumed"
+                        ],
+                        "title": "Emit",
+                        "type": "string"
+                      },
+                      "max_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Longest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Max Latency S"
+                      },
+                      "min_latency_s": {
+                        "anyOf": [
+                          {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Shortest this source may take to answer, in seconds. Omit for the loader's own band.",
+                        "title": "Min Latency S"
+                      },
+                      "path": {
+                        "description": "The orders file a previous run's sink wrote (`orders.csv` or `orders.parquet`), relative to the data root. It names the predecessor, so it is part of the config hash: a run fed by a different run is a different run.",
+                        "minLength": 1,
+                        "title": "Path",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "params"
+                ]
               }
             },
             {

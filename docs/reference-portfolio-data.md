@@ -31,7 +31,7 @@ raises `PortfolioDataError` listing all failures.
 |---|---|---|
 | `details` | `PortfolioDetails` | This portfolio's `details` row: `portfolio_id`, `name`, optional `state`, `st_tax_rate`, `lt_tax_rate`, `cash`, `nav`, the style limits `max_weight`, `max_turnover`, `max_adv_participation`, `min_trade_notional`, `cash_lb`, `cash_ub`, and `extra` — every further column of the row, as `Decimal`, `int`, `str`, `bool`, or `None`. `details.scalars()` is every number on the row, declared or extra, which the build exports as the spec's scalars. |
 | `holdings` | frame | This portfolio's rows of `holdings`. Schema columns `portfolio_id`, `security_id`, `quantity`, `avg_cost`, `acquired_on`; any further columns allowed. |
-| `universe` | frame | The whole `universe`, identical for every portfolio. Required columns `security_id`, `price`; optional `sector`, `adv_shares`, `lot_size` (default one share), `restricted` (default false), `alpha`, `tcost_bps`, `min_weight`, `max_weight`; any further columns allowed. |
+| `universe` | frame | The whole `universe`, identical for every portfolio. Required columns `security_id`, `price`; optional `sector`, `adv_shares`, `adv_consumed_shares` (what an earlier run already traded of the day's volume), `lot_size` (default one share), `restricted` (default false), `alpha`, `tcost_bps`, `min_weight`, `max_weight`; any further columns allowed. |
 | `constraints` | frame | This portfolio's rows of `constraints`: one typed row each — `portfolio_id`, `kind`, `label`, `params` — or a desk's own shape. The engine validates that `portfolio_id` is present and names this portfolio, and reads `kind` for the declaration it schedules by; the rest reaches the solve step. Empty when the run declares no such dataset. A rule may replace it. |
 | `as_of_date` | `datetime` | The run's `--as-of`, timezone-aware UTC. |
 | `extras` | `Mapping[str, frame]` | Every non-engine dataset that remained after assembly. A dataset with a `portfolio_id` column is reduced to this portfolio's rows; one without is passed whole. Carried past the build to the solve step as `request.extras`, which is where runtime parameters reach a solver. Default `{}`. |
@@ -110,8 +110,9 @@ weights, the tax per dollar sold, and the bounds exactly in `Decimal` before the
 float64, and exports each universe column other than `security_id` by name: **numeric** columns beyond
 the schema (`Int64`, `Float64`, `float64`, `int64`, Decimal-valued `object`), plus `alpha`, into
 `columns`; **boolean** columns (`bool`, `boolean`) into `flags`; **string** columns into `groups`. The
-schema's other numeric columns (`price`, `adv_shares`, `lot_size`, `tcost_bps`, `min_weight`,
-`max_weight`) are folded into the fixed vectors and the derived columns and not exported again. Every
+schema's other numeric columns (`price`, `adv_shares`, `adv_consumed_shares`, `lot_size`, `tcost_bps`,
+`min_weight`, `max_weight`) are folded into the fixed vectors and the derived columns and not exported
+again (`adv_capacity` is the participation times `adv_shares` less `adv_consumed_shares`, floored at zero). Every
 number on the `details` row becomes a scalar. A null in an exported column, flag, or grouping is a
 `BuildError`, and a name cannot be both a column and a flag. Columns on `holdings` beyond its schema
 are never exported: the build has no row for a name that is not in the universe.

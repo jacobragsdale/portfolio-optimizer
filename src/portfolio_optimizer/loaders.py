@@ -24,15 +24,16 @@ import random
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 import pandas as pd
 from pydantic import Field, model_validator
 
 from portfolio_optimizer.domain.data import LoadRequest
 from portfolio_optimizer.domain.frames import ColumnSpec, FrameSchema, coerce_frame, empty_frame
-from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, ORDER_SIDES, PORTFOLIOS, UNIVERSE
+from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, ORDER_SIDES, ORDERS, PORTFOLIOS, UNIVERSE
 from portfolio_optimizer.domain.types import Params, PortfolioId
 
 
@@ -191,10 +192,16 @@ async def load_mandates(request: LoadRequest, params: ServiceParams) -> pd.DataF
 
 TRADES = FrameSchema(
     name="trades",
-    columns=(ColumnSpec("portfolio_id", "string"), ColumnSpec("security_id", "string"), ColumnSpec("side", "string", allowed=ORDER_SIDES), ColumnSpec("traded_on", "datetime_utc")),
+    columns=(
+        ColumnSpec("portfolio_id", "string"),
+        ColumnSpec("security_id", "string"),
+        ColumnSpec("side", "string", allowed=ORDER_SIDES),
+        ColumnSpec("traded_on", "datetime_utc"),
+        ColumnSpec("quantity", "Int64", required=False, gt=Decimal(0)),
+    ),
     key=(),
 )
-"""The shape of a trade record: which account traded which name, which way, and when — an extra dataset typed by the loader that fetches it. No key: an account may trade a name twice in a day."""
+"""The shape of a trade record: which account traded which name, which way, when, and — where the source says — how many shares; an extra dataset typed by the loader that fetches it. No key: an account may trade a name twice in a day."""
 
 
 async def load_trades(request: LoadRequest, params: ServiceParams) -> pd.DataFrame:
@@ -207,6 +214,54 @@ async def load_trades(request: LoadRequest, params: ServiceParams) -> pd.DataFra
     """
     await _call(request, params.latency(BLOTTER))
     return _rows_for(_table(request, "trades.csv", TRADES), request.portfolio_ids)
+
+
+class RunOrdersParams(ServiceParams):
+    """Parameters for :func:`load_run_orders`: which run's orders, and in which of two shapes."""
+
+    path: str = Field(
+        min_length=1,
+        description="The orders file a previous run's sink wrote (`orders.csv` or `orders.parquet`), relative to the data root. It names the predecessor, so it is part of the config hash: a run fed by a different run is a different run.",
+    )
+    emit: Literal["trades", "adv_consumed"] = Field(
+        default="trades",
+        description='`trades`: the orders as blotter rows (`portfolio_id`, `security_id`, `side`, `quantity`, `traded_on`), the shape `restrict_recent_trades` reads. `adv_consumed`: one row per universe security with `adv_consumed_shares`, the shares the run traded in it on either side, for an assembly `join` into the universe, where the standard build subtracts it from the day\'s volume; needs `depends_on: ["universe"]`.',
+    )
+
+
+async def load_run_orders(request: LoadRequest, params: RunOrdersParams) -> pd.DataFrame:
+    """A previous run's orders as this run's input: the blotter the wash-sale rule reads, or the ADV its trades consumed.
+
+    The handoff between an outflow and the inflow that follows it, or between a run and the retry of
+    part of it, is data and nothing else: the orders the first run's sink wrote are loaded, hashed,
+    and recorded like any dataset, so the second run stays a pure function of a snapshot and
+    ``diff-manifests`` names the predecessor's orders as the input that changed. ``trades`` is the
+    orders frame as trade rows — a run's ``as_of_date`` is when it traded — for the accounts asked
+    for; ``adv_consumed`` is the shares traded per security, either side, over every universe security
+    (zero where none). Both are sorted, since an extra dataset hashes by row order.
+    """
+    await _call(request, params.latency(BLOTTER))
+    orders = _read_orders(request.data_root / params.path)
+    if params.emit == "trades":
+        trades = orders.rename(columns={"as_of_date": "traded_on"})[["portfolio_id", "security_id", "side", "quantity", "traded_on"]]
+        if request.portfolio_ids:
+            trades = _rows_for(trades, request.portfolio_ids)
+        return coerce_frame(trades.sort_values(["portfolio_id", "security_id", "side"], kind="stable").reset_index(drop=True), TRADES)
+    try:
+        universe = request.inputs["universe"]
+    except KeyError:
+        msg = 'load_run_orders with emit: adv_consumed needs the universe to name every security; declare depends_on: ["universe"] on the dataset'
+        raise ValueError(msg) from None
+    consumed = orders.groupby("security_id")["quantity"].sum()
+    ids = sorted(str(value) for value in universe["security_id"])
+    return pd.DataFrame({"security_id": pd.Series(ids, dtype="string"), "adv_consumed_shares": pd.Series([int(consumed.get(security, 0)) for security in ids], dtype="Int64")})
+
+
+def _read_orders(path: Path) -> pd.DataFrame:
+    """An orders file as the ``ORDERS`` frame, whichever of the shipped sinks wrote it."""
+    if path.suffix == ".parquet":
+        return coerce_frame(pd.read_parquet(path), ORDERS)
+    return _read_csv(path, ORDERS)
 
 
 async def load_parameters(request: LoadRequest, params: ParametersParams) -> pd.DataFrame:

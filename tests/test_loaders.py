@@ -6,17 +6,20 @@ import time
 from decimal import Decimal
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
-from portfolio_optimizer.domain.data import LoadRequest
+from portfolio_optimizer.domain.data import Frames, LoadRequest
 from portfolio_optimizer.domain.frames import validate_frame
 from portfolio_optimizer.domain.schemas import CONSTRAINTS, DETAILS, HOLDINGS, PORTFOLIOS, UNIVERSE
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.loaders import (
     CUSTODIAN,
     SECURITY_MASTER,
+    TRADES,
     Latency,
     ParametersParams,
+    RunOrdersParams,
     ServiceParams,
     load_constraints,
     load_details,
@@ -24,10 +27,12 @@ from portfolio_optimizer.loaders import (
     load_mandates,
     load_parameters,
     load_portfolios,
+    load_run_orders,
     load_trades,
     load_universe,
 )
 from tests.conftest import AS_OF, EXAMPLE_DATA
+from tests.conftest import Frames as FrameFactory
 
 INSTANT = ServiceParams(min_latency_s=0, max_latency_s=0)
 """Every shipped loader's simulated wait turned off; a test pays for the read and nothing else."""
@@ -93,6 +98,54 @@ def test_the_blotter_answers_the_trades_for_the_accounts_asked_for(tmp_path: Pat
     trades = asyncio.run(load_trades(request("trades", "P1", root=tmp_path), INSTANT))
     assert trades["portfolio_id"].unique().tolist() == ["P1"] and trades["side"].tolist() == ["SELL", "BUY"]
     assert str(trades["traded_on"].dtype) == "datetime64[ns, UTC]", "a trade is dated with a zone, like a holding"
+
+
+RUN_ORDERS = (
+    "portfolio_id,security_id,side,quantity,reference_price,notional,target_weight,unrounded_shares,spec_hash,run_id,as_of_date\n"
+    "P2,B,SELL,200,50,10000,0.1,200.0,abc,run-1,2026-08-27T00:00:00Z\n"
+    "P1,C,BUY,50,10,500,0.2,50.0,abc,run-1,2026-08-27T00:00:00Z\n"
+    "P1,A,SELL,100,100,10000,0.0,100.0,abc,run-1,2026-08-27T00:00:00Z\n"
+)
+"""An orders file as the CSV sink writes it: three orders in two accounts, out of order."""
+
+
+def test_a_previous_runs_orders_load_as_the_blotter_for_the_accounts_asked_for(tmp_path: Path) -> None:
+    (tmp_path / "orders.csv").write_text(RUN_ORDERS)
+    trades = asyncio.run(load_run_orders(request("trades", "P1", root=tmp_path), RunOrdersParams(path="orders.csv", min_latency_s=0, max_latency_s=0)))
+    validate_frame(trades, TRADES)
+    assert list(trades.columns) == ["portfolio_id", "security_id", "side", "quantity", "traded_on"]
+    assert trades[["portfolio_id", "security_id", "side", "quantity"]].to_dict("records") == [
+        {"portfolio_id": "P1", "security_id": "A", "side": "SELL", "quantity": 100},
+        {"portfolio_id": "P1", "security_id": "C", "side": "BUY", "quantity": 50},
+    ], "P1's rows alone, sorted: an extra dataset hashes by row order"
+    assert str(trades["traded_on"].dtype) == "datetime64[ns, UTC]" and trades["traded_on"].iloc[0] == pd.Timestamp("2026-08-27", tz="UTC"), "the run's as-of instant is when it traded"
+    everyone = asyncio.run(load_run_orders(request("trades", root=tmp_path), RunOrdersParams(path="orders.csv", min_latency_s=0, max_latency_s=0)))
+    assert everyone["portfolio_id"].tolist() == ["P1", "P1", "P2"], "a dataset that declares no dependency on the book gets every account"
+
+
+def test_a_previous_runs_orders_load_as_the_volume_each_universe_security_lost(tmp_path: Path, frames: FrameFactory) -> None:
+    (tmp_path / "orders.csv").write_text(RUN_ORDERS)
+    universe = frames.three_security_universe().assign(security_id=pd.Series(["C", "A", "D"], dtype="string"))
+    params = RunOrdersParams(path="orders.csv", emit="adv_consumed", min_latency_s=0, max_latency_s=0)
+    consumed = asyncio.run(load_run_orders(LoadRequest(dataset="adv_consumed", portfolio_ids=(), as_of_date=AS_OF, data_root=tmp_path, run_id="test", inputs=Frames({"universe": universe})), params))
+    assert consumed.to_dict("records") == [{"security_id": "A", "adv_consumed_shares": 100}, {"security_id": "C", "adv_consumed_shares": 50}, {"security_id": "D", "adv_consumed_shares": 0}], (
+        "every universe security, sorted, either side summed, zero where nothing traded; B is not in this universe"
+    )
+    assert str(consumed["adv_consumed_shares"].dtype) == "Int64" and str(consumed["security_id"].dtype) == "string"
+    with pytest.raises(ValueError, match=r'needs the universe to name every security; declare depends_on: \["universe"\]'):
+        asyncio.run(load_run_orders(request("adv_consumed", root=tmp_path), params))
+
+
+def test_a_previous_runs_orders_load_from_parquet_as_from_csv(tmp_path: Path, frames: FrameFactory) -> None:
+    (tmp_path / "orders.csv").write_text(RUN_ORDERS)
+    frames.orders(
+        {"portfolio_id": "P2", "security_id": "B", "side": "SELL", "quantity": 200, "reference_price": Decimal(50), "notional": Decimal(10000), "as_of_date": pd.Timestamp("2026-08-27", tz="UTC")},
+        {"portfolio_id": "P1", "security_id": "C", "side": "BUY", "quantity": 50, "reference_price": Decimal(10), "notional": Decimal(500), "as_of_date": pd.Timestamp("2026-08-27", tz="UTC")},
+        {"portfolio_id": "P1", "security_id": "A", "side": "SELL", "quantity": 100, "reference_price": Decimal(100), "notional": Decimal(10000), "as_of_date": pd.Timestamp("2026-08-27", tz="UTC")},
+    ).to_parquet(tmp_path / "orders.parquet", index=False)
+    from_csv = asyncio.run(load_run_orders(request("trades", root=tmp_path), RunOrdersParams(path="orders.csv", min_latency_s=0, max_latency_s=0)))
+    from_parquet = asyncio.run(load_run_orders(request("trades", root=tmp_path), RunOrdersParams(path="orders.parquet", min_latency_s=0, max_latency_s=0)))
+    pd.testing.assert_frame_equal(from_parquet, from_csv)
 
 
 def test_the_parameter_store_fetches_the_set_the_dataset_names() -> None:

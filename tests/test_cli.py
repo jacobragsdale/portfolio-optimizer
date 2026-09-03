@@ -12,7 +12,7 @@ from portfolio_optimizer.cli import RetryError, parse_as_of, retry_of, run_cli
 from portfolio_optimizer.config.models import InlinePortfolios, load_run_config
 from portfolio_optimizer.engine.manifest import PortfolioRecord
 from tests import steps
-from tests.conftest import AS_OF, EXAMPLE_CONFIG, example_body
+from tests.conftest import AS_OF, EXAMPLE_CONFIG, HANDOFF_CONFIG, example_body, instant
 from tests.engine.support import BUY_ORDERS_P1, BUY_ORDERS_P2, details_csv, example_book, fixed_clock
 from tests.engine.test_manifest import manifest
 
@@ -102,6 +102,33 @@ def test_retry_of_reruns_the_failed_portfolios_under_whatever_config_the_desk_wr
     assert code == 2 and "--retry-stages names ['solved']; a failure stage is one of" in err
     code, _, err = cli(["run", str(rebalance), "--as-of", AS_OF_TEXT, "--retry-of", str(tmp_path / "missing.json")], capped, run_id="missing")
     assert code == 3 and "cannot read manifest" in err
+
+
+HANDOFF_ORDERS = (
+    "portfolio_id,security_id,side,quantity,reference_price,notional,target_weight,unrounded_shares,spec_hash,run_id,as_of_date\n"
+    "P1,A,SELL,1000,100,100000,0.2,1000.0,outflow,run-outflow,2026-08-28T00:00:00Z\n"
+    "P2,C,SELL,5000,10,50000,0.0,5000.0,outflow,run-outflow,2026-08-28T00:00:00Z\n"
+)
+"""What an earlier run sold: 1,000 A for P1, 5,000 C for P2 — a twentieth of C's day."""
+
+
+def test_a_previous_runs_orders_feed_the_next_run_as_its_blotter_and_its_spent_volume(tmp_path: Path, env: dict[str, str]) -> None:
+    """The inflow wired through ``load_run_orders`` over that blotter: P1 cannot rebuy A and finds a quarter of what is left of C's day, 23,750 shares, not 25,000; P2 cannot rebuy C and takes A to its cap."""
+    fed = env | {"PORTFOLIO_OPTIMIZER_DATA_ROOT": str(example_book(tmp_path / "fed", **{"outflow_orders.csv": HANDOFF_ORDERS}))}
+    body = json.loads(HANDOFF_CONFIG.read_text())
+    body["datasets"] = {name: instant(spec) for name, spec in body["datasets"].items()}
+    config = tmp_path / "example_inflow_after_outflow.json"
+    config.write_text(json.dumps(body))
+    code, _, err = cli(["run", str(config), "--as-of", AS_OF_TEXT], fed)
+    assert code == 0, err
+    orders = pd.read_parquet(tmp_path / "out" / "run-smoke" / "orders" / "orders.parquet")
+    assert orders[["portfolio_id", "security_id", "side", "quantity"]].to_dict("records") == [
+        {"portfolio_id": "P1", "security_id": "C", "side": "BUY", "quantity": 23750},
+        {"portfolio_id": "P2", "security_id": "A", "side": "BUY", "quantity": 3000},
+    ]
+    manifest = json.loads((tmp_path / "out" / "run-smoke" / "manifest.json").read_text())
+    assert {dataset["name"] for dataset in manifest["datasets"]} >= {"trades", "adv_consumed"}, "both shapes of the handoff are inputs the manifest records and hashes"
+    assert manifest["assembly"][0]["columns_added"] == {"universe": ["adv_consumed_shares"]}
 
 
 def test_the_default_settings_run_the_example_inline_with_no_environment_at_all(tmp_path: Path, config: Path) -> None:

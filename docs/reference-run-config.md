@@ -151,7 +151,11 @@ Where the work runs — this process, or a Dask cluster the run provisions for i
 
 Loaders: `load_portfolios`, `load_holdings` (one request per account in the batch, run together),
 `load_universe`, `load_details` (a plain `def`: one query per batch of ids, run in a worker thread),
-`load_constraints`, `load_mandates`, `load_trades`, `load_parameters` (`set_name`, default the dataset's own name).
+`load_constraints`, `load_mandates`, `load_trades`, `load_parameters` (`set_name`, default the dataset's own name),
+`load_run_orders` (`path`, an orders file a previous run's sink wrote, relative to the data root;
+`emit`, default `trades`: the orders as blotter rows for the accounts asked for, or `adv_consumed`:
+one row per universe security with `adv_consumed_shares`, which needs `depends_on: ["universe"]` and
+an assembly `join` into the universe).
 Every one of them stands in for a service and takes `min_latency_s` and `max_latency_s`, which override
 the wait that source is pretended to take; a real loader has neither. Assembly steps: `join`, `union`,
 `select`, `drop`. Rules: `cap_single_name` (`max_weight`), `add_zero_alpha`, `restrict_low_liquidity`

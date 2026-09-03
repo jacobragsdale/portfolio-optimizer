@@ -78,7 +78,8 @@ def standard(data: PortfolioData, params: StandardParams = DEFAULT_PARAMS) -> Pr
 
     Derived per security: ``tax_per_dollar`` (signed; a loss is negative), ``tcost_per_dollar`` where
     the universe carries ``tcost_bps``, and ``adv_capacity`` — the style's participation times the
-    day's volume, as a fraction of NAV — where it carries ``adv_shares``. The bounds fold the style's
+    day's volume, less what ``adv_consumed_shares`` says an earlier run already traded, as a fraction
+    of NAV — where it carries ``adv_shares``. The bounds fold the style's
     ``max_weight``, the optional ``min_weight``/``max_weight`` columns, and the ``restricted`` flag,
     which freezes a name at its current weight; under ``hold_breached_starts`` a name already past a
     bound is held there too, its bound loosened to the current weight.
@@ -101,7 +102,10 @@ def standard(data: PortfolioData, params: StandardParams = DEFAULT_PARAMS) -> Pr
     if "tcost_bps" in universe.columns:
         columns["tcost_per_dollar"] = to_float64([_decimal(value) / BPS for value in universe["tcost_bps"]], "tcost_per_dollar")
     if "adv_shares" in universe.columns:
-        columns["adv_capacity"] = to_float64([data.details.max_adv_participation * Decimal(int(adv)) * px / nav for adv, px in zip(universe["adv_shares"], price, strict=True)], "adv_capacity")
+        consumed = [int(value) for value in universe["adv_consumed_shares"]] if "adv_consumed_shares" in universe.columns else [0] * n
+        columns["adv_capacity"] = to_float64(
+            [data.details.max_adv_participation * Decimal(max(int(adv) - used, 0)) * px / nav for adv, used, px in zip(universe["adv_shares"], consumed, price, strict=True)], "adv_capacity"
+        )
     extra_columns, flags, groups = _exports(universe)
     return ProblemSpec(
         portfolio_id=data.details.portfolio_id,

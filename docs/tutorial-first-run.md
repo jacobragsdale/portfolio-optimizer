@@ -37,8 +37,10 @@ Beside it is `configs/example_outflow.json`: the same wiring with the run's name
 objective term changed. A run is one order flow — a desk's inflow and its outflow are two runs
 over one snapshot — and the outflow's extra term, the tax on what is sold, reads a vector the
 inflow does not have. A third, `configs/example_rebalance.json`, is the inflow's wiring under
-`order_flow: rebalance`: it may buy and sell, and [the order-flow guide](how-to-run-an-order-flow.md)
-covers when a desk runs it.
+`order_flow: rebalance`: it may buy and sell. A fourth, `configs/example_inflow_after_outflow.json`,
+is the inflow fed the outflow's orders — as the blotter its wash-sale rule reads and as the volume
+each name has already lost. [The order-flow guide](how-to-run-an-order-flow.md) covers when a desk
+runs each.
 
 Now ask the engine to check the inflow:
 

@@ -321,7 +321,8 @@ participation"). That is the only kind of coupling the engine has: **a run coupl
 side** — buys under `inflow`, sells under `outflow` — and a run has no other side, so nothing else a
 portfolio did can change what a later one may do: a product decision, and everything in this section
 leans on it. What an outflow sold reaches an inflow only as data the desk hands it, never
-through the engine.
+through the engine: the shipped `load_run_orders` loader reads the outflow's orders file as the
+inflow's blotter and as the volume each name's ADV budget has already lost (§2).
 
 The mechanism is small. A build reports its portfolio's solve-order key, its **tradable set** — the
 securities the order-flow profile lets it trade on that side: buyable (`ub > w0`; a name frozen or capped at

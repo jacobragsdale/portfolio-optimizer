@@ -260,7 +260,12 @@ internal crossing — is a recorded non-goal; `IDEAS.md` says what it would cost
 the shipped `trades` dataset is the desk's blotter, and the `restrict_recent_trades` rule freezes
 every name an account traded inside the wash-sale window, so an inflow cannot rebuy what the outflow
 just sold; a boolean universe column and one `weight_limit` row on `buy` (`scope: sold_at_loss`) is
-the directional shape of the same thing.
+the directional shape of the same thing. The same orders, loaded once more as `adv_consumed_shares`
+on the universe, are what the standard build subtracts from each name's daily volume, so the
+inflow's participation budget is what the outflow left of it. `load_run_orders` reads a run's orders
+file in either shape, content-hashed like any input, which is the whole of the handoff between an
+outflow and the inflow behind it, or between a run and the retry of part of it: two runs, two
+manifests, and `diff-manifests` naming the predecessor's orders as the input that changed.
 
 The shape this produces is measured, not assumed (`benchmarks/run_book.py`, 2026-08-30, 8 local
 workers). A book of 100 accounts across 10 disjoint mandates derives 450 edges, 10 components,
