@@ -8,8 +8,8 @@ each block answers three questions: what is it telling the engine, when does the
 and what changes if you set it differently. It is the companion to two other pages: the [reference](reference-run-config.md) carries what the
 generated JSON Schema cannot — step signatures, load-time behaviour, the constraint rows and style
 limits that live in data — and says nothing about why, and
-[the life of a run](explanation-run-lifecycle.md) follows the engine stage by stage. The README gives
-[a sentence or two per block](../README.md#the-run-config-block-by-block); this page is the long
+[the life of a run](explanation-run-lifecycle.md) follows the engine stage by stage. The README annotates
+[the example block by block](../README.md#the-run-config-block-by-block); this page is the long
 version. Read it when you have a config in front of you and want it to make sense.
 
 ## The document at a glance
