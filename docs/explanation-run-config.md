@@ -493,7 +493,11 @@ portfolio. The full grammar is in
 **Rules may change them**, and that is ordinary rule work rather than a special power: the frame is on
 the bundle, so a rule that tightens a cap because of what the holdings say returns
 `data.with_changes(constraints=...)` like any other change, and the result is re-validated. The set a
-portfolio actually solved is therefore recorded per portfolio in the manifest, after its rules.
+portfolio actually solved is therefore recorded per portfolio in the manifest, after its rules, and
+the rule audit counts the rows before and after. One edit is refused: adding a chain-reading row to
+a run whose loaded rows read no chain. The engine plans such a run without a chain before any build,
+so a build that then declares one fails at `build` rather than solving blind; a rule may tighten or
+remove a chain reader, never add one.
 
 The trade identity is not a constraint and cannot be. What `buy` or `sell` *means* — `w ≥ w0` with
 `buy = w − w0`, or `w ≤ w0` with `sell = w0 − w`, the trade an expression of the one variable — and

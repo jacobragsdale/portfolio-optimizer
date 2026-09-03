@@ -153,7 +153,9 @@ Each simplification the one-side guarantee buys (see the architecture explanatio
    one preserves the single build pass. If a rule genuinely must read the chain, the pipeline becomes two
    passes — rules with an empty chain to derive the graph, rules with the real chain to build — and needs
    the invariant that a chain-aware rule may tighten a portfolio's buyable or sellable set but never
-   expand it, checked after the real build.
+   expand it, checked after the real build. The one-pass half of that invariant is enforced today
+   (2026-09-02): the run is planned from the loaded rows, and a build that reports a chain reader a
+   rule added, in a run planned without a chain, fails at build (`_plan_uncoupled`).
 
 The cost to expect: the moment any sell-side step is configured, every held security is a potential
 edge again — the bonds the buy filter removed re-couple accounts through the sell side — and components

@@ -207,6 +207,16 @@ def test_a_book_whose_rows_read_no_chain_is_told_so_before_any_build_and_still_m
         assert left.chain_state.content_hash() == right.chain_state.content_hash()
 
 
+def test_a_rule_that_adds_a_chain_reader_to_a_run_planned_without_one_fails_at_build(tmp_path: Path) -> None:
+    """The plan is made from the loaded rows, before any rule runs: a rule may remove chain readers, never add them, and a build that consumes the chain anyway is refused rather than solved with an empty one."""
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=uncoupled_book(tmp_path), rules=["tests.steps:add_a_participation_row"], on_error="continue")
+    assert report.exit_code == EXIT_PORTFOLIO_FAILED
+    for outcome in report.outcomes:
+        assert isinstance(outcome, PortfolioFailure) and (outcome.stage, outcome.error_type) == ("build", "ChainInvariantError")
+        assert "its rules added a chain-reading constraint, coupling through ['A', 'B', 'C'], to a run the engine planned without a chain" in outcome.message
+    assert report.manifest.schedule is not None and report.manifest.schedule.coupling == "none"
+
+
 def test_a_worker_side_failure_carries_its_traceback_home_and_is_persisted(tmp_path: Path, scheduler_address: str) -> None:
     data_root = example_book(tmp_path, **CAPPED_P1)
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)

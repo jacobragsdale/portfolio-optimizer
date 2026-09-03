@@ -17,7 +17,7 @@ def test_apply_rules_records_provenance_and_row_counts(make: Factories) -> None:
     result, audits = apply_rules(make.portfolio_data(), rules)
     assert result.applied_rules == ("portfolio_optimizer.rules:cap_single_name", "portfolio_optimizer.rules:add_zero_alpha")
     assert [audit.qualname for audit in audits] == list(result.applied_rules)
-    assert audits[0].rows_in == audits[0].rows_out == {"holdings": 2, "universe": 3}
+    assert audits[0].rows_in == audits[0].rows_out == {"holdings": 2, "universe": 3, "constraints": len(result.constraints)}, "a rule that edits the constraint rows leaves a trace too"
     assert len(audits[0].source_sha256) == 64
 
 

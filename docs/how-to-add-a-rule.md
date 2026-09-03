@@ -91,7 +91,11 @@ book where every account holds the same bonds but nobody trades them solves as m
 once a rule says so; the manifest's `schedule` record shows how many. A rule that needs what other
 portfolios did is not a rule: that dependency belongs in a chain-aware constraint kind —
 `participation_limit` is the shipped one — see
-[how to add a term or constraint kind](how-to-add-a-term.md).
+[how to add a term or constraint kind](how-to-add-a-term.md). The same line holds for the
+constraint rows a rule edits: it may tighten or remove a chain-reading row, never add one. The
+engine decides before any build, from the loaded rows, whether anything reads the chain, and a
+build that then reports a chain reader a rule added fails at `build` with `ChainInvariantError`
+rather than solving with a chain the plan never gave it; load the row instead.
 
 ## 5. Test it
 

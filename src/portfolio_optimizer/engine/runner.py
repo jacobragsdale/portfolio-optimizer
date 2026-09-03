@@ -368,7 +368,9 @@ def _nothing_reads_the_chain(resolved: ResolvedConfig, shared: SharedRunData) ->
     """Whether the run can be told, before any build, that no portfolio waits for another: no chain-aware term, the shipped solve step, and no constraint row that reads the chain.
 
     Derived, never declared: a config cannot switch the chain off, only the data and the steps can
-    make it moot. When they do, every solve goes in behind its own build.
+    make it moot. When they do, every solve goes in behind its own build. The rows read here are the
+    loaded ones, before any rule runs, so a rule that *adds* a chain reader would be invisible to the
+    plan; :func:`_plan_uncoupled` fails such a portfolio at build rather than solving it blind.
     """
     return not resolved.chain_aware_terms and resolved.shipped_solve and not frame_reads_chain(shared.assembled.constraints)
 
@@ -445,7 +447,9 @@ def _plan_uncoupled(dispatch: _Dispatch, shared: SharedRunData, builds: _Builds)
     The order still decides how outcomes are classified and what the manifest records, but it is read
     back only once the solves are in flight — the summaries resolve while the cluster is already
     solving rather than in front of it, and no portfolio's build holds up another's solve. A portfolio
-    whose build failed has its solve cancelled as soon as that is known.
+    whose build failed has its solve cancelled as soon as that is known, and so does one whose build
+    reports a consume set: the plan was made from the loaded rows, so a chain reader can only have
+    been added by a rule, and a solve with an empty chain would be silently wrong.
     """
     ids = shared.assembled.portfolio_ids
     solves = {
@@ -453,11 +457,27 @@ def _plan_uncoupled(dispatch: _Dispatch, shared: SharedRunData, builds: _Builds)
         for position, portfolio_id in enumerate(ids)
         if builds.submitted(portfolio_id)
     }
-    outcomes: dict[PortfolioId, Outcome] = {portfolio_id: report for portfolio_id in ids if isinstance(report := builds.report(portfolio_id), PortfolioFailure)}
+    outcomes: dict[PortfolioId, Outcome] = {}
+    for portfolio_id in ids:
+        report = builds.report(portfolio_id)
+        if isinstance(report, PortfolioFailure):
+            outcomes[portfolio_id] = report
+        elif report.consumes:
+            outcomes[portfolio_id] = _added_a_chain_reader(portfolio_id, report.consumes)
     dispatch.backend.cancel([solves.pop(portfolio_id) for portfolio_id in outcomes if portfolio_id in solves])
     keys = {portfolio_id: builds.key(portfolio_id) for portfolio_id in ids}
     order = order_portfolios(keys)
     return _Planned(Schedule(order, dict.fromkeys(order, ()), "none"), keys, solves, outcomes)
+
+
+def _added_a_chain_reader(portfolio_id: PortfolioId, consumes: Sequence[str]) -> PortfolioFailure:
+    """A build that consumes the chain in a run planned without one: its rules added a chain-reading row the plan could not see."""
+    shown = f"{list(consumes[:3])}{'...' if len(consumes) > 3 else ''}"
+    message = (
+        f"its rules added a chain-reading constraint, coupling through {shown}, to a run the engine planned without a chain from the loaded rows; "
+        "a rule may remove chain readers, never add them — load the row instead"
+    )
+    return PortfolioFailure(portfolio_id, "build", "ChainInvariantError", message)
 
 
 def _stream_solves(dispatch: _Dispatch, builds: _Builds, order: tuple[PortfolioId, ...], coupling: Coupling, *, fail_fast: bool, securities: Iterable[str]) -> _Planned:

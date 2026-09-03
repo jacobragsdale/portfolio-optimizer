@@ -135,6 +135,19 @@ def lying_loader(request: LoadRequest) -> pd.DataFrame:
     return {}  # ty: ignore[invalid-return-type]  # the lie is the case under test
 
 
+def add_a_participation_row(data: PortfolioData) -> PortfolioData:
+    """Append a chain-reading row a rule has no business adding: what a run planned without a chain must refuse at build."""
+    row = pd.DataFrame(
+        {
+            "portfolio_id": pd.Series([data.details.portfolio_id], dtype="string"),
+            "kind": pd.Series(["participation_limit"], dtype="string"),
+            "label": pd.Series(["adv_from_rule"], dtype="string"),
+            "params": pd.Series(['{"direction": "<="}'], dtype="string"),
+        }
+    )
+    return data.with_changes(constraints=pd.concat([data.constraints, row], ignore_index=True))
+
+
 def lying_rule(data: PortfolioData) -> PortfolioData:
     """Annotated correctly but returns a frame; the pipeline must catch it."""
     return data.universe  # ty: ignore[invalid-return-type]  # the lie is the case under test
