@@ -161,6 +161,24 @@ The cost to expect: the moment any sell-side step is configured, every held secu
 edge again — the bonds the buy filter removed re-couple accounts through the sell side — and components
 grow to match. The manifest's derived-graph record is how to watch that happen.
 
+### Named chain quantities
+
+The chain carries one unsigned vector, `traded_shares`, and `Contribution.from_orders` drops the
+side. Two desk conventions cannot be written against it: a wash-sale rule *within one run* — P1
+sells X at a loss and P2, the same household, must not buy X in the same rebalance — and any
+cross-account quantity that is not shares traded: notional, a count of accounts in a name, a
+household cap. The shape, if a desk asks: `ChainState` and `Contribution` carry a
+`Mapping[str, F64]` of named quantities with `traded_shares` one of them, each kind declares which
+quantities it reads (`reads_chain` becomes a set of names), the fold sums per quantity, and the
+mask stays as it is. What it touches: `domain/results.py` (`ChainState`, `Contribution`,
+`derive_chain_state`, the npz format and the hash), `domain/order_flow.py` (`contribution` and
+`chain_state` on all three profiles), `domain/constraints.py` (`adv_remaining`,
+`participation_limit`), `cvx/order_flow.py` and `cvx/adapter.py` (`coupled`), `engine/solve.py`
+(the infeasibility diagnosis), `engine/tasks.py` (the fold and the tradable-set invariant), and
+`cli.py` (`verify`). A signed quantity is also what the side-aware edge test above needs. Not
+built: the desks run the outflow and then the inflow, and the handoff (*the outflow feeds the
+inflow*, below) carries the sides between them as data.
+
 ### Cheap things to do first, whatever else happens
 
 - **Keep the factor risk term structured when it returns.** `sum_squares(F½ · B · w) + sum_squares(√D ∘ w)`,
@@ -219,6 +237,22 @@ failed at the stages `--retry-stages` names (generalized 2026-09-02 from rebalan
 solve-only, once the box's own hold became the build's `hold_breached_starts`, above), written
 inline, tagged `retry_of`, nothing carried forward. Cost of the rebalance: about 3× the inflow's
 solve time at 100k names (table above).
+
+### Per-name direction, if a desk wants harvesting inside a rebalance
+
+The three profiles are three uniform cases of one: a direction per name, `buy_only`, `sell_only`,
+or `free`. An inflow is every name `buy_only`, an outflow every name `sell_only`, a rebalance every
+name `free`; a rebalance that harvests would be `sell_only` on the names held at a loss — where
+`sell = w0 − w` is affine again and the reward exact — and `free` elsewhere. It would also make "an
+inflow that trims what is over its cap" one config rather than a hold or a retry. The cost is the
+DCP check: a reward on a mixed vector, affine on some names and `pos(·)` on others, is not convex as
+one expression, so every kind that reads `buy` or `sell` splits into two dots — one over the affine
+names, one over the convex ones — and refuses the reward on the second. What it touches:
+`cvx/adapter.py` (`DecisionVars`, `vector`), `cvx/order_flow.py`, `domain/order_flow.py` (split,
+coupled, tradable, identity, contribution), `domain/constraints.py` (`Vector`, `vector_values`,
+`starting_values`), `domain/objective.py` (`Linear.to_cvxpy`), `engine/check.py`, and every
+order-flow test. Not lazy: `hold_breached_starts` and the retry cover the inflow half today, and
+harvesting stays the outflow's.
 
 ### The outflow feeds the inflow
 
@@ -763,3 +797,8 @@ in flight, which is exactly the case that matters most.
   acceptable variant, and it exists (2026-09-02): `run CONFIG --retry-of MANIFEST --retry-errors
   SolverFailureError,VerificationError` under a config with the looser tolerances or the other
   solver, with its own manifest and the `retry_of` tag.
+- **A bounds-override rule.** Constraints are data per portfolio by design, so a quant's "loosen
+  every sector cap by five points" is a regenerated table. A shipped rule with params
+  `{label: bounds}` that rewrites the matching rows through `with_changes(constraints=...)` would put
+  the experiment in the config hash while the constraints stay data — fifteen lines, when someone
+  asks. It may tighten or remove a chain reader, never add one; the uncoupled plan refuses that.
