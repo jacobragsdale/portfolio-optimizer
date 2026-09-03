@@ -76,10 +76,12 @@ def to_float64(values: Sequence[Decimal | int], name: str) -> F64:
 def standard(data: PortfolioData, params: StandardParams = DEFAULT_PARAMS) -> ProblemSpec:
     """Align every input to the sorted universe and express it as a fraction of NAV.
 
-    Derived per security: ``tax_per_dollar`` (signed; a loss is negative), ``tcost_per_dollar`` where
-    the universe carries ``tcost_bps``, and ``adv_capacity`` — the style's participation times the
-    day's volume, less what ``adv_consumed_shares`` says an earlier run already traded, as a fraction
-    of NAV — where it carries ``adv_shares``. The bounds fold the style's
+    Derived per security: ``tax_per_dollar`` (signed; a loss is negative) where the account carries
+    both tax rates, ``tcost_per_dollar`` where the universe carries ``tcost_bps``, and ``adv_capacity``
+    — the style's participation times the day's volume, less what ``adv_consumed_shares`` says an
+    earlier run already traded, as a fraction of NAV — where it carries ``adv_shares`` and the account
+    a ``max_adv_participation``; a term or row that needs a column the inputs did not give is refused
+    by name at build. The bounds fold the style's
     ``max_weight``, the optional ``min_weight``/``max_weight`` columns, and the ``restricted`` flag,
     which freezes a name at its current weight; under ``hold_breached_starts`` a name already past a
     bound is held there too, its bound loosened to the current weight.
@@ -98,13 +100,17 @@ def standard(data: PortfolioData, params: StandardParams = DEFAULT_PARAMS) -> Pr
     lot_size = [int(value) for value in universe["lot_size"]] if "lot_size" in universe.columns else [1] * n
     w0 = [Decimal(shares) * px / nav for shares, px in zip(shares_held, price, strict=True)]
     lb, ub = _bounds(data, universe, ids, w0, hold=params.hold_breached_starts)
-    columns: dict[str, F64] = {"tax_per_dollar": to_float64([_tax_per_dollar(data, positions.get(security), px) for security, px in zip(ids, price, strict=True)], "tax_per_dollar")}
+    columns: dict[str, F64] = {}
+    short_rate, long_rate = data.details.st_tax_rate, data.details.lt_tax_rate
+    if short_rate is not None and long_rate is not None:
+        columns["tax_per_dollar"] = to_float64([_tax_per_dollar(data, positions.get(security), px, short_rate, long_rate) for security, px in zip(ids, price, strict=True)], "tax_per_dollar")
     if "tcost_bps" in universe.columns:
         columns["tcost_per_dollar"] = to_float64([_decimal(value) / BPS for value in universe["tcost_bps"]], "tcost_per_dollar")
-    if "adv_shares" in universe.columns:
+    participation = data.details.max_adv_participation
+    if "adv_shares" in universe.columns and participation is not None:
         consumed = [int(value) for value in universe["adv_consumed_shares"]] if "adv_consumed_shares" in universe.columns else [0] * n
         columns["adv_capacity"] = to_float64(
-            [data.details.max_adv_participation * Decimal(max(int(adv) - used, 0)) * px / nav for adv, used, px in zip(universe["adv_shares"], consumed, price, strict=True)], "adv_capacity"
+            [participation * Decimal(max(int(adv) - used, 0)) * px / nav for adv, used, px in zip(universe["adv_shares"], consumed, price, strict=True)], "adv_capacity"
         )
     extra_columns, flags, groups = _exports(universe)
     return ProblemSpec(
@@ -208,11 +214,11 @@ def _positions(holdings: pd.DataFrame) -> dict[str, _Position]:
     }
 
 
-def _tax_per_dollar(data: PortfolioData, position: _Position | None, price: Decimal) -> Decimal:
+def _tax_per_dollar(data: PortfolioData, position: _Position | None, price: Decimal, short_rate: Decimal, long_rate: Decimal) -> Decimal:
     """Signed tax owed per dollar sold: gain fraction times the rate for the holding period. Losses are negative."""
     if position is None:
         return Decimal(0)
-    rate = data.details.lt_tax_rate if data.as_of_date - position.acquired_on > LONG_TERM_HOLDING else data.details.st_tax_rate
+    rate = long_rate if data.as_of_date - position.acquired_on > LONG_TERM_HOLDING else short_rate
     return (price - position.avg_cost) / price * rate
 
 

@@ -240,9 +240,12 @@ portfolio, as its JSON record.
 ## Style limits (columns of `details`)
 
 Every bounded constraint reads its limits from the data, not from the config. The per-account scalars
-are columns of the `details` frame, and the build exports every numeric column of the account's row —
-these, `nav`, `cash`, the tax rates, and any further column the desk keeps on an account — as a spec
-scalar a constraint row can name with `{"scalar": ...}`:
+are columns of the `details` frame, and the build exports every numeric column the account's row
+carries — these, `nav`, `cash`, the tax rates, and any further column the desk keeps on an account — as
+a spec scalar a constraint row can name with `{"scalar": ...}`. Only `portfolio_id`, `nav`,
+`max_weight`, and `min_trade_notional` are required, because the engine itself reads them; every
+other column below is optional, and a row that names a missing one fails its portfolio by name at
+build rather than reading a zero:
 
 | Column | Type | Description |
 |---|---|---|

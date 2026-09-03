@@ -77,41 +77,44 @@ type DetailValue = Decimal | int | str | bool | None
 class PortfolioDetails(StrictModel):
     """One row of the ``details`` dataset: the account's facts, its management-style limits, and whatever else the row carried.
 
-    The limits are fractions of NAV and reach the spec as scalars the typed constraints read by name:
-    ``max_weight`` is the single-name cap the build folds into the per-security bounds,
-    ``max_turnover`` is two-way (buys plus sells), ``cash_lb``/``cash_ub`` bound the uninvested
-    fraction, and ``max_adv_participation`` caps a day's share of each name's volume.
-    ``min_trade_notional`` is not a constraint at all — the order step drops trades below it after the
-    solve. ``extra`` holds every column the schema does not declare — an issuer cap, a benchmark id —
-    and the build exports each numeric one as a spec scalar too, so a constraint row can bound against
-    ``{"scalar": "max_issuer_weight"}`` without the engine knowing what an issuer is.
+    Four fields are required because the engine itself reads them: ``portfolio_id``, ``nav`` (every
+    weight is a fraction of it), ``max_weight`` (the single-name cap the build folds into the
+    per-security bounds), and ``min_trade_notional`` (not a constraint at all — the order step drops
+    trades below it after the solve). The rest are optional: the tax rates give the build
+    ``tax_per_dollar`` and ``max_adv_participation`` gives it ``adv_capacity`` when present, and a
+    term or row that needs the missing column is refused by name at build; ``cash``, ``max_turnover``
+    (two-way, buys plus sells), and ``cash_lb``/``cash_ub`` (bounds on the uninvested fraction) reach
+    the spec only as scalars the typed constraints read by name, so a desk whose account master lacks
+    one leaves it out. ``extra`` holds every column the schema does not declare — an issuer cap, a
+    benchmark id — and the build exports each numeric one as a spec scalar too, so a constraint row
+    can bound against ``{"scalar": "max_issuer_weight"}`` without the engine knowing what an issuer is.
     """
 
     portfolio_id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    state: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
-    st_tax_rate: Decimal = Field(ge=0, lt=1)
-    lt_tax_rate: Decimal = Field(ge=0, lt=1)
-    cash: Decimal = Field(ge=0)
     nav: Decimal = Field(gt=0)
     max_weight: Decimal = Field(gt=0, le=1)
-    max_turnover: Decimal = Field(ge=0, le=2)
-    max_adv_participation: Decimal = Field(ge=0, le=1)
     min_trade_notional: Decimal = Field(ge=0)
-    cash_lb: Decimal = Field(ge=0, le=1)
-    cash_ub: Decimal = Field(ge=0, le=1)
+    name: str | None = Field(default=None, min_length=1)
+    state: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
+    st_tax_rate: Decimal | None = Field(default=None, ge=0, lt=1)
+    lt_tax_rate: Decimal | None = Field(default=None, ge=0, lt=1)
+    cash: Decimal | None = Field(default=None, ge=0)
+    max_turnover: Decimal | None = Field(default=None, ge=0, le=2)
+    max_adv_participation: Decimal | None = Field(default=None, ge=0, le=1)
+    cash_lb: Decimal | None = Field(default=None, ge=0, le=1)
+    cash_ub: Decimal | None = Field(default=None, ge=0, le=1)
     extra: dict[str, DetailValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _cash_bounds_are_ordered(self) -> Self:
-        if self.cash_lb > self.cash_ub:
+        if self.cash_lb is not None and self.cash_ub is not None and self.cash_lb > self.cash_ub:
             msg = f"cash_lb must not exceed cash_ub, got {self.cash_lb} > {self.cash_ub}"
             raise ValueError(msg)
         return self
 
     def scalars(self) -> dict[str, Decimal]:
-        """Every number on the row a spec can carry as a scalar: the style limits, the facts, and the numeric extras."""
-        declared: dict[str, Decimal] = {
+        """Every number on the row a spec can carry as a scalar: the style limits and facts the row has, and the numeric extras."""
+        declared = {
             "cash": self.cash,
             "nav": self.nav,
             "st_tax_rate": self.st_tax_rate,
@@ -124,7 +127,7 @@ class PortfolioDetails(StrictModel):
             "cash_ub": self.cash_ub,
         }
         numeric = {name: Decimal(value) for name, value in self.extra.items() if isinstance(value, Decimal | int) and not isinstance(value, bool)}
-        return {**numeric, **declared}
+        return {**numeric, **{name: value for name, value in declared.items() if value is not None}}
 
 
 def json_default(value: object) -> str:

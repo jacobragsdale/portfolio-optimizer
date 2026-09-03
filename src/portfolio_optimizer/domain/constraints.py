@@ -480,7 +480,7 @@ class ParticipationLimit(TypedConstraint):
         try:
             spec.column("adv_capacity")
         except MissingSpecColumnError as error:
-            yield f"{error}; a participation limit needs the universe's adv_shares"
+            yield f"{error}; a participation limit needs the universe's adv_shares and the account's max_adv_participation"
 
     def capacity(self, spec: ProblemSpec) -> F64:
         """Each name's budget as a fraction of NAV: the spec's capacity scaled by ``bounds``; the scope says where the constraint applies it."""

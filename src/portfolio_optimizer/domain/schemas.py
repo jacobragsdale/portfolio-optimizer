@@ -20,6 +20,8 @@ TWO = Decimal(2)
 
 
 def _cash_bounds_ordered(frame: pd.DataFrame) -> str | None:
+    if "cash_lb" not in frame.columns or "cash_ub" not in frame.columns:
+        return None
     off = [str(portfolio) for portfolio, low, high in zip(frame["portfolio_id"], frame["cash_lb"], frame["cash_ub"], strict=True) if low > high]
     if off:
         return f"cash_lb exceeds cash_ub for portfolio(s) {off}"
@@ -43,21 +45,25 @@ PORTFOLIOS = FrameSchema(name="portfolios", columns=(ColumnSpec("portfolio_id", 
 DETAILS = FrameSchema(
     name="details",
     columns=(
+        # What the engine itself reads: the id, the NAV every weight is a fraction of, the single-name
+        # cap the build folds into the box, and the dust threshold the order step drops trades below.
         ColumnSpec("portfolio_id", "string"),
-        ColumnSpec("name", "string"),
-        ColumnSpec("state", "string", required=False),
-        ColumnSpec("st_tax_rate", "decimal", ge=ZERO, lt=ONE),
-        ColumnSpec("lt_tax_rate", "decimal", ge=ZERO, lt=ONE),
-        ColumnSpec("cash", "decimal", ge=ZERO),
         ColumnSpec("nav", "decimal", gt=ZERO),
-        # The account's management-style limits. The build exports every one as a spec scalar the
-        # typed constraints read by name, so what a run permits is data that changes daily, not config.
         ColumnSpec("max_weight", "decimal", gt=ZERO, le=ONE),
-        ColumnSpec("max_turnover", "decimal", ge=ZERO, le=TWO),
-        ColumnSpec("max_adv_participation", "decimal", ge=ZERO, le=ONE),
         ColumnSpec("min_trade_notional", "decimal", ge=ZERO),
-        ColumnSpec("cash_lb", "decimal", ge=ZERO, le=ONE),
-        ColumnSpec("cash_ub", "decimal", ge=ZERO, le=ONE),
+        # What the shipped build derives from when present: the tax rates give `tax_per_dollar`, the
+        # participation gives `adv_capacity`; a term or row that needs the missing column is refused by
+        # name at build. The rest are facts and style limits that reach the spec only as scalars a typed
+        # constraint row reads by name, so a desk whose account master lacks one leaves it out.
+        ColumnSpec("name", "string", required=False),
+        ColumnSpec("state", "string", required=False),
+        ColumnSpec("st_tax_rate", "decimal", required=False, ge=ZERO, lt=ONE),
+        ColumnSpec("lt_tax_rate", "decimal", required=False, ge=ZERO, lt=ONE),
+        ColumnSpec("cash", "decimal", required=False, ge=ZERO),
+        ColumnSpec("max_turnover", "decimal", required=False, ge=ZERO, le=TWO),
+        ColumnSpec("max_adv_participation", "decimal", required=False, ge=ZERO, le=ONE),
+        ColumnSpec("cash_lb", "decimal", required=False, ge=ZERO, le=ONE),
+        ColumnSpec("cash_ub", "decimal", required=False, ge=ZERO, le=ONE),
     ),
     key=("portfolio_id",),
     checks=(FrameCheck("cash_bounds_ordered", _cash_bounds_ordered),),

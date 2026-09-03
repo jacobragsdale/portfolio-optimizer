@@ -83,6 +83,14 @@ def test_transaction_cost_comes_from_the_optional_bps_column(make: Factories, fr
     np.testing.assert_allclose(spec.column("tcost_per_dollar"), [0.0005, 0.0, 0.00025])
 
 
+def test_the_derived_columns_need_the_accounts_rates_and_participation(make: Factories) -> None:
+    """Without tax rates there is no `tax_per_dollar`, and without a participation no `adv_capacity` however liquid the universe: a term or row that needs either is refused by name at build rather than fed a zero."""
+    spec = standard(make.portfolio_data(details=make.details(st_tax_rate=None, lt_tax_rate=None, max_adv_participation=None)))
+    assert "tax_per_dollar" not in spec.columns and "adv_capacity" not in spec.columns
+    assert {"st_tax_rate", "lt_tax_rate", "max_adv_participation"}.isdisjoint(spec.scalars)
+    assert "tax_per_dollar" in standard(make.portfolio_data(details=make.details(max_adv_participation=None))).columns, "the rates alone give the tax column"
+
+
 def test_adv_capacity_is_net_of_what_an_earlier_run_consumed(make: Factories, frames: Frames) -> None:
     """A's day is half spent, B's whole day is, and C's is oversubscribed: the budget is the participation times what is left, never negative."""
     universe = frames.three_security_universe().assign(adv_consumed_shares=pd.Series([500_000, 1_000_000, 200_000], dtype="Int64"))

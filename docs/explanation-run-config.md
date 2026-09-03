@@ -144,8 +144,10 @@ three groups, and the engine treats them differently.
 (what each portfolio owns, with cost basis and acquisition date), `universe` (every security the
 portfolio may buy, with its price and — optionally — sector, ADV, lot size, restricted flag, alpha,
 transaction cost, and whatever per-security analytics the terms read), and `details` (per-portfolio
-NAV, cash, tax rates, the account's style limits, and any further column the desk keeps on an
-account). They must be declared here unless the config has assembly steps, in which case a step may
+NAV, the single-name cap, and the dust threshold, which the engine reads; optionally the cash, the
+tax rates, the participation, the turnover cap and cash bounds, which reach the spec only as
+scalars a constraint row names, so an account master that lacks one leaves it out; and any further
+column the desk keeps on an account). They must be declared here unless the config has assembly steps, in which case a step may
 produce them — two custodians' files stacked into one `holdings`, say — and their presence is checked
 after assembly instead. Each frame is validated against a fixed schema after assembly — column set,
 dtypes, nullability, bounds, unique key, and cross-column invariants — with one deliberate opening: all

@@ -125,6 +125,21 @@ def test_style_limits_accept_values_at_their_limits(make: Factories, field: str,
 def test_details_reject_unordered_cash_bounds(make: Factories) -> None:
     with pytest.raises(ValidationError, match="cash_lb must not exceed cash_ub"):
         make.details(cash_lb=Decimal("0.5"), cash_ub=Decimal("0.1"))
+    assert make.details(cash_lb=Decimal("0.5"), cash_ub=None).cash_ub is None, "a bound the row does not carry cannot be crossed"
+
+
+def test_details_need_only_what_the_engine_reads_and_export_only_what_they_carry(make: Factories, frames: Frames) -> None:
+    """An account master with no tax rates, participation, cash, turnover cap, or cash bounds still types: the engine reads the id, the NAV, the single-name cap, and the dust threshold, and the rest reach the spec only when present."""
+    from portfolio_optimizer.domain.frames import validate_frame
+    from portfolio_optimizer.domain.schemas import DETAILS
+
+    optional = ["name", "state", "st_tax_rate", "lt_tax_rate", "cash", "max_turnover", "max_adv_participation", "cash_lb", "cash_ub"]
+    frame = frames.details().drop(columns=optional)
+    validate_frame(frame, DETAILS)
+    details = details_from_frame(frame, PortfolioId("P1"))
+    assert all(getattr(details, field) is None for field in optional)
+    assert set(details.scalars()) == {"nav", "max_weight", "min_trade_notional"}, "a scalar the row does not carry is one a constraint row cannot name, and says so by name at build"
+    assert make.details(st_tax_rate=None, lt_tax_rate=None, max_adv_participation=None).scalars().keys() >= {"cash_lb", "cash_ub", "max_turnover", "cash"}
 
 
 def test_details_from_frame_reads_money_exactly_and_carries_every_other_column_as_an_extra(frames: Frames) -> None:
