@@ -11,7 +11,7 @@ import pytest
 from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedConfig
 from portfolio_optimizer.domain.objective import TermSpecError
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus
-from portfolio_optimizer.engine.build import standard
+from portfolio_optimizer.engine.build import StandardParams, standard
 from portfolio_optimizer.engine.check import constraints_of, verify
 from portfolio_optimizer.engine.solve import InfeasibleError, SolveSetupError
 from portfolio_optimizer.engine.solve import solve as engine_solve
@@ -119,6 +119,19 @@ def test_an_inflow_run_cannot_sell_its_way_back_inside_a_cap_and_says_so(make: F
     )
     with pytest.raises(InfeasibleError, match=r"the book starts with cash 0\.000000 below cash_lb 0\.100000, and an inflow can only lower cash"):
         solve(fully_invested, ChainState.empty(fully_invested.security_ids), resolved)
+
+
+def test_an_inflow_holds_an_over_cap_name_where_it_is_when_the_build_says_so(make: Factories, frames: Frames) -> None:
+    """The over-cap book above under ``hold_breached_starts``: A's cap moves to its 80% weight, so the start is feasible, A is neither bought nor sold, and the cash goes to the rest."""
+    resolved = resolved_with(BUY_TERMS)
+    data = make.portfolio_data(holdings=frames.holdings({"security_id": "A", "quantity": 8000, "avg_cost": Decimal(100)}), details=make.details(max_weight=Decimal("0.6")))
+    held = standard(data, StandardParams(hold_breached_starts=True))
+    assert held.ub[0] == pytest.approx(0.8) and not held.buyable[0], "the cap is the weight, so A is outside the buyable set the schedule couples through"
+    solution = solve(held, ChainState.empty(held.security_ids), resolved)
+    assert solution.w[0] == pytest.approx(0.8, abs=1e-6) and solution.buy[0] == pytest.approx(0.0, abs=1e-6)
+    assert solution.buy[1:].sum() > 0.0, "the cash is put to work elsewhere"
+    report = verify(held, solution, ChainState.empty(held.security_ids), resolved.terms, constraints_of(solution), profile=resolved.profile)
+    assert report.passed, report.violated
 
 
 def test_a_rebalance_trades_out_of_the_starts_an_inflow_cannot(make: Factories, frames: Frames) -> None:

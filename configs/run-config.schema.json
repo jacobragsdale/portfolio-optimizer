@@ -336,8 +336,15 @@
                 "properties": {
                   "params": {
                     "additionalProperties": false,
-                    "description": "`standard` takes no parameters.",
-                    "maxProperties": 0,
+                    "description": "What the standard build lets a config decide: the start policy for the box.",
+                    "properties": {
+                      "hold_breached_starts": {
+                        "default": false,
+                        "description": "A name already held past a bound — over its cap, under its floor — is held where it is instead of failing the portfolio as a start the order flow cannot trade out of: its bound loosens to the current weight, and the box, the buyable set, the order clamp, and the verifier all read the loosened bound. Off, such a start is infeasible and named. A retry of an inflow or an outflow under its own config turns this on.",
+                        "title": "Hold Breached Starts",
+                        "type": "boolean"
+                      }
+                    },
                     "type": "object"
                   }
                 }

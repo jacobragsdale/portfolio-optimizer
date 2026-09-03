@@ -130,14 +130,17 @@ The messages the order-flow profile can add (`domain/order_flow.py`, `infeasible
 |---|---|---|
 | `the book starts with cash C below cash_lb L, and an inflow can only lower cash` | The floor is above the starting cash. | Lower `cash_lb`, or raise the cash first with the outflow. |
 | `the book starts with cash C above cash_ub U, and an outflow can only raise cash` | The cap is below the starting cash. | Raise `cash_ub`, or spend the cash first with the inflow. |
-| `names whose cap is below their holding, which this order flow cannot trade out of: [...]` | A name is held above `max_weight` (the style's, or a universe `max_weight` column) and an inflow cannot sell it down. | Sell it down in the outflow first, loosen the cap, or have a rule mark the name `restricted` so it is frozen where it is. |
-| `names whose floor is above their holding, which this order flow cannot trade out of: [...]` | A name is held below a universe `min_weight` floor and an outflow cannot buy it up. | Buy it up in the inflow first, loosen the floor, or mark the name `restricted`. |
+| `names whose cap is below their holding, which this order flow cannot trade out of: [...]` | A name is held above `max_weight` (the style's, or a universe `max_weight` column) and an inflow cannot sell it down. | Set the build's `hold_breached_starts` so the name is held where it is, sell it down in the outflow first, loosen the cap, or have a rule mark the name `restricted`. |
+| `names whose floor is above their holding, which this order flow cannot trade out of: [...]` | A name is held below a universe `min_weight` floor and an outflow cannot buy it up. | Set `hold_breached_starts`, buy it up in the inflow first, loosen the floor, or mark the name `restricted`. |
 
 A rebalance adds no message of its own: it can move any weight either way, so every start above is
 its ordinary business — the over-cap name is sold down, the cash floor is raised to — which is why a
-failed inflow or outflow is retried as one. The box `lb ≤ w ≤ ub` is part of every solve's identity,
-so a start outside it is the data's to fix: the other order flow, a rebalance, a looser bound, or a
-rule that freezes the name. A typed constraint *row* — a
+failed inflow or outflow can be retried as one. The box `lb ≤ w ≤ ub` is part of every solve's
+identity, and its start policy is the build's: `{"name": "standard", "params":
+{"hold_breached_starts": true}}` moves the breached bound to the current weight, so the name is
+held — outside the buyable or sellable set, bought or sold not at all — and the run goes on. Off,
+the default, a start outside the box is the data's to fix: the other order flow, a rebalance, a
+looser bound, or a rule that freezes the name. A typed constraint *row* — a
 `weight_limit`, a `group_limit`, a `cash_limit` — can instead carry `allow_current_weight`, which holds
 a bound the book already breaches where it is (do not worsen it) rather than failing the portfolio. The
 arithmetic diagnoses that apply to any run — bounds that cannot sum to the required investment, a

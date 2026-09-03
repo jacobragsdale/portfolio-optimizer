@@ -186,6 +186,11 @@ table above. Two things are not decided:
    row — the schedule's buyable set and the order rounding assume it — so a name over its cap in an
    inflow is still an infeasible start the profile names; giving the box a policy would mean
    making it a row, and nothing asks for that yet.
+   *Status 2026-09-02:* the retry asked for it, and the answer was neither a row nor the profile:
+   the box's policy is the *build's*, `standard`'s `hold_breached_starts` param, because the build
+   derives the bounds and every consumer of the box reads the spec's. Putting it on the profile
+   would have split the box residuals the three profiles share; as a build param it is in the
+   config hash and is what a retry under the original order flow turns on. Decided.
 2. **Sells do not feed buys today**, so nothing crosses between an outflow and an inflow; see below.
 
 `both` is what existed before the profiles, extracted and not extended. The wash-trade defect it

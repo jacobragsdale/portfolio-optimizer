@@ -405,7 +405,10 @@ the universe's optional `min_weight`/`max_weight` columns, and the `restricted` 
 everything the bundle carries beyond the schemas by name — each numeric universe column as a spec
 column, each boolean one as a flag, each string one as a grouping, and every number on the account's
 `details` row as a scalar. That export is what lets a constraint row name a column the engine has
-never heard of. A qualified name plugs in a build that reads the bundle its own way — tax lots, a
+never heard of. Its one parameter is the box's start policy, `hold_breached_starts`: a name already
+past a bound is held where it is — the bound moves to the current weight — instead of failing the
+portfolio as a start the order flow cannot trade out of; it is in the config hash, so a run that
+holds and a run that refuses are visibly different runs. A qualified name plugs in a build that reads the bundle its own way — tax lots, a
 factor block, a different bounds policy — and returns a spec the rest of the engine consumes
 unchanged; the engine derives the exact order inputs from whatever spec it returns.
 

@@ -61,7 +61,7 @@ any params.
 | assembly step | `(frames: Frames[, params]) -> Frames` |
 | rule | `(data: PortfolioData[, params]) -> PortfolioData` |
 | solve-order step | `(data: PortfolioData[, params]) -> Decimal` — finite; lower solves first |
-| build step | `(data: PortfolioData[, params]) -> ProblemSpec`; `standard` is the default |
+| build step | `(data: PortfolioData[, params]) -> ProblemSpec`; `standard` is the default, and its one param is `hold_breached_starts` (default `false`): a name already past a bound is held where it is, its bound moved to the current weight, instead of failing the portfolio as a start the order flow cannot trade out of |
 | solve step | `(request: SolveRequest[, params]) -> SolveResult`; `cvxpy` is the default |
 | sink | `(orders: pd.DataFrame, io: IoContext[, params]) -> tuple[Artifact, ...]` |
 
@@ -212,7 +212,10 @@ The per-security box `lb ≤ w ≤ ub` — the bounds the build derives from the
 universe's optional `min_weight`/`max_weight` columns, and the `restricted` flag — is part of every
 solve's trade identity, not a row; so is what the trade means under the run's `order_flow` — `w ≥ w0` with
 `buy = w − w0`, `w ≤ w0` with `sell = w0 − w`, or `w` free in the box with `buy = max(w − w0, 0)` and
-`sell = max(w0 − w, 0)` under `rebalance`.
+`sell = max(w0 − w, 0)` under `rebalance`. The box's own start policy is the build's:
+`{"name": "standard", "params": {"hold_breached_starts": true}}` holds a name already past a bound
+where it is, so an inflow over a name's cap is a feasible run that buys none of it rather than an
+infeasible start.
 
 The shipped example's rows for one account (`examples/data/constraints.csv`):
 

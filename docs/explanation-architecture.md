@@ -150,10 +150,14 @@ the cash bounds keep their meaning as the cash after the run, so a book that sta
 its bound is infeasible, and the infeasibility diagnosis says so in words. The same holds for a name
 held past a bound the order flow cannot move it back inside (over its cap in an inflow, under its floor
 in an outflow): the profile lists the names. A rebalance has no such start — it moves any weight
-either way — which is what makes it the retry for a failed inflow or outflow. The box `lb ≤ w ≤ ub` is part of every profile's
-identity — the schedule's buyable set and the order rounding already assume it — so a start outside it
-is the data's to fix; a typed constraint *row* carries its own start policy, `allow_current_weight`,
-which holds a bound the book already breaches where it is instead of failing the portfolio.
+either way — which is what makes it one retry for a failed inflow or outflow. The box `lb ≤ w ≤ ub` is part of every profile's
+identity — the schedule's buyable set and the order rounding already assume it — so its start policy
+belongs to the build that derives it, not to the profile: the standard build's `hold_breached_starts`
+moves a breached bound to the current weight, and because every consumer of the box reads the
+spec's bounds, the held name leaves the buyable set, rounds to no order, and passes the verifier
+without any of them knowing why. Off, a start outside the box is the data's to fix. A typed
+constraint *row* carries its own start policy, `allow_current_weight`, which holds a bound the book
+already breaches where it is instead of failing the portfolio.
 
 ## The solve step is the interpreter
 

@@ -18,16 +18,31 @@ from decimal import Decimal
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 from scipy.sparse import csc_array, csr_array
 
 from portfolio_optimizer.domain.data import PortfolioData
 from portfolio_optimizer.domain.results import F64, Flags, Grouping, OrderInputs, ProblemSpec
 from portfolio_optimizer.domain.schemas import UNIVERSE
+from portfolio_optimizer.domain.types import Params
 
 LONG_TERM_HOLDING = timedelta(days=365)
 """Positions held strictly longer than this are taxed at the long-term rate."""
 
 BPS = Decimal(10_000)
+
+
+class StandardParams(Params):
+    """What the standard build lets a config decide: the start policy for the box."""
+
+    hold_breached_starts: bool = Field(
+        default=False,
+        description="A name already held past a bound — over its cap, under its floor — is held where it is instead of failing the portfolio as a start the order flow cannot trade out of: its bound loosens to the current weight, and the box, the buyable set, the order clamp, and the verifier all read the loosened bound. Off, such a start is infeasible and named. A retry of an inflow or an outflow under its own config turns this on.",
+    )
+
+
+DEFAULT_PARAMS = StandardParams()
+"""The build without a `params` block: the box holds nothing, so a breached start is an infeasibility."""
 
 
 class BuildError(ValueError):
@@ -58,14 +73,15 @@ def to_float64(values: Sequence[Decimal | int], name: str) -> F64:
     return out
 
 
-def standard(data: PortfolioData) -> ProblemSpec:
+def standard(data: PortfolioData, params: StandardParams = DEFAULT_PARAMS) -> ProblemSpec:
     """Align every input to the sorted universe and express it as a fraction of NAV.
 
     Derived per security: ``tax_per_dollar`` (signed; a loss is negative), ``tcost_per_dollar`` where
     the universe carries ``tcost_bps``, and ``adv_capacity`` — the style's participation times the
     day's volume, as a fraction of NAV — where it carries ``adv_shares``. The bounds fold the style's
     ``max_weight``, the optional ``min_weight``/``max_weight`` columns, and the ``restricted`` flag,
-    which freezes a name at its current weight.
+    which freezes a name at its current weight; under ``hold_breached_starts`` a name already past a
+    bound is held there too, its bound loosened to the current weight.
     """
     universe = data.universe.sort_values("security_id", kind="stable").reset_index(drop=True)
     ids = tuple(str(value) for value in universe["security_id"])
@@ -80,7 +96,7 @@ def standard(data: PortfolioData) -> ProblemSpec:
     shares_held = [positions[security].quantity if security in positions else 0 for security in ids]
     lot_size = [int(value) for value in universe["lot_size"]] if "lot_size" in universe.columns else [1] * n
     w0 = [Decimal(shares) * px / nav for shares, px in zip(shares_held, price, strict=True)]
-    lb, ub = _bounds(data, universe, ids, w0)
+    lb, ub = _bounds(data, universe, ids, w0, hold=params.hold_breached_starts)
     columns: dict[str, F64] = {"tax_per_dollar": to_float64([_tax_per_dollar(data, positions.get(security), px) for security, px in zip(ids, price, strict=True)], "tax_per_dollar")}
     if "tcost_bps" in universe.columns:
         columns["tcost_per_dollar"] = to_float64([_decimal(value) / BPS for value in universe["tcost_bps"]], "tcost_per_dollar")
@@ -196,8 +212,8 @@ def _tax_per_dollar(data: PortfolioData, position: _Position | None, price: Deci
     return (price - position.avg_cost) / price * rate
 
 
-def _bounds(data: PortfolioData, universe: pd.DataFrame, ids: tuple[str, ...], w0: list[Decimal]) -> tuple[list[Decimal], list[Decimal]]:
-    """Long-only floor and style cap, tightened by optional per-security columns; restricted names are frozen."""
+def _bounds(data: PortfolioData, universe: pd.DataFrame, ids: tuple[str, ...], w0: list[Decimal], *, hold: bool) -> tuple[list[Decimal], list[Decimal]]:
+    """Long-only floor and style cap, tightened by optional per-security columns; restricted names are frozen, and so — under ``hold`` — is the breached side of a name that starts past a bound."""
     floors = [_optional_decimal(value) for value in universe["min_weight"]] if "min_weight" in universe.columns else [None] * len(ids)
     caps = [_optional_decimal(value) for value in universe["max_weight"]] if "max_weight" in universe.columns else [None] * len(ids)
     frozen = [bool(value) for value in universe["restricted"]] if "restricted" in universe.columns else [False] * len(ids)
@@ -215,6 +231,10 @@ def _bounds(data: PortfolioData, universe: pd.DataFrame, ids: tuple[str, ...], w
         if low > high:
             msg = f"{security}: lower bound {low} exceeds upper bound {high}"
             raise BuildError(msg)
+        if hold:
+            # Hold, do not worsen: the bound the start already breaches moves to the current weight,
+            # so the name is outside the buyable (or sellable) set and every consumer of the box agrees.
+            low, high = min(low, w0[index]), max(high, w0[index])
         lb.append(low)
         ub.append(high)
     return lb, ub

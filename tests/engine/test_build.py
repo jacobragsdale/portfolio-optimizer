@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from scipy.sparse import csr_array
 
-from portfolio_optimizer.engine.build import LONG_TERM_HOLDING, BuildError, order_inputs, standard, to_float64
+from portfolio_optimizer.engine.build import LONG_TERM_HOLDING, BuildError, StandardParams, order_inputs, standard, to_float64
 from tests.conftest import AS_OF, Factories, Frames
 
 
@@ -101,6 +101,22 @@ def test_crossed_per_security_bounds_are_rejected(make: Factories, frames: Frame
     universe = frames.three_security_universe().assign(max_weight=pd.Series([Decimal("0.1"), None, None], dtype="object"), min_weight=pd.Series([Decimal("0.2"), None, None], dtype="object"))
     with pytest.raises(BuildError, match=r"A: lower bound 0\.2 exceeds upper bound 0\.1"):
         standard(make.portfolio_data(universe=universe))
+
+
+def test_hold_breached_starts_moves_the_breached_bound_to_the_current_weight(make: Factories, frames: Frames) -> None:
+    """A and B start at half the book against a 40% cap, C at nothing against a 20% floor: held, each breached bound moves to the weight, so the name leaves the buyable (or sellable) set instead of failing the start; the untouched side and the other bounds are as they were, and the default build is unchanged."""
+    universe = frames.three_security_universe().assign(min_weight=pd.Series([None, None, Decimal("0.2")], dtype="object"))
+    data = make.portfolio_data(universe=universe, details=make.details(max_weight=Decimal("0.4")))
+    strict = standard(data)
+    np.testing.assert_array_equal(strict.ub, [0.4, 0.4, 0.4])
+    np.testing.assert_array_equal(strict.lb, [0.0, 0.0, 0.2])
+    held = standard(data, StandardParams(hold_breached_starts=True))
+    np.testing.assert_array_equal(held.ub, [0.5, 0.5, 0.4])
+    np.testing.assert_array_equal(held.lb, [0.0, 0.0, 0.0])
+    np.testing.assert_array_equal(held.buyable, [False, False, True])
+    np.testing.assert_array_equal(held.sellable, [True, True, False])
+    assert held.content_hash() != strict.content_hash(), "the policy changes the problem the solver sees, so it changes the spec hash"
+    assert standard(data, StandardParams()).content_hash() == strict.content_hash()
 
 
 def test_extra_numeric_columns_are_exported_by_name(make: Factories, frames: Frames) -> None:
