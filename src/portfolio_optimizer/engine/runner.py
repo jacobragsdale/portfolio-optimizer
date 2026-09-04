@@ -33,14 +33,20 @@ import pandas as pd
 from portfolio_optimizer.config.resolve import ResolvedConfig
 from portfolio_optimizer.domain.constraints import frame_reads_chain
 from portfolio_optimizer.domain.data import IoContext
+from portfolio_optimizer.domain.frames import validate_frame
 from portfolio_optimizer.domain.results import RUN_SCOPED, Artifact, AssemblyAuditRecord, Contribution, PortfolioFailure, PortfolioResult
+from portfolio_optimizer.domain.schemas import CHECK_RESULTS
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.backends import Backend, BackendFactory, ClusterError, InlineBackend, Pending, SharedRunData, TaskOutput, WorkerEnvironmentError, WorkersReady
 from portfolio_optimizer.engine.dask_backend import DaskBackend
 from portfolio_optimizer.engine.environment import IMAGE_DIGEST_VARIABLE, GitInfo, WorkerEnvironment, environment_for, package_versions
+from portfolio_optimizer.engine.files import write_atomically
 from portfolio_optimizer.engine.hashing import file_sha256
-from portfolio_optimizer.engine.load import DatasetAudit, assemble, load_datasets
+from portfolio_optimizer.engine.load import AssembledDatasets, DatasetAudit, assemble, load_datasets
 from portfolio_optimizer.engine.manifest import (
+    CHECKS_SUBDIR,
+    CheckStatus,
+    CheckStepRecord,
     ClusterRecord,
     ConfigInfo,
     RunManifest,
@@ -214,6 +220,7 @@ def run(resolved: ResolvedConfig, context: RunContext, *, backend_factory: Backe
     dataset_audits: tuple[DatasetAudit, ...] = ()
     assembly_audits: tuple[AssemblyAuditRecord, ...] = ()
     executed: Executed | None = None
+    assembled: AssembledDatasets | None = None
     outcomes: Mapping[PortfolioId, Outcome] = {}
     cluster_error: PortfolioFailure | None = None
     try:
@@ -242,18 +249,21 @@ def run(resolved: ResolvedConfig, context: RunContext, *, backend_factory: Backe
         session.close()
     ordered = tuple(outcomes[portfolio_id] for portfolio_id in order)
     persisted = executed.artifacts if executed is not None else ()
+    orders = _orders(ordered, run_id=io.run_id)
     with recorder.span("sink"):
-        published, publish_error = _publish(ordered, resolved, io)
+        published, publish_error = _publish(orders, resolved, io)
+    with recorder.span("checks"):
+        check_records, check_artifacts, check_error = _run_checks(orders, assembled, ordered, resolved, io.output_dir / io.run_id, run_id=io.run_id)
     if session.provision_started_s is not None and session.ready_s is not None:
         recorder.add("cluster", started_at_s=session.provision_started_s, duration_s=session.ready_s - session.provision_started_s)
     spans = sort_spans((*recorder.spans, *session.spans))
     trace_path = write_trace(spans, io.output_dir / io.run_id)
     infrastructure_error = publish_error if publish_error is not None else cluster_error
-    recorded = (*ordered, infrastructure_error) if infrastructure_error is not None else ordered
-    reports = write_failure_reports([outcome for outcome in recorded if isinstance(outcome, PortfolioFailure)], io.output_dir / io.run_id, run_id=io.run_id)
-    artifacts = (*persisted, *published, *reports, Artifact(path=str(trace_path), sha256=file_sha256(trace_path), size_bytes=trace_path.stat().st_size))
-    exit_code = _exit_code(ordered, infrastructure_error)
-    manifest = _manifest(resolved, session, dataset_audits, assembly_audits, ordered, executed, artifacts, exit_code, infrastructure_error, spans)
+    run_failures = tuple(failure for failure in (infrastructure_error, check_error) if failure is not None)
+    reports = write_failure_reports([*(outcome for outcome in ordered if isinstance(outcome, PortfolioFailure)), *run_failures], io.output_dir / io.run_id, run_id=io.run_id)
+    artifacts = (*persisted, *published, *check_artifacts, *reports, Artifact(path=str(trace_path), sha256=file_sha256(trace_path), size_bytes=trace_path.stat().st_size))
+    exit_code = _exit_code(ordered, infrastructure_error, check_records, check_error)
+    manifest = _manifest(resolved, session, dataset_audits, assembly_audits, ordered, executed, artifacts, exit_code, run_failures, check_records, spans)
     manifest_path = write_manifest(manifest, io.output_dir / io.run_id)
     log.info("run finished", extra={"run_id": io.run_id, "stage": "manifest", "exit_code": exit_code})
     return RunReport(run_id=io.run_id, outcomes=ordered, manifest=manifest, manifest_path=manifest_path, artifacts=artifacts, exit_code=exit_code)
@@ -626,15 +636,21 @@ def _skipped_after(portfolio_id: PortfolioId, blamed: PortfolioId, cause: Outcom
 # --- persistence, publication, manifest ---
 
 
-def _publish(outcomes: Sequence[Outcome], resolved: ResolvedConfig, io: IoContext) -> tuple[tuple[Artifact, ...], PortfolioFailure | None]:
-    """Call the sink once with every solved portfolio's orders; a sink failure is infrastructure, and the manifest is still written."""
+def _orders(outcomes: Sequence[Outcome], *, run_id: str) -> pd.DataFrame | None:
+    """Every solved portfolio's orders as one frame, sorted — what the sink publishes and the checks prove — or ``None`` when nothing solved."""
     solved = [outcome for outcome in outcomes if isinstance(outcome, PortfolioResult)]
     if not solved:
-        log.error("no portfolio solved; nothing published", extra={"run_id": io.run_id, "stage": "sink"})
+        log.error("no portfolio solved; nothing published", extra={"run_id": run_id, "stage": "sink"})
+        return None
+    return pd.concat([result.orders for result in solved], ignore_index=True).sort_values(["portfolio_id", "security_id"], kind="stable").reset_index(drop=True)
+
+
+def _publish(orders: pd.DataFrame | None, resolved: ResolvedConfig, io: IoContext) -> tuple[tuple[Artifact, ...], PortfolioFailure | None]:
+    """Call the sink once with every solved portfolio's orders; a sink failure is infrastructure, and the manifest is still written."""
+    if orders is None:
         return (), None
     artifacts: list[Artifact] = []
     try:
-        orders = pd.concat([result.orders for result in solved], ignore_index=True).sort_values(["portfolio_id", "security_id"], kind="stable").reset_index(drop=True)
         published = resolved.sink.invoke(orders=orders, io=io)
         if not isinstance(published, tuple):
             msg = f"sink {resolved.sink.qualname!r} returned {type(published).__name__}, expected a tuple of Artifact"
@@ -650,6 +666,69 @@ def _publish(outcomes: Sequence[Outcome], resolved: ResolvedConfig, io: IoContex
     return tuple(artifacts), None
 
 
+def _run_checks(
+    orders: pd.DataFrame | None, assembled: AssembledDatasets | None, outcomes: Sequence[Outcome], resolved: ResolvedConfig, run_dir: Path, *, run_id: str
+) -> tuple[tuple[CheckStepRecord, ...], tuple[Artifact, ...], PortfolioFailure | None]:
+    """Run every configured check once over the assembled datasets, the published orders, and the portfolios that solved, and write each one's failing rows.
+
+    ``solved`` is the population a rule applies to — every portfolio that produced an answer, whether or
+    not it produced an order, since a rule that stopped a trade is proven on the account that traded
+    nothing. A check proves a business rule on what went out, so it runs only when something did. Every check
+    runs whatever the others found; a check that raises, or returns something other than examined
+    rows, is the run's own failure at stage ``check`` — a bug in the check, not a verdict on the
+    orders — and the first such failure is the one recorded.
+    """
+    if orders is None or assembled is None or not resolved.checks:
+        return (), (), None
+    frames = assembled.frames()
+    solved = pd.DataFrame({"portfolio_id": pd.Series(_solved_ids(outcomes), dtype="string")})
+    records: list[CheckStepRecord] = []
+    artifacts: list[Artifact] = []
+    error_recorded: PortfolioFailure | None = None
+    for label, step in resolved.checks.items():
+        try:
+            result = step.invoke(frames=frames, orders=orders, solved=solved)
+            if not isinstance(result, pd.DataFrame):
+                msg = f"check {label!r} ({step.qualname}) returned {type(result).__name__}, expected a DataFrame of the rows it examined"
+                raise TypeError(msg)  # a contract violation is reported like any other failure of the check
+            examined = validate_frame(result, CHECK_RESULTS)
+        except Exception as error:  # noqa: BLE001  # the manifest must still be written; the exit code carries the failure
+            log.error("check %r could not run", label, extra={"run_id": run_id, "stage": "check", "error": type(error).__name__})
+            if error_recorded is None:
+                error_recorded = PortfolioFailure.from_exception(RUN_SCOPED, "check", error, message=f"{label}: {error}")
+            continue
+        failed = examined.loc[~examined["ok"].astype("bool")]
+        status: CheckStatus = "failed" if len(failed) else ("passed" if len(examined) else "not_exercised")
+        records.append(
+            CheckStepRecord(
+                label=label,
+                qualname=step.qualname,
+                source_sha256=step.source_sha256,
+                params_sha256=step.params_sha256,
+                examined=len(examined),
+                violations=len(failed),
+                portfolios_affected=int(failed["portfolio_id"].nunique()),
+                status=status,
+                passed=status != "failed",
+            )
+        )
+        log.log(
+            logging.ERROR if status == "failed" else logging.INFO, "check %r %s: %d examined, %d violation(s)", label, status, len(examined), len(failed), extra={"run_id": run_id, "stage": "check"}
+        )
+        if len(failed):
+            artifacts.append(_write_csv(run_dir / CHECKS_SUBDIR / f"{label}.csv", failed))
+    return tuple(records), tuple(artifacts), error_recorded
+
+
+def _solved_ids(outcomes: Sequence[Outcome]) -> list[str]:
+    return [outcome.portfolio_id for outcome in outcomes if isinstance(outcome, PortfolioResult)]
+
+
+def _write_csv(target: Path, frame: pd.DataFrame) -> Artifact:
+    write_atomically(target, lambda path: frame.to_csv(path, index=False))
+    return Artifact(path=str(target), sha256=file_sha256(target), size_bytes=target.stat().st_size)
+
+
 def _persist_result(result: PortfolioResult, run_dir: Path) -> list[Artifact]:
     written: list[Artifact] = []
     for subdir, writer in (("problem_specs", result.spec.to_npz), ("solutions", result.solution.to_npz), ("chain", result.chain_state.to_npz)):
@@ -661,10 +740,10 @@ def _persist_result(result: PortfolioResult, run_dir: Path) -> list[Artifact]:
     return written
 
 
-def _exit_code(outcomes: Sequence[Outcome], infrastructure_error: PortfolioFailure | None) -> int:
+def _exit_code(outcomes: Sequence[Outcome], infrastructure_error: PortfolioFailure | None, checks: Sequence[CheckStepRecord], check_error: PortfolioFailure | None) -> int:
     if infrastructure_error is not None:
         return EXIT_INFRASTRUCTURE
-    if not outcomes or any(isinstance(outcome, PortfolioFailure) for outcome in outcomes):
+    if not outcomes or any(isinstance(outcome, PortfolioFailure) for outcome in outcomes) or check_error is not None or any(not check.passed for check in checks):
         return EXIT_PORTFOLIO_FAILED
     return EXIT_OK
 
@@ -678,7 +757,8 @@ def _manifest(
     executed: Executed | None,
     artifacts: Sequence[Artifact],
     exit_code: int,
-    infrastructure_error: PortfolioFailure | None,
+    run_failures: Sequence[PortfolioFailure],
+    checks: Sequence[CheckStepRecord],
     spans: Sequence[Span],
 ) -> RunManifest:
     config = resolved.config
@@ -692,8 +772,7 @@ def _manifest(
         else failed_record(o, solve_order=_key_text(keys, o.portfolio_id), predecessors=len(predecessors[PortfolioId(o.portfolio_id)]) if PortfolioId(o.portfolio_id) in predecessors else None)
         for o in outcomes
     ]
-    if infrastructure_error is not None:
-        records.append(failed_record(infrastructure_error))
+    records.extend(failed_record(failure) for failure in run_failures)
     solved = [o for o in outcomes if isinstance(o, PortfolioResult)]
     solver = configured_solver(config)
     solver_ver = solved[0].solution.solver_version if solved else solver_version(solver)
@@ -715,6 +794,7 @@ def _manifest(
         datasets=tuple(audits),
         assembly=tuple(assembly_audits),
         portfolios=tuple(records),
+        checks=tuple(checks),
         artifacts=tuple(artifacts),
         timing=tuple(spans),
         exit_code=exit_code,

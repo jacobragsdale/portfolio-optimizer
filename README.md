@@ -45,8 +45,13 @@ The quickest way to learn the engine is the inflow it ships with,
       "max_in_flight": 8
     },
 
-    // No `scope` means one call for the book; no `depends_on` means it starts at once.
+    // The security master: price, sector, volume, lot size, and the restricted flag. No `scope`
+    // means one call for the book; no `depends_on` means it starts at once.
     "universe": {"loader": "load_universe"},
+
+    // The research store: alpha and cost per name. No one service knows a name's price and its
+    // alpha, so the universe arrives in two parts and the `assembly` step below makes one of them.
+    "signals": {"loader": "load_signals"},
 
     // The account master: NAV, cash, tax rates, style limits, and any other column the desk keeps.
     "details": {
@@ -69,6 +74,23 @@ The quickest way to learn the engine is the inflow it ships with,
     "global_parameters": {"loader": "load_parameters"},
     "buy_universe_parameters": {"loader": "load_parameters"}
   },
+
+  // Once per run, after the loaders and before the schemas are checked. The join is a claim the
+  // engine enforces: every universe name has exactly one signal row, or the run stops naming the rest.
+  "assembly": [
+    {
+      "name": "join",
+      "params": {
+        "into": "universe",
+        "source": "signals",
+        "on": ["security_id"],
+        "cardinality": "one_to_one",
+        "require_all_matched": true
+      }
+    },
+    // The source has done its job; dropped, it is not carried into every account's bundle.
+    {"name": "drop", "params": {"datasets": ["signals"]}}
+  ],
 
   // Applied in order to each portfolio; a rule never sees another portfolio. Drop illiquid names,
   // then freeze every name the account traded in the last thirty days.
@@ -98,6 +120,13 @@ The quickest way to learn the engine is the inflow it ships with,
   // Where the orders go.
   "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},
 
+  // Business rules proven on the orders that went out, against the data as the rules first saw it:
+  // each records passed, failed, or not_exercised (the book never reached the rule) under its label.
+  "checks": [
+    {"name": "restricted_never_traded", "label": "restricted_never_traded"},
+    {"name": "no_trades_inside_wash_window", "label": "wash_sale_window", "params": {"window_days": 30}}
+  ],
+
   // What one failure does to the rest, and whether the schedule is the derived graph or the strict
   // line: the same orders either way. Where the work runs is an environment setting, not config.
   "execution": {"on_error": "fail_fast", "dependencies": "overlap"}
@@ -110,10 +139,9 @@ or among the steps installed packages publish, or as `package.module:function`, 
 bands, tax rates, and the run's own parameters are data. The instant is a run argument. Behavior is the
 functions and kinds the config names.
 
-Three keys the example leaves at their defaults: `assembly` (steps that reshape loaded datasets before
-validation), `build` (`standard`, the step that turns a bundle into a problem, replaceable for tax lots
-or a factor block), and `solve_order` (a step that computes each portfolio's priority from the data
-instead of reading the column).
+Two keys the example leaves at their defaults: `build` (`standard`, the step that turns a bundle into a
+problem, replaceable for tax lots or a factor block) and `solve_order` (a step that computes each
+portfolio's priority from the data instead of reading the column).
 
 A failed run is retried with `run CONFIG --retry-of MANIFEST`: any config, over exactly the portfolios
 the manifest recorded as failed at the stages `--retry-stages` names, tagged `retry_of`.
@@ -178,7 +206,10 @@ book's shared liquidity; the outflow harvests the lots held at a loss; the rebal
 buys and sells the negative-alpha name down to its sector floor in one solve. The first two accounts
 have a hand-checkable optimum under each; [the tutorial](docs/tutorial-first-run.md) says what to
 expect at each step. `portfolio-optimizer steps` lists every step, term, and constraint kind the
-environment can name.
+environment can name. Every run ends with the proof a QA tester reads: each typed constraint verified
+on every portfolio with its margin, and each `checks` entry — a business rule proven on the orders
+that went out — as `passed`, `failed`, or `not_exercised`; [how to QA a deployment](docs/how-to-qa-a-deployment.md)
+reads it.
 
 ## The one convention
 
@@ -202,8 +233,8 @@ any installed package, or publish it as an entry point in the group `portfolio_o
 it bare: that is how a firm shares loaders, rules, and sinks across desks, with the package's version in
 every manifest. Before any data loads, the engine imports every named function, checks its signature,
 validates its `params` against the function's own model, and records its source hash in the manifest.
-Loaders, assembly steps, rules, solve-order steps, the build step, solve steps, and sinks all follow
-this rule.
+Loaders, assembly steps, rules, solve-order steps, the build step, solve steps, sinks, and checks all
+follow this rule.
 
 Terms and constraints are *kinds*: strict pydantic models that carry both halves of themselves,
 `to_cvxpy` for the shipped solve step and `value` or `residual` in numpy for the verifier, so nothing
@@ -220,7 +251,7 @@ engine ignores the key.
 
 | Path | Role |
 |---|---|
-| `src/portfolio_optimizer/{loaders,assembly,rules,solve_order,solvers,sinks}.py` | **Yours to edit.** Each ships worked, tested examples. Shared steps live in your own installed package, named `package.module:function` or published as entry points. |
+| `src/portfolio_optimizer/{loaders,assembly,rules,solve_order,solvers,sinks,checks}.py` | **Yours to edit.** Each ships worked, tested examples. Shared steps live in your own installed package, named `package.module:function` or published as entry points. |
 | `src/portfolio_optimizer/engine/` | Loading and assembly, the rule pipeline, the standard build step, the solve stage, cvxpy-free verification, orders, the per-portfolio tasks, the derived dependency graph, the inline and Dask backends, the manifest. Rarely edited. |
 | `src/portfolio_optimizer/domain/` | Frame schemas, the per-portfolio bundle and its optimizer frame, the pure-data problem spec and results, the typed constraint and term kinds and their registry, and the order-flow profiles. |
 | `src/portfolio_optimizer/config/` | The run-config models, the step resolver, and the JSON Schema generator. |

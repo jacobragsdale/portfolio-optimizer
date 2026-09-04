@@ -45,7 +45,7 @@ def test_shipped_example_validates(example_text: str) -> None:
     assert rebalance.model_dump(exclude={"run", "order_flow"}) == config.model_dump(exclude={"run", "order_flow"}), "otherwise the three order flows are one wiring"
     handoff = load_run_config(HANDOFF_CONFIG.read_text())
     assert handoff.run.name == "example_inflow_after_outflow" and handoff.order_flow == "inflow"
-    assert set(handoff.datasets) == {*config.datasets, "adv_consumed"} and [step.name for step in handoff.assembly] == ["join", "drop"], (
+    assert set(handoff.datasets) == {*config.datasets, "adv_consumed"} and [step.name for step in handoff.assembly] == ["join", "join", "drop"], (
         "the outflow's orders come in twice: as the blotter and as the volume each name lost"
     )
     assert handoff.model_dump(exclude={"run", "datasets", "assembly"}) == config.model_dump(exclude={"run", "datasets", "assembly"}), (
@@ -246,3 +246,16 @@ def test_each_input_carries_its_own_bound(example_dict: dict[str, object]) -> No
     holdings, details = config.datasets["holdings"], config.datasets["details"]
     assert isinstance(holdings, DatasetConfig) and holdings.max_in_flight == 2
     assert isinstance(details, DatasetConfig) and details.max_in_flight is None, "omitted is unbounded"
+
+
+def test_a_check_is_an_object_with_a_unique_label(example_dict: dict[str, object]) -> None:
+    assert [check.label for check in load_run_config(json.dumps(example_dict)).checks] == ["restricted_never_traded", "wash_sale_window"]
+    with pytest.raises(ValidationError, match="label"):
+        load_run_config(json.dumps(example_dict | {"checks": ["restricted_never_traded"]}))
+    with pytest.raises(ValidationError, match="label"):
+        load_run_config(json.dumps(example_dict | {"checks": [{"name": "restricted_never_traded", "label": "no/slashes"}]}))
+    same_twice = [{"name": "restricted_never_traded", "label": "same"}, {"name": "restricted_never_traded", "label": "same"}]
+    with pytest.raises(ValidationError, match=r"checks repeat label\(s\) \['same'\]"):
+        load_run_config(json.dumps(example_dict | {"checks": same_twice}))
+    without = load_run_config(json.dumps({key: value for key, value in example_dict.items() if key != "checks"}))
+    assert without.checks == (), "checks are optional; a run without them proves its typed rows and nothing else"

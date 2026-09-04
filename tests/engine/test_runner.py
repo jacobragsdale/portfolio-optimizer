@@ -3,6 +3,7 @@
 import hashlib
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
@@ -148,7 +149,7 @@ def test_manifest_records_provenance_for_every_stage(tmp_path: Path, scheduler_a
     manifest = execute(tmp_path, scheduler_address=scheduler_address).manifest
     assert manifest.git_sha == GIT.sha
     assert manifest.config.sha256 == resolved_example_real(sink="orders_to_parquet").config_sha256
-    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "details", "constraints", "trades", "global_parameters", "buy_universe_parameters"}
+    assert {d.name for d in manifest.datasets} == {"portfolios", "holdings", "universe", "signals", "details", "constraints", "trades", "global_parameters", "buy_universe_parameters"}
     assert [term["name"] for term in manifest.terms] == ["alpha", "transaction_cost"], "the terms as records, readable by verify without the config"
     p1 = manifest.portfolios[0]
     assert [r.qualname for r in p1.rules] == ["portfolio_optimizer.rules:restrict_low_liquidity", "portfolio_optimizer.rules:restrict_recent_trades"]
@@ -159,6 +160,17 @@ def test_manifest_records_provenance_for_every_stage(tmp_path: Path, scheduler_a
     assert p1.check is not None
     assert p1.check.passed
     assert "ub" in p1.check.active and "adv/participation" in p1.check.active
+    assert set(p1.check.active) <= set(p1.check.residuals) and {"lb", "ub", "cash_floor/cash_limit", "sector_cap/group_limit"} <= set(p1.check.residuals), (
+        "every residual, signed, by the name verify prints"
+    )
+    assert all(p1.check.residuals[name] >= -p1.check.tolerance for name in p1.check.active), "an active check sits within the tolerance of its bound"
+    assert all(residual < -p1.check.tolerance for name, residual in p1.check.residuals.items() if "/" in name and name not in p1.check.active), (
+        "every constraint row that does not bind kept margin: its residual is negative; the order flow's own equalities sit at zero by construction"
+    )
+    assert p1.check.residuals["cash_floor/cash_limit"] < -0.04, "P1 keeps 50,000 of cash over a floor of zero: five percent of margin"
+    assert [(check.label, check.status, check.examined) for check in manifest.checks] == [("restricted_never_traded", "not_exercised", 0), ("wash_sale_window", "not_exercised", 0)], (
+        "the two-account book has no restricted name and no recent trade of its own, so the shipped checks prove nothing here, and say so"
+    )
     assert p1.drift is not None
     assert p1.drift.max_weight_error <= 1e-6, "the example's deltas are whole shares, so what drift is left is the solver's own slack, not rounding"
     assert p1.orders is not None
@@ -254,3 +266,51 @@ def test_the_sink_failure_writes_its_own_traceback(tmp_path: Path, scheduler_add
     assert "FileExistsError" in text
     assert "portfolio_optimizer/sinks.py" in text, "the sink's own frame, so the failure is placed in the step that raised it"
     assert str(report_path) in {a.path for a in report.manifest.artifacts}
+
+
+# --- checks: business rules proven on the orders that went out ---
+
+
+def test_a_failed_check_fails_the_run_and_writes_the_rows_it_found(tmp_path: Path) -> None:
+    checks = [{"name": "tests.steps:failing_check", "label": "every_order"}, {"name": "tests.steps:empty_check", "label": "never_reached"}]
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), checks=checks)  # a spawned worker cannot import tests.steps, so this run stays in one process
+    assert report.exit_code == EXIT_PORTFOLIO_FAILED
+    assert [type(outcome).__name__ for outcome in report.outcomes] == ["PortfolioResult", "PortfolioResult"], "the portfolios solved and were published; the business rule is what failed"
+    every_order, never_reached = report.manifest.checks
+    assert (every_order.label, every_order.qualname, every_order.status, every_order.passed) == ("every_order", "tests.steps:failing_check", "failed", False)
+    assert (every_order.examined, every_order.violations, every_order.portfolios_affected) == (3, 3, 2), "P1's two orders and P2's one"
+    assert (never_reached.status, never_reached.passed, never_reached.examined, never_reached.violations) == ("not_exercised", True, 0, 0), "nothing examined is not a pass, and not a failure either"
+    run_dir = tmp_path / "run-test" / "run-test"
+    rows = pd.read_csv(run_dir / "checks" / "every_order.csv")
+    assert rows[["portfolio_id", "security_id", "ok"]].to_dict("records") == [
+        {"portfolio_id": "P1", "security_id": "A", "ok": False},
+        {"portfolio_id": "P1", "security_id": "C", "ok": False},
+        {"portfolio_id": "P2", "security_id": "A", "ok": False},
+    ]
+    assert str(run_dir / "checks" / "every_order.csv") in {artifact.path for artifact in report.manifest.artifacts}
+    assert not (run_dir / "checks" / "never_reached.csv").exists(), "no violation, no file"
+    assert (run_dir / "orders" / "orders.parquet").exists(), "the orders were published before the check ran; gating publication on a check is not this feature"
+    assert "checks" in {span.stage for span in report.manifest.timing}
+    assert [record.portfolio_id for record in report.manifest.portfolios] == ["P1", "P2"], "a failed check is the run's verdict, not a portfolio's failure"
+
+
+def test_a_check_that_cannot_run_is_the_runs_own_failure_at_stage_check(tmp_path: Path) -> None:
+    checks = [{"name": "tests.steps:raising_check", "label": "broken"}, {"name": "tests.steps:lying_check", "label": "liar"}, {"name": "tests.steps:empty_check", "label": "still_runs"}]
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), checks=checks)
+    assert report.exit_code == EXIT_PORTFOLIO_FAILED
+    record = report.manifest.portfolios[-1]
+    assert (record.portfolio_id, record.status, record.failure_stage) == ("*", "failed", "check")
+    assert record.error == "RuntimeError: broken: the check itself is broken", "the first check that could not run is the one recorded, under its label"
+    assert [check.label for check in report.manifest.checks] == ["still_runs"], "a check that could not run has no outcome to record; the ones after it still run"
+    report_path = tmp_path / "run-test" / "run-test" / "failures" / "check.txt"
+    text = report_path.read_text()
+    assert "portfolio_id: *" in text and "stage: check" in text and "tests/steps.py" in text, "the check's own frame, so the failure is placed in the step that raised it"
+    assert str(report_path) in {artifact.path for artifact in report.manifest.artifacts}
+
+
+def test_a_run_without_checks_records_none_and_a_run_that_solved_nothing_runs_none(tmp_path: Path) -> None:
+    assert execute(tmp_path, backend_factory=factory_for(LazyBackend()), checks=[]).manifest.checks == ()
+    data_root = example_book(tmp_path, **{"details.csv": details_csv(P1={"max_weight": "0.25"}, P2={"max_weight": "0.25"})})
+    report = execute(tmp_path, backend_factory=factory_for(LazyBackend()), data_root=data_root, on_error="continue", checks=[{"name": "tests.steps:failing_check", "label": "every_order"}])
+    assert report.exit_code == EXIT_PORTFOLIO_FAILED and report.solved == ()
+    assert report.manifest.checks == (), "a check proves a business rule on what went out; nothing did"

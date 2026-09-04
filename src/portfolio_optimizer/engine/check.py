@@ -71,8 +71,8 @@ def _residual_check(name: str, residual: F64, spec: ProblemSpec, tolerances: Tol
     worst = int(np.argmax(residual)) if residual.size and residual.size == spec.n else None
     largest = float(residual.max()) if residual.size else float("-inf")
     active = binding and largest >= -tolerances.violation
-    return _check(name, max(largest, 0.0), tolerances.violation, spec.security_ids[worst] if worst is not None else None, label, active=active)
+    return _check(name, max(largest, 0.0), tolerances.violation, spec.security_ids[worst] if worst is not None else None, label, active=active, residual=largest if residual.size else None)
 
 
-def _check(name: str, violation: float, tolerance: float, worst: str | None, label: str, *, active: bool = False) -> ConstraintCheck:
-    return ConstraintCheck(name=name, violation=violation, tolerance=tolerance, passed=violation <= tolerance, worst_security=worst, label=label, active=active)
+def _check(name: str, violation: float, tolerance: float, worst: str | None, label: str, *, active: bool = False, residual: float | None = None) -> ConstraintCheck:
+    return ConstraintCheck(name=name, violation=violation, tolerance=tolerance, passed=violation <= tolerance, worst_security=worst, label=label, active=active, residual=residual)

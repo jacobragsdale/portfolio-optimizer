@@ -81,7 +81,7 @@ def external_modules(config: RunConfig) -> tuple[str, ...]:
     names is not fingerprinted, and a worker missing it fails at stage ``build`` or ``solve`` rather than
     at the environment check.
     """
-    specs = [*(dataset.loader for dataset in config.datasets.values() if isinstance(dataset, DatasetConfig)), *config.assembly, *config.rules, config.build, config.solve, config.sink]
+    specs = [*(dataset.loader for dataset in config.datasets.values() if isinstance(dataset, DatasetConfig)), *config.assembly, *config.rules, config.build, config.solve, config.sink, *config.checks]
     if config.solve_order is not None:
         specs.append(config.solve_order)
     return tuple(sorted({spec.name.partition(":")[0] for spec in specs if spec.is_qualified}))

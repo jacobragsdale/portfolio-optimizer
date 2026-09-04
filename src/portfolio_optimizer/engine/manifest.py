@@ -7,6 +7,7 @@ schedule — as they are; the models here are the per-portfolio summaries and th
 import json
 import platform
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -24,6 +25,11 @@ from portfolio_optimizer.engine.timing import Span
 
 MANIFEST_FILENAME = "manifest.json"
 FAILURES_SUBDIR = "failures"
+CHECKS_SUBDIR = "checks"
+"""Where a check writes the rows that failed it, as ``<label>.csv``."""
+
+type CheckStatus = Literal["passed", "failed", "not_exercised"]
+"""A check's outcome over the batch: every examined row ok, at least one not, or nothing examined — the book never put the rule to the test, which is not a pass."""
 
 
 class WorkerRecord(StrictModel):
@@ -107,6 +113,27 @@ class CheckRecord(StrictModel):
     objective_gap: float
     objective_passed: bool
     passed: bool
+    residuals: dict[str, float] = Field(default_factory=dict)
+    """Every check's signed worst residual by its display name — ``ub``, ``cash_floor/cash_limit`` — so the margin an answer kept against each limit (its negative) is readable here; a check with no residual vector is absent."""
+
+
+class CheckStepRecord(StrictModel):
+    """One check step's outcome over the whole batch, under the label the config gave it.
+
+    ``examined`` is how many rows the business rule applied to and ``violations`` how many of those
+    were breached, across ``portfolios_affected`` portfolios; ``status`` is ``not_exercised`` when
+    nothing was examined, and only ``failed`` fails the run. The rows that failed are in ``checks/<label>.csv``.
+    """
+
+    label: str
+    qualname: str
+    source_sha256: str
+    params_sha256: str
+    examined: int
+    violations: int
+    portfolios_affected: int
+    status: CheckStatus
+    passed: bool
 
 
 class DriftRecord(StrictModel):
@@ -172,6 +199,9 @@ class RunManifest(StrictModel):
     datasets: tuple[DatasetAudit, ...]
     assembly: tuple[AssemblyAuditRecord, ...] = ()
     portfolios: tuple[PortfolioRecord, ...]
+    checks: tuple[CheckStepRecord, ...] = ()
+    """Every configured check's outcome over the batch, in config order; empty when none is configured or nothing solved."""
+
     artifacts: tuple[Artifact, ...]
     timing: tuple[Span, ...] = ()
     """Wall-clock spans over the run's stages, per portfolio and run-wide; ``trace.json`` beside the manifest renders them.
@@ -228,6 +258,7 @@ def solved_record(result: PortfolioResult, violation_tol: float, *, solve_order:
             objective_gap=report.objective_gap,
             objective_passed=report.objective_passed,
             passed=report.passed,
+            residuals={check.display: check.residual for check in report.checks if check.residual is not None},
         ),
         drift=DriftRecord(max_weight_error=drift.max_weight_error, tolerance=drift.tolerance, dropped_orders=drift.dropped_orders, passed=drift.passed),
         orders=OrdersRecord(count=len(result.orders), sha256=frame_sha256(result.orders.drop(columns=["run_id"]), ("portfolio_id", "security_id")), gross_notional=str(gross)),
@@ -304,31 +335,52 @@ def load_manifest(text: str) -> RunManifest:
     return manifest
 
 
-def diff_manifests(left: RunManifest, right: RunManifest) -> list[str]:
-    """Name the first stage at which two runs diverge, overall and per portfolio."""
-    lines: list[str] = []
+@dataclass(frozen=True, slots=True)
+class Divergence:
+    """One place two runs part: ``scope`` is :data:`RUN_SCOPED` for the run as a whole or a portfolio id, ``stage`` the first stage that differs there, ``detail`` how."""
+
+    scope: str
+    stage: str
+    detail: str
+
+    @property
+    def line(self) -> str:
+        """The divergence as ``diff-manifests`` prints it."""
+        return f"{self.stage}: {self.detail}" if self.scope == RUN_SCOPED else f"{self.scope}: {self.detail}"
+
+
+def diff_manifests(left: RunManifest, right: RunManifest) -> tuple[Divergence, ...]:
+    """Name the first stage at which two runs diverge, overall and per portfolio, and every check whose outcome changed."""
+    found: list[Divergence] = []
     if left.config.sha256 != right.config.sha256:
-        lines.append("config: resolved config differs")
+        found.append(Divergence(RUN_SCOPED, "config", "resolved config differs"))
     if left.git_sha != right.git_sha:
-        lines.append(f"code: git sha {left.git_sha[:12]} vs {right.git_sha[:12]}")
+        found.append(Divergence(RUN_SCOPED, "code", f"git sha {left.git_sha[:12]} vs {right.git_sha[:12]}"))
     if _versions_identity(left) != _versions_identity(right):
-        lines.append("versions: library, solver, or step-package versions differ")
+        found.append(Divergence(RUN_SCOPED, "versions", "library, solver, or step-package versions differ"))
     left_datasets = {d.name: d.content_sha256 for d in left.datasets}
     right_datasets = {d.name: d.content_sha256 for d in right.datasets}
-    lines.extend(f"datasets: {name} content differs" for name in sorted(set(left_datasets) | set(right_datasets)) if left_datasets.get(name) != right_datasets.get(name))
+    found.extend(Divergence(RUN_SCOPED, "datasets", f"{name} content differs") for name in sorted(set(left_datasets) | set(right_datasets)) if left_datasets.get(name) != right_datasets.get(name))
     if _assembly_identity(left) != _assembly_identity(right):
-        lines.append("assembly: steps, their parameters, or their effect on the datasets differ")
+        found.append(Divergence(RUN_SCOPED, "assembly", "steps, their parameters, or their effect on the datasets differ"))
     right_portfolios = {p.portfolio_id: p for p in right.portfolios}
     for portfolio in left.portfolios:
         other = right_portfolios.get(portfolio.portfolio_id)
         if other is None:
-            lines.append(f"{portfolio.portfolio_id}: missing from the second manifest")
+            found.append(Divergence(portfolio.portfolio_id, "missing", "missing from the second manifest"))
             continue
-        stage = _first_divergence(portfolio, other)
-        if stage is not None:
-            lines.append(f"{portfolio.portfolio_id}: first divergence at {stage}")
-    lines.extend(f"{portfolio_id}: missing from the first manifest" for portfolio_id in sorted(set(right_portfolios) - {p.portfolio_id for p in left.portfolios}))
-    return lines
+        divergence = _first_divergence(portfolio, other)
+        if divergence is not None:
+            found.append(divergence)
+    found.extend(Divergence(portfolio_id, "missing", "missing from the first manifest") for portfolio_id in sorted(set(right_portfolios) - {p.portfolio_id for p in left.portfolios}))
+    left_checks = {check.label: check.status for check in left.checks}
+    right_checks = {check.label: check.status for check in right.checks}
+    found.extend(
+        Divergence(RUN_SCOPED, "checks", f"{label} {left_checks.get(label, 'absent')} vs {right_checks.get(label, 'absent')}")
+        for label in sorted(set(left_checks) | set(right_checks))
+        if left_checks.get(label) != right_checks.get(label)
+    )
+    return tuple(found)
 
 
 def _versions_identity(manifest: RunManifest) -> tuple[dict[str, object], frozenset[WorkerEnvironment]]:
@@ -341,18 +393,22 @@ def _assembly_identity(manifest: RunManifest) -> list[tuple[str, str, str, dict[
     return [(a.qualname, a.source_sha256, a.params_sha256, a.rows_out, a.columns_added) for a in manifest.assembly]
 
 
-def _first_divergence(left: PortfolioRecord, right: PortfolioRecord) -> str | None:
+def _first_divergence(left: PortfolioRecord, right: PortfolioRecord) -> Divergence | None:
     if left.status != right.status:
-        return f"status ({left.status} vs {right.status})"
+        return _at(left.portfolio_id, "status", f" ({left.status} vs {right.status})")
     if [(r.qualname, r.source_sha256, r.params_sha256, r.rows_out) for r in left.rules] != [(r.qualname, r.source_sha256, r.params_sha256, r.rows_out) for r in right.rules]:
-        return "rules"
+        return _at(left.portfolio_id, "rules")
     if left.problem_spec_sha256 != right.problem_spec_sha256 or left.chain_inputs_sha256 != right.chain_inputs_sha256:
-        return "spec"
+        return _at(left.portfolio_id, "spec")
     if (left.solve is None) != (right.solve is None) or (left.solve is not None and right.solve is not None and left.solve.objective_value != right.solve.objective_value):
-        return "solve"
+        return _at(left.portfolio_id, "solve")
     if (left.orders is None) != (right.orders is None) or (left.orders is not None and right.orders is not None and left.orders.sha256 != right.orders.sha256):
-        return "orders"
+        return _at(left.portfolio_id, "orders")
     return None
+
+
+def _at(portfolio_id: str, stage: str, note: str = "") -> Divergence:
+    return Divergence(portfolio_id, stage, f"first divergence at {stage}{note}")
 
 
 def created_at(now: datetime) -> AwareDatetime:

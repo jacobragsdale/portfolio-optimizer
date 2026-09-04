@@ -48,8 +48,8 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
     (root / "buy_universe_parameters.csv").write_text("name,value\nmin_adv_shares,1000\n")
     (root / "trades.csv").write_text("portfolio_id,security_id,side,traded_on\n")
     (root / "global_parameters.csv").write_text("name,value\nrisk_aversion,2.5\n")
-    universe_rows = (f"{security},{PRICES[security]},TECH,20000,1,false,{ALPHAS[security]},5" for security in SECURITIES)
-    (root / "universe.csv").write_text("\n".join(["security_id,price,sector,adv_shares,lot_size,restricted,alpha,tcost_bps", *universe_rows]) + "\n")
+    (root / "universe.csv").write_text("\n".join(["security_id,price,sector,adv_shares,lot_size,restricted", *(f"{security},{PRICES[security]},TECH,20000,1,false" for security in SECURITIES)]) + "\n")
+    (root / "signals.csv").write_text("\n".join(["security_id,alpha,tcost_bps", *(f"{security},{ALPHAS[security]},5" for security in SECURITIES)]) + "\n")
     constraint_frame(SHIPPED_CONSTRAINTS, portfolio_id=portfolio_ids[0]).iloc[0:0].to_csv(root / "constraints.csv", index=False)
     pd.concat([constraint_frame(SHIPPED_CONSTRAINTS, portfolio_id=portfolio_id) for portfolio_id in portfolio_ids]).to_csv(root / "constraints.csv", index=False)
 

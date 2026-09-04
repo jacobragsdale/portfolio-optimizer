@@ -124,6 +124,12 @@ ORDERS = FrameSchema(
     checks=(FrameCheck("notional_matches", _orders_notional_matches),),
 )
 
+CHECK_RESULTS = FrameSchema(name="check_results", columns=(ColumnSpec("portfolio_id", "string"), ColumnSpec("ok", "bool")), key=(), allow_extra=True)
+"""What a check step returns: every row the business rule examined, ``ok`` false where it was breached, and any further column the check's own detail.
+
+There is no key: the engine does not know what identifies a case, only which portfolio it belongs to.
+"""
+
 CONSTRAINTS = FrameSchema(name="constraints", columns=(ColumnSpec("portfolio_id", "string"),), key=(), allow_extra=True)
 """One portfolio's constraints, one typed row each.
 

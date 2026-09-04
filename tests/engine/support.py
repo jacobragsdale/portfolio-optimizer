@@ -103,7 +103,7 @@ def uncoupled_book(tmp_path: Path, **files: str) -> Path:
 
 def thin_b_book(tmp_path: Path) -> Path:
     """The example data with B's daily volume cut to 12,000 shares: what makes the outflow's two accounts compete for a name's ADV budget (``THIN_B_ORDERS_P2``)."""
-    universe = "security_id,price,sector,adv_shares,lot_size,restricted,alpha,tcost_bps\nA,100,TECH,1000000,1,false,0.03,5\nB,50,TECH,12000,1,false,-0.01,5\nC,10,HEALTH,100000,1,false,0.05,20\n"
+    universe = "security_id,price,sector,adv_shares,lot_size,restricted\nA,100,TECH,1000000,1,false\nB,50,TECH,12000,1,false\nC,10,HEALTH,100000,1,false\n"
     return example_book(tmp_path, **{"universe.csv": universe})
 
 

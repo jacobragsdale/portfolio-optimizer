@@ -10,6 +10,7 @@
       "max_in_flight": 8
     },
     "universe": {"loader": "load_universe"},
+    "signals": {"loader": "load_signals"},
     "details": {
       "loader": "load_details",
       "scope": "per_portfolio",
@@ -21,6 +22,19 @@
     "global_parameters": {"loader": "load_parameters"},
     "buy_universe_parameters": {"loader": "load_parameters"}
   },
+  "assembly": [
+    {
+      "name": "join",
+      "params": {
+        "into": "universe",
+        "source": "signals",
+        "on": ["security_id"],
+        "cardinality": "one_to_one",
+        "require_all_matched": true
+      }
+    },
+    {"name": "drop", "params": {"datasets": ["signals"]}}
+  ],
   "rules": ["restrict_low_liquidity", "restrict_recent_trades"],
   "objective": [
     {"kind": "linear", "name": "alpha", "column": "alpha", "weight": "-1"},
@@ -38,5 +52,13 @@
   },
   "post_solve": {"violation_tol": 1e-6, "objective_rel_tol": 1e-5, "objective_abs_tol": 1e-9},
   "sink": {"name": "orders_to_parquet", "params": {"subdir": "orders"}},
+  "checks": [
+    {"name": "restricted_never_traded", "label": "restricted_never_traded"},
+    {
+      "name": "no_trades_inside_wash_window",
+      "label": "wash_sale_window",
+      "params": {"window_days": 30}
+    }
+  ],
   "execution": {"on_error": "fail_fast", "dependencies": "overlap"}
 }

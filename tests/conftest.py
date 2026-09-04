@@ -11,7 +11,7 @@ import logging
 import shutil
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import cast
@@ -154,6 +154,17 @@ class Frames:
     def parameters(self, **values: object) -> pd.DataFrame:
         """A ``name``/``value`` extra dataset of runtime settings, typed the way ``load_parameters`` produces it."""
         return pd.DataFrame({"name": pd.Series(list(values), dtype="string"), "value": pd.Series([Decimal(str(value)) for value in values.values()], dtype="object")})
+
+    def trades(self, *rows: tuple[str, str, str, int]) -> pd.DataFrame:
+        """A ``trades`` frame of ``(portfolio_id, security_id, side, days_ago)`` rows against the test's as-of instant, typed the way ``load_trades`` produces it."""
+        return pd.DataFrame(
+            {
+                "portfolio_id": pd.Series([portfolio for portfolio, _, _, _ in rows], dtype="string"),
+                "security_id": pd.Series([security for _, security, _, _ in rows], dtype="string"),
+                "side": pd.Series([side for _, _, side, _ in rows], dtype="string"),
+                "traded_on": pd.Series([AS_OF - timedelta(days=days) for _, _, _, days in rows], dtype="datetime64[ns, UTC]"),
+            }
+        )
 
     def three_security_universe(self) -> pd.DataFrame:
         """The example's securities: A, B, C at 100, 50, 10 in one sector, C thin and dear to trade but worth the most."""

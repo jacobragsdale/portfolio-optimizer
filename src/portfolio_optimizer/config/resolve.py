@@ -54,6 +54,7 @@ TEMPLATE_MODULES: Mapping[StepKind, str] = {
     "build": "portfolio_optimizer.engine.build",
     "solve": "portfolio_optimizer.solvers",
     "sink": "portfolio_optimizer.sinks",
+    "check": "portfolio_optimizer.checks",
 }
 
 
@@ -79,6 +80,7 @@ CONTRACTS: Mapping[StepKind, Contract] = {
     "build": Contract({"data": PortfolioData}, (ProblemSpec,)),
     "solve": Contract({"request": SolveRequest}, (SolveResult,)),
     "sink": Contract({"orders": pd.DataFrame, "io": IoContext}, (tuple[Artifact, ...],)),
+    "check": Contract({"frames": Frames, "orders": pd.DataFrame, "solved": pd.DataFrame}, (pd.DataFrame,)),
 }
 
 
@@ -104,6 +106,9 @@ class ResolvedConfig:
     terms: tuple[TypedTerm, ...]
     solve: ResolvedStep
     sink: ResolvedStep
+    checks: Mapping[str, ResolvedStep]
+    """The check steps by label, in config order; each runs once after the sink over the assembled datasets and the published orders."""
+
     profile: OrderFlowProfile
 
     @property
@@ -120,7 +125,7 @@ class ResolvedConfig:
     def all_steps(self) -> tuple[ResolvedStep, ...]:
         """Every resolved step, in pipeline order."""
         ordering = () if self.solve_order is None else (self.solve_order,)
-        return (*self.loaders.values(), *self.assembly, *self.rules, *ordering, self.build, self.solve, self.sink)
+        return (*self.loaders.values(), *self.assembly, *self.rules, *ordering, self.build, self.solve, self.sink, *self.checks.values())
 
 
 def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] | None = None, packages: Sequence[str] | None = None) -> ResolvedConfig:
@@ -148,6 +153,7 @@ def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] 
     build = resolve(config.build, "build", "build")
     solve = resolve(config.solve, "solve", "solve")
     sink = resolve(config.sink, "sink", "sink")
+    checks = {spec.label: resolve(spec, "check", f"checks[{i}]") for i, spec in enumerate(config.checks)}
     try:
         terms = parse_terms(config.objective)
     except TermSpecError as error:
@@ -158,7 +164,8 @@ def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] 
         available = installed() if installed is not None else _installed_solvers()
         failures.extend(f"solve: {failure}" for failure in solver_failures(str(params["solver"]), params["time_limit_s"], available))
     resolved_loaders = {name: step for name, step in loaders.items() if step is not None}
-    if failures or build is None or solve is None or sink is None or len(resolved_loaders) != len(loaders):
+    resolved_checks = {label: step for label, step in checks.items() if step is not None}
+    if failures or build is None or solve is None or sink is None or len(resolved_loaders) != len(loaders) or len(resolved_checks) != len(checks):
         raise ConfigResolutionError(failures)
     resolved = ResolvedConfig(
         config=config,
@@ -171,6 +178,7 @@ def resolve_config(config: RunConfig, *, installed: Callable[[], Sequence[str]] 
         terms=terms,
         solve=solve,
         sink=sink,
+        checks=resolved_checks,
         profile=profile_for(config.order_flow),
     )
     construction = _construction_failures(resolved)

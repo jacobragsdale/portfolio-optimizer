@@ -127,6 +127,7 @@ testpaths = ["tests"]
 xfail_strict = true  # An xfail that starts passing is a failure, not a silent pass.
 filterwarnings = [
     "error",  # pandas 3 chained assignment only warns; the lost write is otherwise invisible.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",  # 2026-09-03: starlette 1.6's test client imports the alias anyio 4.11 deprecated; drop when starlette catches up.
     # Add narrow, dated `ignore::` entries with a reason for third-party
     # deprecations you do not control. Never widen this back to "default".
 ]

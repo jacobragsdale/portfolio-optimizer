@@ -57,7 +57,7 @@ def _loaded_with(example_loaded: LoadedDatasets, **frames: object) -> LoadedData
 def test_example_data_loads_in_solve_order_with_audit_records(example_loaded: LoadedDatasets) -> None:
     assert example_loaded.portfolio_ids == ("P1", "P2")
     assert example_loaded.solve_orders == {"P1": 0, "P2": 1}
-    assert set(example_loaded.frames) == {"universe", "trades", "global_parameters", "buy_universe_parameters"}
+    assert set(example_loaded.frames) == {"universe", "signals", "trades", "global_parameters", "buy_universe_parameters"}
     assert set(example_loaded.per_portfolio) == {"details", "holdings"}, "the example loads both per account, and assembly never sees either"
     audit = {record.name: record for record in example_loaded.audits}
     assert (audit["holdings"].rows, audit["holdings"].batches) == (4, 2), "batch_size 1 is one call per portfolio"
@@ -68,11 +68,20 @@ def test_example_data_loads_in_solve_order_with_audit_records(example_loaded: Lo
     assert audit["universe"].depends_on == (), "nothing declared, so the security master started at once"
 
 
-def test_the_example_assembles_without_a_step_and_slices_each_portfolio(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
+def test_the_example_joins_the_signals_into_the_universe_and_slices_each_portfolio(example_loaded: LoadedDatasets, example_resolved: ResolvedConfig) -> None:
+    assert "alpha" not in example_loaded.frames["universe"].columns, "the security master answers with reference data alone"
     assembled = assemble(example_loaded, example_resolved, run_id="test", as_of_date=AS_OF)
     assert assembled.universe["price"].tolist() == [Decimal(100), Decimal(50), Decimal(10)], "the universe carries its own price; nothing has to supply it"
-    assert set(assembled.extras) == {"trades", "global_parameters", "buy_universe_parameters"}, "the example's blotter and two parameter frames are extras and survive to every bundle"
-    assert assembled.audits == (), "the example configures no assembly step"
+    assert assembled.universe["alpha"].tolist() == [0.03, -0.01, 0.05] and assembled.universe["tcost_bps"].tolist() == [Decimal(5), Decimal(5), Decimal(20)], (
+        "the research store's columns are joined in"
+    )
+    assert set(assembled.extras) == {"trades", "global_parameters", "buy_universe_parameters"}, (
+        "the example's blotter and two parameter frames are extras and survive to every bundle; the signals were dropped"
+    )
+    assert [(audit.qualname, audit.columns_added) for audit in assembled.audits] == [
+        ("portfolio_optimizer.assembly:join", {"universe": ("alpha", "tcost_bps")}),
+        ("portfolio_optimizer.assembly:drop", {}),
+    ]
     assert (len(assembled.holdings), len(assembled.details)) == (4, 2)
     p1 = slice_portfolio(assembled, PortfolioId("P1"))
     p2 = slice_portfolio(assembled, PortfolioId("P2"))
@@ -94,7 +103,7 @@ def test_a_join_brings_a_column_across_records_what_it_added_and_a_drop_frees_th
     assert [audit.qualname for audit in assembled.audits] == ["portfolio_optimizer.assembly:join", "portfolio_optimizer.assembly:drop"]
     assert assembled.audits[0].columns_added == {"universe": ("score",)}
     assert assembled.audits[1].rows_in["scores"] == 3
-    assert assembled.audits[1].rows_out == {"universe": 3, "trades": 0, "global_parameters": 2, "buy_universe_parameters": 1}, (
+    assert assembled.audits[1].rows_out == {"universe": 3, "signals": 3, "trades": 0, "global_parameters": 2, "buy_universe_parameters": 1}, (
         "the per-account holdings and details are merged back in after the steps have run"
     )
 
@@ -145,7 +154,7 @@ def test_join_refuses_to_overwrite_existing_columns_unless_told_to(example_loade
 def test_a_step_naming_an_unknown_dataset_is_told_what_exists(example_loaded: LoadedDatasets) -> None:
     resolved = _with_assembly({"name": "join", "params": {**JOIN_SCORES_PARAMS, "source": "sectors"}})
     with pytest.raises(
-        AssemblyError, match=r"assembly\[0\] portfolio_optimizer.assembly:join: no dataset 'sectors'; available: \['buy_universe_parameters', 'global_parameters', 'trades', 'universe'\]"
+        AssemblyError, match=r"assembly\[0\] portfolio_optimizer.assembly:join: no dataset 'sectors'; available: \['buy_universe_parameters', 'global_parameters', 'signals', 'trades', 'universe'\]"
     ):
         assemble(example_loaded, resolved, run_id="test", as_of_date=AS_OF)
 
@@ -279,7 +288,7 @@ def test_an_unreachable_backend_keeps_its_exception_type_so_the_exit_code_is_inf
 def test_audits_record_how_long_each_dataset_took(example_loaded: LoadedDatasets) -> None:
     assert all(record.load_time_s >= 0.0 for record in example_loaded.audits)
     assert all(record.started_s >= 0.0 for record in example_loaded.audits), "each audit records how long the dataset waited on its dependencies before starting"
-    assert {record.name for record in example_loaded.audits} == {"portfolios", "holdings", "universe", "details", "trades", "global_parameters", "buy_universe_parameters"}
+    assert {record.name for record in example_loaded.audits} == {"portfolios", "holdings", "universe", "signals", "details", "trades", "global_parameters", "buy_universe_parameters"}
 
 
 def test_the_sync_entry_point_refuses_to_nest_inside_a_running_loop(book: Path) -> None:

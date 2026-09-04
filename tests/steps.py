@@ -314,3 +314,31 @@ async def recording_holdings(request: LoadRequest, params: RecordingLoaderParams
         msg = f"{request.dataset}: no data for {refused}"
         raise ValueError(msg)
     return await load_holdings(request, params)
+
+
+# --- checks: what a breached rule, an unexercised one, and a broken one look like to the run ---
+
+
+def failing_check(frames: Frames, orders: pd.DataFrame, solved: pd.DataFrame) -> pd.DataFrame:
+    """A check every order fails: what a breached business rule looks like to the run."""
+    del frames, solved
+    return orders[["portfolio_id", "security_id", "side"]].assign(ok=False)
+
+
+def empty_check(frames: Frames, orders: pd.DataFrame, solved: pd.DataFrame) -> pd.DataFrame:
+    """A check the book never reaches: it examines nothing, so it proves nothing."""
+    del frames, orders, solved
+    return pd.DataFrame({"portfolio_id": pd.Series(dtype="string"), "ok": pd.Series(dtype="bool")})
+
+
+def raising_check(frames: Frames, orders: pd.DataFrame, solved: pd.DataFrame) -> pd.DataFrame:
+    """A check that is itself broken; the run records that, not a verdict on the orders."""
+    del frames, orders, solved
+    msg = "the check itself is broken"
+    raise RuntimeError(msg)
+
+
+def lying_check(frames: Frames, orders: pd.DataFrame, solved: pd.DataFrame) -> pd.DataFrame:
+    """Annotated as returning examined rows but returns a dict; the engine must catch it."""
+    del frames, orders, solved
+    return {}  # ty: ignore[invalid-return-type]  # the lie is the case under test

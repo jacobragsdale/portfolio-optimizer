@@ -9,6 +9,7 @@ import pytest
 from portfolio_optimizer.domain.results import PortfolioFailure
 from portfolio_optimizer.engine.environment import WorkerEnvironment
 from portfolio_optimizer.engine.manifest import (
+    CheckStepRecord,
     ConfigInfo,
     OrdersRecord,
     PortfolioRecord,
@@ -70,7 +71,20 @@ def test_write_is_atomic_and_leaves_no_temp_file(tmp_path: Path) -> None:
 
 
 def test_identical_manifests_do_not_differ() -> None:
-    assert diff_manifests(manifest(), manifest(run_id="run-2")) == []
+    assert diff_manifests(manifest(), manifest(run_id="run-2")) == ()
+
+
+CHECK = CheckStepRecord(
+    label="wash_sale_window",
+    qualname="portfolio_optimizer.checks:no_trades_inside_wash_window",
+    source_sha256="s",
+    params_sha256="p",
+    examined=1,
+    violations=0,
+    portfolios_affected=0,
+    status="passed",
+    passed=True,
+)
 
 
 @pytest.mark.parametrize(
@@ -97,10 +111,18 @@ def test_identical_manifests_do_not_differ() -> None:
         ),
         ({"portfolios": (PortfolioRecord(portfolio_id="P1", status="failed", failure_stage="solve", error="x"),)}, "P1: first divergence at status (solved vs failed)"),
         ({"portfolios": ()}, "P1: missing from the second manifest"),
+        ({"checks": (CHECK.model_copy(update={"status": "failed", "violations": 1, "portfolios_affected": 1, "passed": False}),)}, "checks: wash_sale_window absent vs failed"),
     ],
 )
 def test_diff_names_the_first_divergence(overrides: dict[str, object], expected: str) -> None:
-    assert expected in diff_manifests(manifest(), manifest(**overrides))
+    assert expected in [divergence.line for divergence in diff_manifests(manifest(), manifest(**overrides))]
+
+
+def test_a_divergence_is_structured_for_a_reader_that_is_not_a_terminal() -> None:
+    (divergence,) = diff_manifests(manifest(checks=(CHECK,)), manifest(checks=(CHECK.model_copy(update={"status": "not_exercised", "examined": 0}),)))
+    assert (divergence.scope, divergence.stage, divergence.detail) == ("*", "checks", "wash_sale_window passed vs not_exercised")
+    (divergence,) = diff_manifests(manifest(), manifest(portfolios=()))
+    assert (divergence.scope, divergence.stage) == ("P1", "missing")
 
 
 def _worker(host: str, **overrides: object) -> WorkerRecord:
@@ -122,8 +144,8 @@ def test_worker_hosts_do_not_differ_but_worker_environments_do() -> None:
     left = manifest(versions=manifest().versions.model_copy(update={"workers": (_worker("laptop"),)}))
     same_environment_elsewhere = manifest(versions=manifest().versions.model_copy(update={"workers": (_worker("pod-1"), _worker("pod-2"))}))
     stale_worker = manifest(versions=manifest().versions.model_copy(update={"workers": (_worker("pod-1"), _worker("pod-2", git_sha="old"))}))
-    assert diff_manifests(left, same_environment_elsewhere) == []
-    assert "versions: library, solver, or step-package versions differ" in diff_manifests(left, stale_worker)
+    assert diff_manifests(left, same_environment_elsewhere) == ()
+    assert "versions: library, solver, or step-package versions differ" in [divergence.line for divergence in diff_manifests(left, stale_worker)]
 
 
 def failed(portfolio_id: str = "P1", stage: str = "solve", traceback: str | None = "Traceback (most recent call last):\n  boom\n") -> PortfolioFailure:

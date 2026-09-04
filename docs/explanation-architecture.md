@@ -12,8 +12,8 @@ repository, or in any installed package, named by its qualified name or publishe
 and name it in JSON; or, for what the optimizer minimizes and respects, write a typed *kind* — a strict
 pydantic model that carries its own cvxpy rendering and its own numpy check — and name it the same
 way. The engine's resolver (`config/resolve.py`) does the work a framework would normally push onto the
-author — it imports the function, checks its signature against the contract for its kind (seven
-kinds: loader, assembly step, rule, solve-order step, build step, solve step, sink), validates the
+author — it imports the function, checks its signature against the contract for its kind (eight
+kinds: loader, assembly step, rule, solve-order step, build step, solve step, sink, check), validates the
 JSON parameters against the function's own `Params` model, and parses every objective term as the
 kind its record names — and it does all of this before any data is loaded. It then checks the solver
 and renders every term once, against a one-security dummy spec, under the run's order-flow profile, so a
@@ -200,6 +200,25 @@ written. What the verifier holds instead is the profile's own identity, each a n
 like any constraint's: under `inflow`, `no_sells` (`w ≥ w0`), `trade_balance` (the reported buy is
 `w − w0`), `nonneg_buy`, and `sell_absent`; under `outflow`, `no_buys`, `trade_balance`, `nonneg_sell`,
 and `buy_absent`; under either, the box as `lb` and `ub`.
+
+## Checks prove the business rules on the orders
+
+The verifier proves what the solver was *told*. A Python rule tells the solver nothing directly: it
+shapes the problem — freezes a name, caps a weight — and the verifier then proves the shaped problem
+was honoured, which is not the same as proving the rule. Whether an inflow rebought a name the
+outflow sold last week is a statement about the orders and the blotter, and no residual answers it.
+So a **check** is a step of its own, `(frames, orders, solved[, params]) -> DataFrame`, run once after the
+sink over every assembled dataset *as the rules first saw it*, the orders the sink received, and the
+portfolios that solved; it returns one row per case the rule applies to with a boolean `ok`, and the manifest records it under its
+label as `passed`, `failed`, or `not_exercised`. That third state is the point: a book that never puts
+a rule to the test is reported as not having proven it rather than as passing it, so a green run cannot
+hide an untested rule. A failed check fails the run; it does not gate publication, which would be a
+pre-trade-compliance decision the engine has not made (`IDEAS.md`).
+
+Together the two halves are what a QA environment reads: the manifest carries every portfolio's
+verification with each residual signed — margin, not a tick — and every check's outcome. Anything
+that reads them — a dashboard, a pipeline — is a reader over those artifacts, never a second
+implementation of anything the engine proves.
 
 ## Rounding
 

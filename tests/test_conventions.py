@@ -5,7 +5,7 @@ from types import ModuleType
 
 import pytest
 
-from portfolio_optimizer import loaders, rules, sinks, solve_order, solvers
+from portfolio_optimizer import checks, loaders, rules, sinks, solve_order, solvers
 from portfolio_optimizer.config.models import StepSpec
 from portfolio_optimizer.config.resolve import CONTRACTS, TEMPLATE_MODULES, StepKind, resolve_step
 from portfolio_optimizer.config.schema import shipped_steps
@@ -16,7 +16,15 @@ from portfolio_optimizer.domain.registry import kind_name
 from portfolio_optimizer.domain.results import Artifact
 from portfolio_optimizer.engine import build
 
-MODULES: dict[str, StepKind] = {loaders.__name__: "loader", rules.__name__: "rule", solve_order.__name__: "solve_order", build.__name__: "build", solvers.__name__: "solve", sinks.__name__: "sink"}
+MODULES: dict[str, StepKind] = {
+    loaders.__name__: "loader",
+    rules.__name__: "rule",
+    solve_order.__name__: "solve_order",
+    build.__name__: "build",
+    solvers.__name__: "solve",
+    sinks.__name__: "sink",
+    checks.__name__: "check",
+}
 HELPERS: dict[str, frozenset[str]] = {rules.__name__: frozenset({"parameter", "restricted_flags"}), build.__name__: frozenset({"to_float64", "order_inputs"})}
 """Public functions in a step module that are not steps: helpers the shipped steps, the engine, and a desk's own steps share."""
 
@@ -25,7 +33,7 @@ def _public_functions(module: ModuleType) -> list[str]:
     return [name for name, value in vars(module).items() if not name.startswith("_") and inspect.isfunction(value) and value.__module__ == module.__name__]
 
 
-@pytest.mark.parametrize("module", [loaders, rules, solve_order, build, solvers, sinks], ids=lambda m: m.__name__.rsplit(".", 1)[-1])
+@pytest.mark.parametrize("module", [loaders, rules, solve_order, build, solvers, sinks, checks], ids=lambda m: m.__name__.rsplit(".", 1)[-1])
 def test_every_shipped_function_resolves_under_the_convention_or_is_a_declared_helper(module: ModuleType) -> None:
     kind = MODULES[module.__name__]
     assert TEMPLATE_MODULES[kind] == module.__name__
@@ -54,7 +62,7 @@ def test_every_shipped_kind_is_registered_under_its_own_name() -> None:
 
 
 def test_extension_modules_import_without_side_effects() -> None:
-    for module in (loaders, rules, solvers, sinks):
+    for module in (loaders, rules, solvers, sinks, checks):
         assert module.__doc__ is not None
         assert "yours to edit" in module.__doc__
     assert PortfolioData is not None

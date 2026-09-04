@@ -46,7 +46,7 @@ A step is either a bare string or an object:
 ```
 
 A bare `name` is looked up in the template module for its kind — `loaders.py`, `assembly.py`,
-`rules.py`, `solve_order.py`, `engine/build.py`, `solvers.py`, `sinks.py` — and then among the steps
+`rules.py`, `solve_order.py`, `engine/build.py`, `solvers.py`, `sinks.py`, `checks.py` — and then among the steps
 installed packages publish as entry points in the group `portfolio_optimizer.<kind>`
 (`portfolio_optimizer.rule`, `portfolio_optimizer.loader`, ...); the template module wins a name both
 have. A qualified `package.module:function` is imported from anywhere the engine and every worker can
@@ -64,6 +64,7 @@ any params.
 | build step | `(data: PortfolioData[, params]) -> ProblemSpec`; `standard` is the default, and its one param is `hold_breached_starts` (default `false`): a name already past a bound is held where it is, its bound moved to the current weight, instead of failing the portfolio as a start the order flow cannot trade out of |
 | solve step | `(request: SolveRequest[, params]) -> SolveResult`; `cvxpy` is the default |
 | sink | `(orders: pd.DataFrame, io: IoContext[, params]) -> tuple[Artifact, ...]` |
+| check | `(frames: Frames, orders: pd.DataFrame, solved: pd.DataFrame[, params]) -> pd.DataFrame`: the rows the business rule examined, with `portfolio_id` and a boolean `ok`; always the object form, with the `label` its outcome is recorded under, unique across the run's checks |
 
 Engine arguments are recognized by name and must carry exactly the annotation shown. Only loaders may
 be `async def`; every other kind runs synchronously. Objective terms and constraints are not steps but
@@ -150,7 +151,8 @@ Where the work runs — this process, or a Dask cluster the run provisions for i
 ## Shipped steps
 
 Loaders: `load_portfolios`, `load_holdings` (one request per account in the batch, run together),
-`load_universe`, `load_details` (a plain `def`: one query per batch of ids, run in a worker thread),
+`load_universe`, `load_signals` (the research store's `alpha` and `tcost_bps` per security, joined into the universe by the example's assembly step),
+`load_details` (a plain `def`: one query per batch of ids, run in a worker thread),
 `load_constraints`, `load_mandates`, `load_trades`, `load_parameters` (`set_name`, default the dataset's own name),
 `load_run_orders` (`path`, an orders file a previous run's sink wrote, relative to the data root;
 `emit`, default `trades`: the orders as blotter rows for the accounts asked for, or `adv_consumed`:

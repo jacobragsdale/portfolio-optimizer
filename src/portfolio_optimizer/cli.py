@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import re
 import sys
 import uuid
 from collections import Counter
@@ -27,7 +28,7 @@ from portfolio_optimizer.domain.types import Clock
 from portfolio_optimizer.engine.check import verify
 from portfolio_optimizer.engine.environment import read_git_info
 from portfolio_optimizer.engine.logging import configure_logging
-from portfolio_optimizer.engine.manifest import PortfolioRecord, RunManifest, diff_manifests, failure_report_path, load_manifest
+from portfolio_optimizer.engine.manifest import MANIFEST_FILENAME, PortfolioRecord, RunManifest, diff_manifests, failure_report_path, load_manifest
 from portfolio_optimizer.engine.runner import EXIT_INFRASTRUCTURE, EXIT_INPUT_REJECTED, EXIT_OK, EXIT_PORTFOLIO_FAILED, InputRejectedError, RunContext, run
 from portfolio_optimizer.settings import Settings, SettingsError, load_settings
 
@@ -78,6 +79,12 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--data-root", type=Path, default=None, help="override PORTFOLIO_OPTIMIZER_DATA_ROOT")
     run_parser.add_argument("--output", type=Path, default=None, help="override PORTFOLIO_OPTIMIZER_OUTPUT_DIR")
     run_parser.add_argument("--max-workers", type=int, default=None, help="override PORTFOLIO_OPTIMIZER_MAX_WORKERS")
+    run_parser.add_argument(
+        "--run-id",
+        default=None,
+        metavar="ID",
+        help="the run's id, and so the name of its output directory (default: a fresh random one); letters, digits, '.', '_', '-', and not one the output directory already holds a manifest for",
+    )
     run_parser.add_argument(
         "--retry-of",
         type=Path,
@@ -207,8 +214,11 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_
             stderr.write(f"--max-workers must be at least PORTFOLIO_OPTIMIZER_MIN_WORKERS ({execution.min_workers})\n")
             return EXIT_INPUT_REJECTED
         execution = replace(execution, max_workers=int(args.max_workers))
+    run_id = _run_id(args, output_dir, new_run_id, stderr)
+    if run_id is None:
+        return EXIT_INPUT_REJECTED
     context = RunContext(
-        io=IoContext(data_root=data_root, output_dir=output_dir, run_id=new_run_id(), clock=clock),
+        io=IoContext(data_root=data_root, output_dir=output_dir, run_id=run_id, clock=clock),
         as_of_date=as_of_date,
         execution=execution,
         git=read_git_info(Path.cwd()),
@@ -232,8 +242,27 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_
         else:
             traceback_hint = "" if outcome.traceback is None else f" (traceback: {failure_report_path(run_dir, outcome)})"
             stdout.write(f"  {outcome.portfolio_id}: FAILED at {outcome.stage}: {outcome.error_type}: {outcome.message}{traceback_hint}\n")
+    stdout.writelines(f"  check {check.label}: {check.status}, {check.examined} examined, {check.violations} violation(s)\n" for check in report.manifest.checks)
     stdout.write(f"exit code {report.exit_code}\n")
     return report.exit_code
+
+
+RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+"""What ``--run-id`` may be: it names the run's output directory."""
+
+
+def _run_id(args: argparse.Namespace, output_dir: Path, new_run_id: Callable[[], str], stderr: TextIO) -> str | None:
+    """The run's id: ``--run-id`` when given and usable, else a fresh one; ``None`` with the refusal written when it is not."""
+    if args.run_id is None:
+        return new_run_id()
+    run_id = str(args.run_id)
+    if not RUN_ID_PATTERN.fullmatch(run_id):
+        stderr.write(f"--run-id {run_id!r} must be letters, digits, '.', '_', or '-': it names the run's output directory\n")
+        return None
+    if (output_dir / run_id / MANIFEST_FILENAME).exists():
+        stderr.write(f"--run-id {run_id!r} already has a manifest under {output_dir}; a run id is used once\n")
+        return None
+    return run_id
 
 
 def _retry_selection(args: argparse.Namespace, stderr: TextIO) -> RetrySelection | int | None:
@@ -376,9 +405,9 @@ def _diff_manifests(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO)
     except (ValidationError, ValueError) as error:
         stderr.write(f"manifest rejected: {error}\n")
         return EXIT_INPUT_REJECTED
-    lines = diff_manifests(left, right)
-    if not lines:
+    divergences = diff_manifests(left, right)
+    if not divergences:
         stdout.write("no differences\n")
         return EXIT_OK
-    stdout.write("\n".join(lines) + "\n")
+    stdout.write("\n".join(divergence.line for divergence in divergences) + "\n")
     return EXIT_PORTFOLIO_FAILED

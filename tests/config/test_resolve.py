@@ -113,6 +113,18 @@ def sink(orders: pd.DataFrame, io: IoContext) -> tuple[Artifact, ...]:  # noqa: 
     return ()
 
 
+def check_step(frames: Frames, orders: pd.DataFrame, solved: pd.DataFrame) -> pd.DataFrame:  # noqa: ARG001  # never invoked here
+    return solved[["portfolio_id"]].assign(ok=True)
+
+
+def check_without_orders(frames: Frames) -> pd.DataFrame:  # the missing `orders` is the case under test
+    raise NotImplementedError
+
+
+def check_wrong_return(frames: Frames, orders: pd.DataFrame, solved: pd.DataFrame) -> Frames:  # the annotation is the case under test
+    raise NotImplementedError
+
+
 NOT_A_FUNCTION = 42
 
 
@@ -195,6 +207,9 @@ VIOLATIONS: list[tuple[str, str, StepKind, Mapping[str, object], str]] = [
     ("a loader param outside its bound", "load_universe", "loader", {"min_latency_s": -1}, "min_latency_s: Input should be greater than or equal to 0"),
     ("rule used as a loader", "fake_steps:plain_rule", "loader", {}, "unexpected parameter 'data'"),
     ("async rule", "fake_steps:async_rule", "rule", {}, "`async def` is only allowed for loaders"),
+    ("check without the orders", "fake_steps:check_without_orders", "check", {}, "missing required parameter 'orders'"),
+    ("check returning the datasets", "fake_steps:check_wrong_return", "check", {}, "return annotation must be DataFrame, got Frames"),
+    ("sink used as a check", "fake_steps:sink", "check", {}, "unexpected parameter 'io'; allowed: ['frames', 'orders', 'solved', 'params']"),
 ]
 
 
@@ -215,6 +230,7 @@ def test_every_contract_kind_accepts_its_canonical_signature(fake_steps: str) ->
         ("build_step", "build"),
         ("solve_step", "solve"),
         ("sink", "sink"),
+        ("check_step", "check"),
     ]
     for name, kind in pairs:
         assert resolve_step(step_spec(f"{fake_steps}:{name}"), kind).kind == kind
@@ -261,7 +277,14 @@ def test_source_hash_is_stable_and_function_specific(fake_steps: str) -> None:
 
 
 def fake_config(
-    fake_steps: str, *, on_error: str = "fail_fast", rules: list[str] | None = None, solve_order: str | None = None, solve: object = None, objective: list[object] | None = None
+    fake_steps: str,
+    *,
+    on_error: str = "fail_fast",
+    rules: list[str] | None = None,
+    solve_order: str | None = None,
+    solve: object = None,
+    objective: list[object] | None = None,
+    checks: list[object] | None = None,
 ) -> RunConfig:
     body: dict[str, object] = {
         "run": {"name": "r"},
@@ -270,6 +293,7 @@ def fake_config(
         "rules": rules if rules is not None else [f"{fake_steps}:plain_rule"],
         "objective": objective if objective is not None else NOOP_TERMS,
         "sink": f"{fake_steps}:sink",
+        "checks": checks if checks is not None else [],
         "execution": {"on_error": on_error},
     }
     if solve_order is not None:
@@ -280,8 +304,16 @@ def fake_config(
 
 
 def test_resolve_config_resolves_every_step_and_parses_every_term(fake_steps: str) -> None:
-    resolved = resolve_config(fake_config(fake_steps, objective=[*NOOP_TERMS, {"kind": "chain_penalty", "name": "crowding"}], solve_order=f"{fake_steps}:solve_order_step"))
-    assert [step.kind for step in resolved.all_steps] == ["loader", "loader", "loader", "loader", "rule", "solve_order", "build", "solve", "sink"]
+    resolved = resolve_config(
+        fake_config(
+            fake_steps,
+            objective=[*NOOP_TERMS, {"kind": "chain_penalty", "name": "crowding"}],
+            solve_order=f"{fake_steps}:solve_order_step",
+            checks=[{"name": f"{fake_steps}:check_step", "label": "everything_ok"}],
+        )
+    )
+    assert [step.kind for step in resolved.all_steps] == ["loader", "loader", "loader", "loader", "rule", "solve_order", "build", "solve", "sink", "check"]
+    assert list(resolved.checks) == ["everything_ok"] and resolved.checks["everything_ok"].qualname == "fake_steps:check_step", "checks are keyed by the label their outcome is recorded under"
     assert resolved.config_sha256 == config_sha256(resolved.config)
     assert resolved.solve.qualname == "portfolio_optimizer.solvers:cvxpy" and resolved.shipped_solve, "the default solve step is the shipped cvxpy one"
     assert resolved.build.qualname == "portfolio_optimizer.engine.build:standard"

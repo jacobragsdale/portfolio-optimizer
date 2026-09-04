@@ -61,6 +61,23 @@ class StepSpec(StrictModel):
         return ":" in self.name
 
 
+CHECK_LABEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+
+
+class CheckSpec(StepSpec):
+    """A check step and the label its outcome is recorded under.
+
+    Always an object: a check needs a `label` beside its `name`, because the manifest's `checks[]`
+    and the file its violations are written to are keyed by it, and two checks of one function
+    under different params are told apart by it.
+    """
+
+    label: str = Field(
+        pattern=CHECK_LABEL_PATTERN,
+        description="What this check's outcome is recorded as, in the manifest's `checks[]` and as `checks/<label>.csv` for the rows that failed; unique across the run's checks. Letters, digits, `_`, `.`, `-`.",
+    )
+
+
 class RunMeta(StrictModel):
     """Identity of the run, recorded in the manifest and kept out of the config hash."""
 
@@ -260,7 +277,20 @@ class RunConfig(StrictModel):
     )
     post_solve: PostSolveConfig = Field(default_factory=PostSolveConfig, description="Verification tolerances.")
     sink: StepSpec = Field(description="Sink step from `sinks.py`, called once with every solved portfolio's orders.")
+    checks: tuple[CheckSpec, ...] = Field(
+        default=(),
+        description="Check steps from `checks.py`: `(frames: Frames, orders: DataFrame, solved: DataFrame[, params]) -> DataFrame`, each run once after the sink over every assembled dataset as the rules first saw it, the orders the run published, and the portfolios that solved, returning the rows the business rule examined with an `ok` flag. Recorded under its `label` as `passed`, `failed`, or `not_exercised` (it examined nothing: the book never put the rule to the test); a failed check fails the run.",
+    )
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig, description="Failure semantics and how dependencies between portfolios are derived.")
+
+    @field_validator("checks")
+    @classmethod
+    def _check_labels_are_unique(cls, value: tuple[CheckSpec, ...]) -> tuple[CheckSpec, ...]:
+        duplicates = sorted(label for label, count in Counter(check.label for check in value).items() if count > 1)
+        if duplicates:
+            msg = f"checks repeat label(s) {duplicates}; every check is recorded under its own label"
+            raise ValueError(msg)
+        return value
 
     @field_validator("objective")
     @classmethod

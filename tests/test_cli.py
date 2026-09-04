@@ -53,6 +53,9 @@ def test_run_produces_the_golden_orders_and_a_manifest(tmp_path: Path, env: dict
     assert "run run-smoke" in out
     assert "P1: solved, 2 order(s); binding: " in out and "ub" in out.split("P1: solved")[1].split("\n")[0], "the cap on A binds, and the run says so"
     assert "P2: solved, 1 order(s); binding: " in out and "adv/cumulative_participation" in out.split("P2: solved")[1], "why P2 did not buy C: P1 spent its budget"
+    assert "  check restricted_never_traded: not_exercised, 0 examined, 0 violation(s)" in out and "  check wash_sale_window: not_exercised, 0 examined, 0 violation(s)" in out, (
+        "every check's verdict, after the portfolios: this book proves neither"
+    )
     run_dir = tmp_path / "out" / "run-smoke"
     orders = pd.read_parquet(run_dir / "orders" / "orders.parquet")
     assert orders[["portfolio_id", "security_id", "side", "quantity"]].to_dict("records") == [
@@ -128,7 +131,7 @@ def test_a_previous_runs_orders_feed_the_next_run_as_its_blotter_and_its_spent_v
     ]
     manifest = json.loads((tmp_path / "out" / "run-smoke" / "manifest.json").read_text())
     assert {dataset["name"] for dataset in manifest["datasets"]} >= {"trades", "adv_consumed"}, "both shapes of the handoff are inputs the manifest records and hashes"
-    assert manifest["assembly"][0]["columns_added"] == {"universe": ["adv_consumed_shares"]}
+    assert [step["columns_added"] for step in manifest["assembly"]] == [{"universe": ["alpha", "tcost_bps"]}, {"universe": ["adv_consumed_shares"]}, {}]
 
 
 def test_the_default_settings_run_the_example_inline_with_no_environment_at_all(tmp_path: Path, config: Path) -> None:
@@ -204,6 +207,7 @@ def test_steps_lists_what_this_environment_can_name() -> None:
     assert "  cvxpy (solver, options, time_limit_s, verbose)" in out
     assert "term kinds" in out and "  linear (" in out
     assert "constraint kinds" in out and "  participation_limit (" in out
+    assert "check (portfolio_optimizer.checks)" in out and "  no_trades_inside_wash_window (dataset, window_days)" in out and "  restricted_never_traded" in out
     assert "parameter" not in out.split("rule (")[1].split("solve_order")[0], "a helper in a template module is not a step"
 
 
@@ -290,3 +294,16 @@ def test_retry_of_refuses_a_run_where_nothing_matches_and_says_what_did_fail() -
         retry_of(config, manifest(portfolios=(_failed("P1", "load"), _failed("P2", "skipped", error="SkippedAfterFailure"), _failed("P3", "skipped", error="SkippedAfterFailure"))))
     with pytest.raises(RetryError, match=r"no portfolio in run run-1 failed at skipped, solve with DriftError; the run recorded"):
         retry_of(config, manifest(portfolios=RECORDED), stages=frozenset({"solve", "skipped"}), errors=frozenset({"DriftError"}))
+
+
+def test_run_id_names_the_output_directory_and_is_used_once(tmp_path: Path, config: Path) -> None:
+    argv = ["run", str(config), "--as-of", AS_OF_TEXT, "--data-root", str(example_book(tmp_path)), "--output", str(tmp_path / "out")]
+    code, out, err = cli([*argv, "--run-id", "qa-2026-09-03"], run_id="ignored")
+    assert code == 0, err
+    assert "run qa-2026-09-03: manifest" in out and (tmp_path / "out" / "qa-2026-09-03" / "manifest.json").exists(), (
+        "the caller's id is the directory, so it knows where the run will land before it finishes"
+    )
+    code, _, err = cli([*argv, "--run-id", "qa-2026-09-03"])
+    assert code == 2 and "already has a manifest" in err
+    code, _, err = cli([*argv, "--run-id", "../escape"])
+    assert code == 2 and "names the run's output directory" in err

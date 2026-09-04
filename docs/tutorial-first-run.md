@@ -51,7 +51,7 @@ uv run portfolio-optimizer validate-config configs/example_inflow.json
 You should see `config ok` followed by one line per step and one per term:
 
 ```text
-config ok (sha256 eb156c9bdfec): 2 rule(s), 2 term(s), dependencies overlap
+config ok (sha256 f0ba80e2c2d0): 2 rule(s), 2 term(s), dependencies overlap
   loader              portfolio_optimizer.loaders:load_portfolios
   ...
   rule                portfolio_optimizer.rules:restrict_low_liquidity
@@ -59,6 +59,8 @@ config ok (sha256 eb156c9bdfec): 2 rule(s), 2 term(s), dependencies overlap
   build               portfolio_optimizer.engine.build:standard
   solve               portfolio_optimizer.solvers:cvxpy
   sink                portfolio_optimizer.sinks:orders_to_parquet
+  check               portfolio_optimizer.checks:restricted_never_traded
+  check               portfolio_optimizer.checks:no_trades_inside_wash_window
   term                alpha (Linear)
   term                transaction_cost (Linear)
 ```
@@ -103,15 +105,19 @@ it does:
 
 ```text
 dataset 'constraints' loaded: 530 row(s) in 1 batch(es), 2.28s
+dataset 'signals' loaded: 3 row(s) in 1 batch(es), 4.02s
 dataset 'holdings' loaded: 200 row(s) in 100 batch(es), 15.34s
 dataset 'universe' loaded: 3 row(s) in 1 batch(es), 24.21s
 ```
 
 None of that is file reading, and the seconds differ every run: the shipped loaders stand in for the
-services a desk actually has — a custodian, a security master, an account master — and each waits a
+services a desk actually has — a custodian, a security master, a research store, an account master — and each waits a
 draw from its own band, seeded on the run id, before answering from a CSV table. `load_universe` is a
 security-master scan and takes tens of seconds; `load_holdings` is a custodian that answers one account
 at a time. They overlap, so the whole stage costs about what its slowest input costs rather than the sum.
+After the last of them, the config's two assembly steps run: the research store's `signals` are joined
+into the universe, which is how `alpha` and `tcost_bps` reach a table the security master returned
+without them, and then dropped.
 
 The universe is book-wide, so its loader was called once. `holdings` is not: the config asks for it with
 `"scope": "per_portfolio", "batch_size": 1`, so the engine called its loader once per account — a

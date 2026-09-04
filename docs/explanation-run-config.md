@@ -28,6 +28,7 @@ version. Read it when you have a config in front of you and want it to make sens
 | [`solve`](#solve) | The step that turns a built problem into weights, and its own parameters — the cvxpy solver among them | At every solve |
 | [`post_solve`](#post_solve) | How tightly the cvxpy-free verifier holds each solution | After every solve |
 | [`sink`](#sink) | Where the orders go | Once, at the end, if any portfolio solved |
+| [`checks`](#checks) | Business rules proven on the published orders against the data as the rules first saw it | Once, after the sink, if any portfolio solved |
 | [`execution`](#execution) | What one failure does to the rest, and how predecessors are chosen | When the dependency graph is derived and when a portfolio fails |
 
 One thing the document does not say is *when* the run is: the instant it is as of is an argument,
@@ -64,7 +65,7 @@ per solve; `sink` runs once at the end. So the config is not a script the engine
 — it is a description of a pipeline, and the order of blocks in the file is for the reader, not the
 engine.
 
-One shape recurs in eight of the top-level keys: a **step**. A step is either a bare string naming a
+One shape recurs in nine of the top-level keys: a **step**. A step is either a bare string naming a
 function, or an object with `name` and `params`:
 
 ```json
@@ -74,7 +75,7 @@ function, or an object with `name` and `params`:
 
 A bare name is looked up in the template module for that kind of step — `loaders.py` for loaders,
 `assembly.py` for assembly steps, `rules.py` for rules, `solve_order.py` for the solve-order step,
-`engine/build.py` for the build step, `solvers.py` for the solve step, `sinks.py` for sinks — and then
+`engine/build.py` for the build step, `solvers.py` for the solve step, `sinks.py` for sinks, `checks.py` for checks — and then
 among the steps installed packages publish as entry points in the group `portfolio_optimizer.<kind>`,
 which is how a firm shares a loader or a rule across desks and names it bare. A qualified name such as
 `mypkg.rules:my_rule` is imported from anywhere the engine (and any worker process) can import — or,
@@ -103,6 +104,7 @@ shipped outflow is `example_outflow`: one book, the other order flow, its own ma
   "holdings":    {"loader": "load_holdings", "scope": "per_portfolio", "batch_size": 1,
                   "max_in_flight": 8},
   "universe":    {"loader": "load_universe"},
+  "signals":     {"loader": "load_signals"},
   "details":     {"loader": "load_details", "scope": "per_portfolio", "batch_size": 25,
                   "max_in_flight": 4},
   "constraints": {"loader": "load_constraints", "depends_on": ["portfolios"]}
@@ -168,9 +170,9 @@ types it: the shipped `load_parameters` declares a two-column `FrameSchema` of i
 `string`, `value` a `decimal` so it arrives as an exact `Decimal` rather than a float — in the same
 vocabulary the engine's own schemas are written in, and casts what it fetched to it.
 
-Two shapes recur. A vendor's **per-security analytics** file is declared here, joined onto the universe
-by an assembly step, and then dropped so it is not carried into every bundle for nothing; from the
-universe the build exports it as a spec column a term can read. **Runtime parameters** are the other:
+Two shapes recur. A vendor's **per-security analytics** file — the example's `signals` — is declared
+here, joined onto the universe by an assembly step, and then dropped so it is not carried into every
+bundle for nothing; from the universe the build exports it as a spec column a term can read. **Runtime parameters** are the other:
 a narrow `name`/`value` frame of numbers that change without the config changing.
 
 ```json
@@ -252,7 +254,7 @@ entered the run, so it traded nothing and couples to nobody in the schedule. Loa
 otherwise collected rather than raced: one failing dataset does not cancel the others, and all of them
 are reported together.
 
-The shipped loaders show the two shapes a source can take. `load_universe`, `load_constraints`, and
+The shipped loaders show the two shapes a source can take. `load_universe`, `load_signals`, `load_constraints`, and
 `load_parameters` answer for the whole book in one call. `load_holdings` answers one account per call:
 it runs one request per id in the batch together — the shape of a loader for an API with a per-account
 endpoint. It works under either scope: as a `global` dataset it owns its own fan-out, unbounded, and —
@@ -283,9 +285,9 @@ per-account source to it is in
 
 ```json
 "assembly": [
-  {"name": "join", "params": {"into": "universe", "source": "analytics", "on": ["security_id"],
+  {"name": "join", "params": {"into": "universe", "source": "signals", "on": ["security_id"],
                               "cardinality": "one_to_one", "require_all_matched": true}},
-  {"name": "drop", "params": {"datasets": ["analytics"]}}
+  {"name": "drop", "params": {"datasets": ["signals"]}}
 ]
 ```
 
@@ -297,8 +299,11 @@ own live in its package. The list runs after every loader has returned and befor
 frames are validated against their schemas, which is what lets a step *supply* a required column that
 no single loader produced.
 
-The example configures none: each of its datasets arrives in the shape the engine wants. The snippet
-above is the shape most real lists take, and the four shipped steps are the shapes that recur: `join`
+The example configures exactly this list. Its security master answers with reference data — price,
+sector, volume, lot size, the restricted flag — and its research store with `alpha` and `tcost_bps`,
+because no one service knows both; the universe the build reads is made here, and a name research has
+no view on stops the run before any account is built. It is the shape most real lists take, and the
+four shipped steps are the shapes that recur: `join`
 brings columns from one dataset into another, `union` stacks datasets with the same meaning into one,
 `select` trims and renames, `drop` discards. Read that join as a set of claims about the data, each of
 which the engine checks:
@@ -601,6 +606,32 @@ the engine, which is why it is a single step and not a list. The shipped sinks w
 `<output_dir>/<run_id>/<subdir>/`, atomically via a temporary file and rename, and return the path as
 an artifact the manifest records. A sink that raises is exit code 3 and the manifest is still written,
 so the run's evidence survives a failed handoff.
+
+## `checks`
+
+```json
+"checks": [
+  {"name": "restricted_never_traded", "label": "restricted_never_traded"},
+  {"name": "no_trades_inside_wash_window", "label": "wash_sale_window", "params": {"window_days": 30}}
+]
+```
+
+A check is a business rule proven on the orders that went out. The verifier re-checks every typed
+constraint row on the solved weights; nothing else in the engine can say whether a Python rule —
+the wash-sale window, a mandate, a liquidity floor — actually held on what was published, because a
+rule only shapes the problem. So a check is a step of its own: `(frames, orders, solved[, params]) -> DataFrame`,
+called once after the sink with every assembled dataset *as the rules first saw it*, the orders the
+sink received, and the portfolios that solved, returning one row per case the rule applies to with a
+boolean `ok`. The population is the solved portfolios, not the ones that traded: an account a rule
+kept out of a name traded nothing, and is exactly the case that proves the rule. It is recorded in
+the manifest under its `label` as `passed`, `failed`, or `not_exercised` — it examined nothing, because
+the book never put the rule to the test, which is reported rather than passed — and the rows that
+failed go to `checks/<label>.csv`. A failed check fails the run (exit code 1); the orders were
+published before it ran, since a check is a proof, not a gate. Every check is always the object form,
+because it needs the label; labels are unique across the run. The shipped two pair with the shipped
+rules: `restricted_never_traded` with the rules that freeze names, `no_trades_inside_wash_window` with
+`restrict_recent_trades`, under the same params. [How to add a check](how-to-add-a-check.md) has the
+contract; [how to QA a deployment](how-to-qa-a-deployment.md) is where the outcome is read.
 
 ## `execution`
 

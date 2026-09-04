@@ -95,6 +95,9 @@ REJECTED: list[tuple[str, dict[str, object], str]] = [
     ("a book loaded per portfolio", {"datasets": example_datasets(portfolios={"loader": "load_portfolios", "scope": "per_portfolio"})}, "datasets"),
     ("depends_on that is not a list", {"datasets": example_datasets(holdings={"loader": "load_holdings", "depends_on": "portfolios"})}, "datasets"),
     ("an inline list for a dataset that is not the book", {"datasets": example_datasets(holdings={"ids": ["P1"]})}, "datasets"),
+    ("a check without a label", {"checks": [{"name": "restricted_never_traded"}]}, "checks/0"),
+    ("a check written as a bare name", {"checks": ["restricted_never_traded"]}, "checks/0"),
+    ("a check with a wrong param type", {"checks": [{"name": "no_trades_inside_wash_window", "label": "w", "params": {"window_days": "soon"}}]}, "checks/0"),
 ]
 
 
@@ -129,6 +132,9 @@ def test_every_shipped_step_and_term_kind_is_described(schema: dict[str, object]
     assert "load_holdings" in str(as_object(defs["LoaderStep"])["$comment"])
     assert "standard" in str(as_object(defs["BuildStep"])["$comment"])
     assert "cvxpy" in str(as_object(defs["SolveStep"])["$comment"]) and "pro_rata_fill" in str(as_object(defs["SolveStep"])["$comment"])
+    check_step = as_object(defs["CheckStep"])
+    assert "restricted_never_traded" in str(check_step["$comment"])
+    assert check_step["required"] == ["name", "label"] and "anyOf" not in check_step, "a check is always the object form: it needs the label its outcome is recorded under"
     objective = as_object(as_object(schema["properties"])["objective"])
     assert "linear" in str(objective["$comment"]), "the objective's items are the union of every term kind this environment can name"
     assert "Vector" in defs, "a term kind's own definitions are hoisted beside the config's"

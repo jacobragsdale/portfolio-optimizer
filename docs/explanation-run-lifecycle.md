@@ -13,7 +13,7 @@ every portfolio at once (slice, rules, solve-order key, a pure-numpy problem, it
 parsed) → derive who waits for whom from what each may trade on the side the run couples through and
 what its rows declare they read → solve along that graph with the configured solve step (cvxpy by
 default) → re-check each answer without cvxpy → round to whole shares → publish the orders once →
-write a manifest.** Money is `Decimal` everywhere except inside the solver, and there are exactly two
+prove the business rules on what went out → write a manifest.** Money is `Decimal` everywhere except inside the solver, and there are exactly two
 conversion points. Every stage validates its own output, so a bad input fails at the earliest stage
 that can detect it, with a message naming what is wrong.
 
@@ -423,7 +423,7 @@ beside the manifest, hashed like every other artifact. A skipped portfolio's mes
 waiting for: the predecessor that failed, or, under `fail_fast`, any higher-priority failure. A build
 that fails has an unknown tradable set and is treated as overlapping everything after it, so under
 `continue` it skips every lower-priority portfolio that reads the chain. The process exit code is
-**0** when every portfolio solved, **1** when any failed, **2** when the inputs were rejected before
+**0** when every portfolio solved and every check passed, **1** when any portfolio or check failed, **2** when the inputs were rejected before
 anything was solved — invalid settings, a bad `--as-of`, a config that does not validate or resolve,
 datasets that fail loading or assembly — and **3** for infrastructure: a sink failure, a cluster that
 never came up, a config file that cannot be read. A failure has one command behind it:
@@ -451,6 +451,17 @@ only when at least one portfolio solved. The shipped sinks write Parquet (Decima
 CSV, atomically, via a temp file and rename. A sink failure is exit code 3, but the manifest is still
 written.
 
+The **checks** run next, once, on the client, over the assembled datasets as the rules first saw them
+and the orders the sink received — only when something solved, since there is nothing to prove
+otherwise. Each is a configured step, `(frames, orders, solved[, params]) -> DataFrame` — the solved
+portfolios being the population a rule applies to, whether or not they traded — returning one row per
+case the business rule applies to with a boolean `ok`; the manifest records it under its label as
+`passed`, `failed`, or `not_exercised`, and the rows that failed go to `checks/<label>.csv`. A failed
+check is exit code 1; a check that raises is the run's own failure at stage `check`, with its traceback
+in `failures/check.txt`, and the checks after it still run. This is the second half of the run's
+proof: the verifier (§7) holds the typed constraint rows on the solved weights; a check holds a Python
+rule — which only shaped the problem — on the orders that actually went out.
+
 The **manifest** (`engine/manifest.py`) records the run id, name, tags, and timestamps, and the instant
 the run was as of; the git revision and whether the tree was dirty; the schedule the run derived —
 coupling, edges, components, the critical path; the Python, cvxpy, numpy, pandas, and solver versions,
@@ -459,7 +470,8 @@ for, when the first worker answered, when it was released; the resolved config a
 settings; every objective term as its record; every dataset's provenance and content hash; and, per
 portfolio, the solve-order key, the number of predecessors, the rule audits, the constraint records it
 solved under, the spec hash, the chain-input hash, the solver statistics and duals, the verification
-outcome with the checks that bound, drift, and the orders' count, hash, and gross notional. The
+outcome with the checks that bound and every residual signed, drift, and the orders' count, hash, and gross notional;
+and every check step's outcome. The
 manifest is then self-hashed, and `load_manifest` refuses one whose hash does not match its content.
 
 `portfolio-optimizer diff-manifests` compares two manifests and names the **first stage at which they
@@ -473,9 +485,10 @@ The shipped example is three configs over one book: `configs/example_inflow.json
 (`order_flow: inflow`, two `linear` terms — alpha and transaction cost), `configs/example_outflow.json`, its
 outflow (`order_flow: outflow`, three — alpha, tax cost, transaction cost), and
 `configs/example_rebalance.json`, the rebalance (`order_flow: rebalance`, the inflow's two terms). Each declares a hundred
-accounts over three securities, six global datasets and two loaded per account (`holdings`, a call
+accounts over three securities, seven global datasets and two loaded per account (`holdings`, a call
 each with eight in flight — 200 rows in 100 batches — and `details`, twenty-five ids a call, four
-batches), no assembly steps, two rules, up to six typed constraint rows an account (530 rows in all),
+batches), two assembly steps (the research store's `signals` joined into the universe, then dropped),
+two rules, up to six typed constraint rows an account (530 rows in all),
 the Clarabel solver under the `cvxpy` step, and `fail_fast`; where the work runs is the
 `PORTFOLIO_OPTIMIZER_CLUSTER` setting, this process by default. Each run is a pure function of the
 snapshot with its own manifest; nothing crosses between them. The first two accounts are the ones to
@@ -533,4 +546,6 @@ through exactly this.
     value, and the objective, independently of cvxpy.
 11. **Orders** — the `ORDERS` schema including `notional = quantity × price`, every order on a side the
     run trades and inside the tradable set, then the drift bound.
-12. **Manifest** — self-hash checked on load.
+12. **Checks** — every configured check over the assembled datasets and the published orders, one
+    row per case the rule applies to; `not_exercised` when it examined nothing.
+13. **Manifest** — self-hash checked on load.

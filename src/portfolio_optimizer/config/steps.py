@@ -13,7 +13,7 @@ from typing import Literal
 from portfolio_optimizer.domain.data import LoadRequest
 from portfolio_optimizer.domain.types import Params
 
-type StepKind = Literal["loader", "assembly", "rule", "solve_order", "build", "solve", "sink"]
+type StepKind = Literal["loader", "assembly", "rule", "solve_order", "build", "solve", "sink", "check"]
 
 
 @dataclass(frozen=True, slots=True)

@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from types import ModuleType
 from typing import get_type_hints
 
-from portfolio_optimizer.config.models import STEP_NAME_DESCRIPTION, STEP_NAME_PATTERN, RunConfig
+from portfolio_optimizer.config.models import CHECK_LABEL_PATTERN, STEP_NAME_DESCRIPTION, STEP_NAME_PATTERN, RunConfig
 from portfolio_optimizer.config.resolve import CONTRACTS, TEMPLATE_MODULES, published_steps
 from portfolio_optimizer.config.steps import StepKind
 from portfolio_optimizer.domain.objective import TypedTerm, term_kinds
@@ -47,6 +47,10 @@ _STEP_DEFINITIONS: Mapping[StepKind, tuple[str, str]] = {
     "build": ("BuildStep", "The build step from `engine/build.py`: `(data: PortfolioData[, params]) -> ProblemSpec`; `standard` is the default."),
     "solve": ("SolveStep", "The solve step from `solvers.py`: `(request: SolveRequest[, params]) -> SolveResult`; `cvxpy` is the default."),
     "sink": ("SinkStep", "An order sink from `sinks.py`: `(orders: DataFrame, io: IoContext[, params]) -> tuple[Artifact, ...]`."),
+    "check": (
+        "CheckStep",
+        "A business-rule check from `checks.py`: `(frames: Frames, orders: DataFrame, solved: DataFrame[, params]) -> DataFrame` of the rows the rule examined, with `portfolio_id` and a boolean `ok`; run once after the sink and recorded under its `label`.",
+    ),
 }
 """The definition each kind of step gets; the template module behind it is imported when the schema is generated, since the shipped solve step imports cvxpy."""
 
@@ -56,11 +60,13 @@ def run_config_schema() -> JsonObject:
     base = RunConfig.model_json_schema()
     defs = _object(base["$defs"])
     del defs["StepSpec"]
+    del defs["CheckSpec"]
     for kind, (title, description) in _STEP_DEFINITIONS.items():
-        defs[title] = _step_definition(title, description, installed_steps(kind), defs)
+        defs[title] = _step_definition(title, description, installed_steps(kind), defs, labelled=kind == "check")
     properties = _object(base["properties"])
     properties["assembly"] = _with_items(properties["assembly"], "AssemblyStep")
     properties["rules"] = _with_items(properties["rules"], "RuleStep")
+    properties["checks"] = _with_items(properties["checks"], "CheckStep")
     properties["solve_order"] = _with_nullable_ref(properties["solve_order"], "SolveOrderStep")
     properties["build"] = _with_ref(properties["build"], "BuildStep")
     properties["solve"] = _with_ref(properties["solve"], "SolveStep")
@@ -128,7 +134,8 @@ def _kind_of(module: ModuleType, returns: object) -> StepKind | None:
     return None
 
 
-def _step_definition(title: str, description: str, shipped: Mapping[str, type[Params] | None], defs: JsonObject) -> JsonObject:
+def _step_definition(title: str, description: str, shipped: Mapping[str, type[Params] | None], defs: JsonObject, *, labelled: bool = False) -> JsonObject:
+    """The definition for one kind of step; a ``labelled`` kind is always the object form, with the ``label`` its outcome is recorded under."""
     needs_params = sorted(name for name, model in shipped.items() if model is not None and any(field.is_required() for field in model.model_fields.values()))
     string_form: JsonObject = {"type": "string", "pattern": STEP_NAME_PATTERN, "description": f"A step without parameters. {STEP_NAME_DESCRIPTION}"}
     if needs_params:
@@ -154,7 +161,12 @@ def _step_definition(title: str, description: str, shipped: Mapping[str, type[Pa
         "additionalProperties": False,
         "allOf": conditions,
     }
-    return {"title": title, "description": description, "$comment": f"Steps this environment can name: {sorted(shipped)}", "anyOf": [string_form, object_form]}
+    comment = f"Steps this environment can name: {sorted(shipped)}"
+    if labelled:
+        object_properties = _object(object_form["properties"])
+        object_properties["label"] = {"type": "string", "pattern": CHECK_LABEL_PATTERN, "description": "What this step's outcome is recorded under; unique across the run's checks."}
+        return {**object_form, "title": title, "description": description, "$comment": comment, "properties": object_properties, "required": ["name", "label"]}
+    return {"title": title, "description": description, "$comment": comment, "anyOf": [string_form, object_form]}
 
 
 def _params_schema(model: type[Params], defs: JsonObject) -> JsonObject:

@@ -366,6 +366,15 @@ consumed what. Cheap to compute, and probably the highest-value line in the whol
 `[binding]`, and the manifest records `check.active` and the solver's `duals`. Which predecessors
 consumed what is still only the chain file's `predecessors` list.
 
+*Status 2026-09-03:* the *vocabulary's stable half* landed. The manifest now records every verified
+residual signed (`check.residuals`, so margin is read, not recomputed) and a new step kind, `check`,
+proves a Python rule on the published orders — `passed`, `failed`, or `not_exercised` when the book
+never reached it, which is the coverage statement this thread wanted. A web app over the run directory
+(FastAPI, Angular) was built and removed on 2026-09-04: the CLI and the manifest carry the same answers,
+and the app was a second surface to keep in step with them. Not built: the scenario file with its
+`intent` sentence, the uniqueness proof for order-level expectations, and gating publication on a
+failed check.
+
 ### One scenario that cannot be checked by hand
 
 Most scenarios should be ten securities and three portfolios, small enough that a person can work the

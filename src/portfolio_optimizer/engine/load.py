@@ -129,6 +129,10 @@ class AssembledDatasets:
     as_of_date: datetime
     audits: tuple[AssemblyAuditRecord, ...]
 
+    def frames(self) -> Frames:
+        """Every dataset as the rules first see it — the engine-known four and the extras — which is what a check step proves the orders against."""
+        return Frames({"holdings": self.holdings, "universe": self.universe, "details": self.details, "constraints": self.constraints, **self.extras})
+
 
 @dataclass(frozen=True, slots=True)
 class _Book:

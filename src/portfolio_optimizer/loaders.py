@@ -11,8 +11,8 @@ blocking driver never stalls the loop. A loader never counts its own requests: t
 ``batch_size`` cuts the book into calls and ``max_in_flight`` bounds how many of them run at once.
 
 The loaders here stand in for the services a desk actually has: a book of record, a custodian's
-position service, a security master, the account-master database, a compliance service, a trade
-blotter, and a parameter store. Each waits as long as its own source would, drawn from the bands below, and then
+position service, a security master, a research store, the account-master database, a compliance
+service, a trade blotter, and a parameter store. Each waits as long as its own source would, drawn from the bands below, and then
 answers from a CSV table under ``request.data_root``, so the template runs against no infrastructure
 at all. Replacing a mock with the real thing changes the middle line and nothing around it: the wait
 becomes the call, ``request.portfolio_ids`` becomes the query's id list, and the frame still comes
@@ -56,7 +56,10 @@ CUSTODIAN = Latency(0.5, 2.0)
 """One account's positions. Fast per call, and there is one call per account."""
 
 SECURITY_MASTER = Latency(8.0, 30.0)
-"""Every tradable name with its analytics. The slowest input in the run by an order of magnitude."""
+"""Every tradable name with its reference data. The slowest input in the run by an order of magnitude."""
+
+RESEARCH = Latency(2.0, 6.0)
+"""What the desk's models say about each name today: one file, published once a day, read once a run."""
 
 ACCOUNT_MASTER = Latency(1.0, 6.0)
 """A batch of accounts from the firm's own database: one query however many ids it is given."""
@@ -142,7 +145,7 @@ async def load_holdings(request: LoadRequest, params: ServiceParams) -> pd.DataF
 
 
 async def load_universe(request: LoadRequest, params: ServiceParams) -> pd.DataFrame:
-    """Every security the book may trade, with its price, sector, liquidity, and analytics.
+    """Every security the book may trade, with its price, sector, liquidity, lot size, and restricted flag.
 
     One call for the whole run, and the long pole of the load stage: a security-master scan is tens of
     seconds and every other input finishes inside it. That is the argument for loading concurrently —
@@ -150,6 +153,23 @@ async def load_universe(request: LoadRequest, params: ServiceParams) -> pd.DataF
     """
     await _call(request, params.latency(SECURITY_MASTER))
     return _table(request, "universe.csv", UNIVERSE)
+
+
+SIGNALS = FrameSchema(name="signals", columns=(ColumnSpec("security_id", "string"), ColumnSpec("alpha", "Float64"), ColumnSpec("tcost_bps", "decimal", ge=Decimal(0))), key=("security_id",))
+"""The shape of the research store's answer: expected return and cost per security, typed by the loader that fetches it."""
+
+
+async def load_signals(request: LoadRequest, params: ServiceParams) -> pd.DataFrame:
+    """What research says about every name: its expected return and the cost of trading it.
+
+    A security master does not know a name's alpha, so the universe arrives in two parts from two
+    services. This one is an extra dataset the engine does not interpret: the example's assembly
+    ``join`` puts its columns on the universe, on ``security_id`` under ``one_to_one`` with every
+    universe name required to match, then drops it. The join is where the run learns a name has no
+    signal, before any account is built.
+    """
+    await _call(request, params.latency(RESEARCH))
+    return _table(request, "signals.csv", SIGNALS)
 
 
 def load_details(request: LoadRequest, params: ServiceParams) -> pd.DataFrame:

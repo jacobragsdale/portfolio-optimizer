@@ -62,7 +62,9 @@ Read the join as a claim the engine checks: `one_to_one` with `require_all_match
 name has exactly one analytics row, or the run is rejected naming the unmatched securities. Use
 `"columns": ["score"]` to bring a subset and `"rename": {"score": "vendor_score"}` to rename it. `drop`
 discards the source once it has been used; otherwise it is carried into every portfolio's bundle as
-`data.extras["analytics"]`, which costs memory in every worker process for nothing.
+`data.extras["analytics"]`, which costs memory in every worker process for nothing. The shipped inflow
+is this list over its `signals` dataset: the security master answers with reference data, the research
+store with `alpha` and `tcost_bps`, and the join makes one universe of them.
 
 The universe is the table the build reads analytics from, so this join alone is what a term needs. The
 next step is about the *other* table.

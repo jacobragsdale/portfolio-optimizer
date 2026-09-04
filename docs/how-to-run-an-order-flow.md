@@ -168,8 +168,9 @@ is the inflow wired through it:
 },
 ...
 "assembly": [
+  {"name": "join", "params": {"into": "universe", "source": "signals", "on": ["security_id"], "cardinality": "one_to_one", "require_all_matched": true}},
   {"name": "join", "params": {"into": "universe", "source": "adv_consumed", "on": ["security_id"], "cardinality": "one_to_one", "require_all_matched": true}},
-  {"name": "drop", "params": {"datasets": ["adv_consumed"]}}
+  {"name": "drop", "params": {"datasets": ["signals", "adv_consumed"]}}
 ],
 "rules": ["restrict_low_liquidity", "restrict_recent_trades"]
 ```
@@ -181,8 +182,8 @@ is the inflow wired through it:
 `restrict_recent_trades` rule freezes every universe name the account traded within `window_days`
 of the run's `--as-of` (thirty by default, the US window) by marking it `restricted`, so it keeps its
 current weight under every order flow. As `adv_consumed` it is one row per universe security with
-`adv_consumed_shares`, the shares the outflow traded in it; the `join` puts the column on the
-universe and the standard build derives `adv_capacity` from the participation times what is left
+`adv_consumed_shares`, the shares the outflow traded in it; the second `join` puts the column on the
+universe beside the signals the first brought, and the standard build derives `adv_capacity` from the participation times what is left
 of the day. Run the outflow, then this config:
 
 ```bash

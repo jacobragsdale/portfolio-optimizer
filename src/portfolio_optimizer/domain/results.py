@@ -488,7 +488,10 @@ class ConstraintCheck:
     """Maximum violation of one residual, compared with the tolerance; ``label`` names the constraint it belongs to.
 
     ``active`` says the residual sits within the tolerance of its bound — the constraint is binding,
-    or was breached — which is what answers "why did the solver stop here".
+    or was breached — which is what answers "why did the solver stop here". ``residual`` is the worst
+    entry with its sign: negative is the margin the answer kept, and the manifest records it so
+    "passed with how much room" can be read without the solver stack; ``None`` for a check with no
+    residual vector.
     """
 
     name: str
@@ -498,6 +501,7 @@ class ConstraintCheck:
     worst_security: str | None
     label: str
     active: bool = False
+    residual: float | None = None
 
     @property
     def display(self) -> str:

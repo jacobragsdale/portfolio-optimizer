@@ -16,6 +16,7 @@ from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.loaders import (
     CUSTODIAN,
     SECURITY_MASTER,
+    SIGNALS,
     TRADES,
     Latency,
     ParametersParams,
@@ -28,6 +29,7 @@ from portfolio_optimizer.loaders import (
     load_parameters,
     load_portfolios,
     load_run_orders,
+    load_signals,
     load_trades,
     load_universe,
 )
@@ -68,6 +70,14 @@ def test_the_security_master_answers_for_the_book_rather_than_per_account() -> N
     assert universe["security_id"].tolist() == ["A", "B", "C"]
     assert universe["price"].tolist() == [Decimal(100), Decimal(50), Decimal(10)]
     assert universe["restricted"].tolist() == [False, False, False], "a boolean column is read strictly, not by truthiness"
+
+
+def test_the_research_store_answers_for_the_book_with_one_signal_row_per_name() -> None:
+    signals = asyncio.run(load_signals(request("signals"), INSTANT))
+    validate_frame(signals, SIGNALS)
+    assert signals["security_id"].tolist() == ["A", "B", "C"]
+    assert signals["alpha"].tolist() == [0.03, -0.01, 0.05]
+    assert signals["tcost_bps"].tolist() == [Decimal(5), Decimal(5), Decimal(20)], "a cost in basis points is money and arrives exact"
 
 
 def test_the_account_master_takes_a_batch_of_ids_and_returns_a_row_each() -> None:
