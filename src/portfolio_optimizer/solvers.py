@@ -47,8 +47,7 @@ def cvxpy(request: SolveRequest, params: CvxpyParams) -> SolveResult:
     """Render the typed terms and constraint rows, add the profile's identity, and solve the cvxpy problem.
 
     The rows must speak the typed vocabulary — a ``kind`` column naming a model — since this step
-    interprets nothing else; a desk's own syntax is a step of its own. What was applied is reported
-    back as constraint records, and the verifier re-checks each through its model's own residual.
+    interprets nothing else; a desk's own syntax is a step of its own.
     """
     spec, chain = request.spec, request.chain
     parsed = parse_constraints(request.constraints)
@@ -69,7 +68,6 @@ def cvxpy(request: SolveRequest, params: CvxpyParams) -> SolveResult:
         solver=result.solver,
         solver_version=result.solver_version,
         detail=result.detail,
-        constraints=tuple(model.record() for model in typed),
         duals=result.duals,
     )
 

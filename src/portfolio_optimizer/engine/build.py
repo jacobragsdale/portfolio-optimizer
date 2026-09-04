@@ -79,9 +79,10 @@ def standard(data: PortfolioData, params: StandardParams = DEFAULT_PARAMS) -> Pr
     Derived per security: ``tax_per_dollar`` (signed; a loss is negative) where the account carries
     both tax rates, ``tcost_per_dollar`` where the universe carries ``tcost_bps``, and ``adv_capacity``
     — the style's participation times the day's volume, less what ``adv_consumed_shares`` says an
-    earlier run already traded, as a fraction of NAV — where it carries ``adv_shares`` and the account
-    a ``max_adv_participation``; a term or row that needs a column the inputs did not give is refused
-    by name at build. The bounds fold the style's
+    earlier run already traded, floored at zero, as a fraction of NAV — where it carries ``adv_shares``
+    and the account a ``max_adv_participation``. The consumption comes off the budget, not the volume,
+    so an earlier run's trades and a predecessor's in this one (``adv_remaining``) leave the same room.
+    A term or row that needs a column the inputs did not give is refused by name at build. The bounds fold the style's
     ``max_weight``, the optional ``min_weight``/``max_weight`` columns, and the ``restricted`` flag,
     which freezes a name at its current weight; under ``hold_breached_starts`` a name already past a
     bound is held there too, its bound loosened to the current weight.
@@ -110,7 +111,7 @@ def standard(data: PortfolioData, params: StandardParams = DEFAULT_PARAMS) -> Pr
     if "adv_shares" in universe.columns and participation is not None:
         consumed = [int(value) for value in universe["adv_consumed_shares"]] if "adv_consumed_shares" in universe.columns else [0] * n
         columns["adv_capacity"] = to_float64(
-            [participation * Decimal(max(int(adv) - used, 0)) * px / nav for adv, used, px in zip(universe["adv_shares"], consumed, price, strict=True)], "adv_capacity"
+            [max(participation * Decimal(int(adv)) - Decimal(used), Decimal(0)) * px / nav for adv, used, px in zip(universe["adv_shares"], consumed, price, strict=True)], "adv_capacity"
         )
     extra_columns, flags, groups = _exports(universe)
     return ProblemSpec(

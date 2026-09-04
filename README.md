@@ -6,10 +6,11 @@ Python.
 
 A run is one JSON file, an order flow, and an as-of date. The engine loads the data the file names,
 applies your rules per portfolio, builds one problem per portfolio, solves along a dependency graph it
-derives from the data, re-verifies every answer without cvxpy, rounds to whole-share orders, publishes
-them, and writes a manifest that lets anyone reproduce the run. A run is an inflow, an outflow, or a
-rebalance: it buys, it sells, or it does either to bring a book back inside its bounds. A desk's order
-flows are separate runs over one snapshot, and the template ships one of each.
+derives from the data, re-verifies every answer without cvxpy, rounds to whole-share orders and
+re-verifies the book they leave, publishes them, and writes a manifest that lets anyone reproduce the
+run. A run is an inflow, an outflow, or a rebalance: it buys, it sells, or it does either to bring a
+book back inside its bounds. A desk's order flows are separate runs over one snapshot, and the template
+ships one of each.
 
 ## The run config, block by block
 

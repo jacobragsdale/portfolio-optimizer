@@ -2,7 +2,9 @@
 
 The step — the shipped cvxpy one, a firm's library, a pure function — returns weights; this module
 turns them into a :class:`~portfolio_optimizer.domain.results.Solution` through the order-flow profile's
-split, explains an infeasibility with arithmetic, and raises for everything else.
+split, stamps it with the portfolio's typed constraint rows as records — the engine's reading of the
+rows, not the step's, so what the verifier checks cannot be narrowed by the step — explains an
+infeasibility with arithmetic, and raises for everything else.
 """
 
 from collections.abc import Mapping
@@ -13,8 +15,9 @@ import pandas as pd
 
 from portfolio_optimizer.config.resolve import ResolvedConfig
 from portfolio_optimizer.config.steps import ResolvedStep
+from portfolio_optimizer.domain.constraints import parse_constraints
 from portfolio_optimizer.domain.order_flow import OrderFlowProfile
-from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus
+from portfolio_optimizer.domain.results import ChainState, ConstraintRecord, ProblemSpec, Solution, SolveStatus
 from portfolio_optimizer.engine.environment import package_versions
 from portfolio_optimizer.solving import SolveRequest, SolveResult, SolveSetupError
 
@@ -58,10 +61,11 @@ def solve(spec: ProblemSpec, chain: ChainState, resolved: ResolvedConfig, constr
     if not isinstance(result, SolveResult):
         msg = f"solve step {step.qualname!r} returned {type(result).__name__}, expected SolveResult"
         raise SolveSetupError(msg)
-    return _classify(result, spec, chain, spec_hash, resolved)
+    parsed = parse_constraints(constraints)
+    return _classify(result, spec, chain, spec_hash, resolved, tuple(model.record() for model in parsed.typed) if parsed is not None else ())
 
 
-def _classify(result: SolveResult, spec: ProblemSpec, chain: ChainState, spec_hash: str, resolved: ResolvedConfig) -> Solution:
+def _classify(result: SolveResult, spec: ProblemSpec, chain: ChainState, spec_hash: str, resolved: ResolvedConfig, records: tuple[ConstraintRecord, ...]) -> Solution:
     step = resolved.solve
     solver = result.solver if result.solver is not None else step.qualname
     if result.status in (SolveStatus.OPTIMAL, SolveStatus.OPTIMAL_INACCURATE):
@@ -75,7 +79,7 @@ def _classify(result: SolveResult, spec: ProblemSpec, chain: ChainState, spec_ha
         # then re-checks the identity and, when the step minimized one, the objective against it.
         buy, sell = resolved.profile.split(result.w, spec.w0)
         return Solution(
-            constraints=result.constraints,
+            constraints=records,
             duals=result.duals,
             w=result.w,
             buy=buy,

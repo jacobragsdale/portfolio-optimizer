@@ -47,7 +47,7 @@ from portfolio_optimizer.domain.results import VECTOR_FIELDS, ChainState, Portfo
 from portfolio_optimizer.domain.types import PortfolioId
 from portfolio_optimizer.engine.build import order_inputs, standard
 from portfolio_optimizer.engine.check import constraints_of, verify
-from portfolio_optimizer.engine.orders import rounding_drift, solution_to_orders
+from portfolio_optimizer.engine.orders import executed_solution, rounding_drift, solution_to_orders
 from portfolio_optimizer.engine.pipeline import apply_rules
 from portfolio_optimizer.engine.solve import solve
 from portfolio_optimizer.engine.tasks import BuildResult
@@ -245,7 +245,11 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
         orders = solution_to_orders(spec, solution, inputs, run_id="benchmark")
     row.note = f"{len(orders):,} orders"
     with report.stage("rounding drift"):
-        rounding_drift(spec, solution, orders, inputs)
+        drift = rounding_drift(spec, solution, orders, inputs)
+    with report.stage("verify executed orders") as row:
+        executed = executed_solution(spec, solution, orders, resolved.profile)
+        executed_report = verify(spec, executed, chain, resolved.terms, constraints_of(solution), profile=resolved.profile)
+    row.note = f"passed {executed_report.passed}, max violation {executed_report.max_violation:.2e}"
     with tempfile.TemporaryDirectory() as directory, report.stage("persist spec + solution (.npz)") as row:
         spec_path, solution_path = Path(directory) / "spec.npz", Path(directory) / "solution.npz"
         spec.to_npz(spec_path)
@@ -263,8 +267,10 @@ def profile(args: argparse.Namespace) -> Report:  # one straight line through th
             orders=orders,
             rule_audit=(),
             chain_state=chain,
-            drift=rounding_drift(spec, solution, orders, inputs),
+            drift=drift,
             contribution=resolved.profile.contribution(spec.portfolio_id, orders),
+            executed=executed,
+            executed_report=executed_report,
         )
         row.note = f"BuildResult {len(pickle.dumps(built)) / MB:.1f} MB (stays on the worker), PortfolioResult {len(pickle.dumps(result)) / MB:.1f} MB (returns to the client)"
     return report

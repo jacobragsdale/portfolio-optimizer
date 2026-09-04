@@ -6,7 +6,8 @@ portfolio's typed constraint rows through their own `to_cvxpy` and solves the pr
 it for a step of your own: a plain numpy function for a side that needs no optimizer, or an adapter
 over a library your firm already uses to build the problem. Everything around the step — the build,
 the dependency graph, verification, rounding, the manifest — is unchanged, and the verifier is what
-makes the step's answer trustworthy.
+makes the step's answer trustworthy: it holds the weights to every typed constraint row the portfolio
+carries, whether or not the step rendered it.
 
 ## Prerequisites
 
@@ -75,7 +76,6 @@ Every field but `w` has a default, so a pure function sets `w` and nothing else 
 | `solver` | `str \| None` | `None` | What produced the answer; the engine records the step's qualified name when unset. |
 | `solver_version` | `str \| None` | `None` | Its version; the engine records the step's package version when unset. |
 | `detail` | `str` | `""` | Free text: the solver's own status, or what a function did (`pro_rata_fill` reports what it invested). Quoted in the failure message when the status is not optimal. |
-| `constraints` | `tuple[ConstraintRecord, ...]` | `()` | The typed constraints the step applied, as records (`model.record()`); what the verifier re-checks and the manifest records. |
 | `duals` | `Mapping[str, float]` | `{}` | Per constraint name, the largest dual value the solver reported — the shadow price; recorded in the manifest's `solve.duals`. |
 
 ### Constraints are yours to interpret
@@ -94,20 +94,18 @@ def with_our_library(request: SolveRequest, params: OurParams) -> SolveResult:
     parsed = parse_constraints(request.constraints)  # typed rows as their models; None for a frame in another vocabulary
     limits = our_library.limits(request.constraints if parsed is None else parsed.typed)
     weights, value = our_library.solve(request.spec, limits, solver=params.solver)
-    applied = () if parsed is None else tuple(model.record() for model in parsed.typed)
-    return SolveResult(w=weights, objective=value, solver=params.solver, constraints=applied)
+    return SolveResult(w=weights, objective=value, solver=params.solver)
 ```
 
-Report what you applied on `SolveResult.constraints` as records. The verifier parses each back through
-the kind registry and re-checks it through the model's own `residual` — a kind a package publishes is
-checked exactly like a shipped one — and the identity and solution checks run either way. Leave it
-empty and none of your constraints are independently checked, which is honest but worth choosing
-deliberately. Rows in a vocabulary of your own can be reported too, by building the typed models
-they amount to.
+The step reports nothing about the constraints, because what is verified is not the step's to say. The
+engine stamps the portfolio's typed rows on the solution itself and re-checks the weights through each
+model's own `residual` — a kind a package publishes is checked exactly like a shipped one — so a step
+that skips a row fails on that row rather than passing quietly. Rows in a vocabulary of your own are
+yours to interpret and are not independently checked; if that matters, express them as typed rows.
 
 The shipped `solvers.cvxpy` is the worked example: it parses the typed rows, renders each through
-`to_cvxpy`, adds the order-flow profile's identity, and reports the records and the solver's duals back.
-Replacing that one function is how a desk brings its own syntax without touching the engine.
+`to_cvxpy`, adds the order-flow profile's identity, and reports the solver's duals back. Replacing that
+one function is how a desk brings its own syntax without touching the engine.
 
 ### Runtime parameters arrive the same way
 

@@ -216,10 +216,11 @@ stage at which it diverged.
 uv run portfolio-optimizer verify --manifest out/<first-run-id>/manifest.json --portfolio P1
 ```
 
-This reloads the persisted problem, solution, and chain state and recomputes every constraint the
-solve applied and every term in plain numpy — cvxpy is never imported. Expected: a list of `ok` lines,
-`[binding]` after the ones the answer sits against, and `VERIFIED P1`. Notice that the recomputed
-objective equals the solver's to nine digits.
+This reloads the persisted problem, solution, executed book, and chain state and recomputes every
+constraint row and every term in plain numpy — cvxpy is never imported. Expected: two lists of `ok`
+lines, one under `solution` and one under `executed orders`, `[binding]` after the ones the answer sits
+against, and `VERIFIED P1`. Notice that the recomputed objective equals the solver's to nine digits, and
+that the executed book — the weights the whole-share orders actually leave — passes the same checks.
 
 ## What you accomplished
 

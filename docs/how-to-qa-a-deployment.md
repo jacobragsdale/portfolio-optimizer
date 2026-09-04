@@ -31,7 +31,8 @@ read, in order:
 - **Checks**: `checks[]` — `passed`, `failed` with the rows that broke it in `checks/<label>.csv`, or
   `not_exercised`.
 
-`verify` recomputes one portfolio's constraints and terms from the persisted spec without cvxpy:
+`verify` recomputes one portfolio's constraints and terms from the persisted spec without cvxpy, over
+the solved weights and again over the book the orders leave:
 
 ```bash
 uv run portfolio-optimizer verify --manifest out/qa-2026-09-03/manifest.json --portfolio P1

@@ -425,11 +425,12 @@ class Solution:
     iterations: int | None
     spec_hash: str
     constraints: tuple[ConstraintRecord, ...] = ()
-    """The typed constraints the solve step applied, as records.
+    """The portfolio's typed constraint rows, as records, stamped by the engine at solve.
 
-    The step says what it made of this portfolio's constraint rows; the verifier parses each record
-    back into its model and re-checks it through the model's own residual. Persisted with the rest of
-    the provenance so an offline ``verify`` from the ``.npz`` alone checks exactly what the run did.
+    The engine's reading of the rows, not the step's: the verifier parses each record back into its
+    model and re-checks the answer through the model's own residual, whatever the step made of the
+    row. Persisted with the rest of the provenance so an offline ``verify`` from the ``.npz`` alone
+    checks exactly what the run did.
     """
 
     duals: Mapping[str, float] = field(default_factory=dict)
@@ -633,7 +634,7 @@ class Contribution:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class PortfolioResult:
-    """A fully processed portfolio: spec, solution, verification, orders, and audit trail."""
+    """A fully processed portfolio: spec, solution, verification, orders, the executed book verified the same way, and audit trail."""
 
     portfolio_id: str
     spec: ProblemSpec
@@ -644,6 +645,11 @@ class PortfolioResult:
     chain_state: ChainState
     drift: DriftReport
     contribution: Contribution
+    executed: Solution
+    """The book the orders leave, as a solution: the executed weights and the profile's split of them, no objective."""
+
+    executed_report: ConstraintReport
+    """The verification of :attr:`executed` against the same constraints as :attr:`report`; a proposal is eligible only when both pass."""
 
 
 @dataclass(frozen=True, slots=True)

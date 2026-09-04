@@ -8,7 +8,8 @@ solve-order key, and the spec. Its result stays on the worker; :func:`summarize`
 process only what it needs to derive the schedule — the key, the tradable securities, the spec hash,
 the rule audit — stamped with the build's environment. :func:`solve_task` then runs where the build
 lives, once the portfolio's predecessors have contributed: it folds their trades on the side the run
-couples through into a :class:`ChainState`, solves, verifies, and rounds. :func:`contribution`
+couples through into a :class:`ChainState`, solves, verifies, rounds, and verifies the rounded book
+against the same constraints. :func:`contribution`
 reduces a result to the order rows on that side a dependent needs. Each task receives the run's shared data (the backend resolves its handle on
 the worker) and resolves the config by name once per process. A task never raises for a portfolio's
 own failure: it returns a :class:`PortfolioFailure` naming the stage, so ``on_error`` can be applied.
@@ -51,7 +52,7 @@ from portfolio_optimizer.engine.build import BuildError, order_inputs
 from portfolio_optimizer.engine.check import constraints_of, verify
 from portfolio_optimizer.engine.environment import IMAGE_DIGEST_VARIABLE, WorkerEnvironment, environment_for, host_name
 from portfolio_optimizer.engine.load import slice_portfolio
-from portfolio_optimizer.engine.orders import rounding_drift, solution_to_orders
+from portfolio_optimizer.engine.orders import executed_solution, rounding_drift, solution_to_orders
 from portfolio_optimizer.engine.pipeline import apply_rules
 from portfolio_optimizer.engine.solve import solve
 from portfolio_optimizer.engine.timing import SpanRecorder
@@ -64,11 +65,11 @@ SKIPPED_ERROR = "SkippedAfterFailure"
 
 
 class VerificationError(RuntimeError):
-    """The independent check disagreed with the solver."""
+    """The independent check disagreed with the solver, or the executed orders breach a constraint the solved weights kept."""
 
-    def __init__(self, report: ConstraintReport) -> None:
+    def __init__(self, report: ConstraintReport, *, what: str = "solution") -> None:
         self.report = report
-        super().__init__(f"verification failed: violated {list(report.violated)}, objective gap {report.objective_gap:.3e}")
+        super().__init__(f"{what} failed verification: violated {list(report.violated)}, objective gap {report.objective_gap:.3e}")
 
 
 class DriftError(RuntimeError):
@@ -195,20 +196,14 @@ def solve_order_key(step: ResolvedStep, data: PortfolioData) -> Decimal:
 
 
 def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainState, run_id: str, recorder: SpanRecorder) -> PortfolioResult:
-    """Solve, verify independently, round to orders, and bound the rounding drift, timing each phase onto ``recorder``."""
+    """Solve, verify independently, round to orders, bound the rounding drift, and verify the executed book the same way, timing each phase onto ``recorder``."""
     with recorder.span("solve:solve"):
         solution = solve(built.spec, chain, resolved, built.constraints, built.extras)
     post = resolved.config.post_solve
+    tolerances = Tolerances(violation=post.violation_tol, obj_rel=post.objective_rel_tol, obj_abs=post.objective_abs_tol)
+    constraints = constraints_of(solution)
     with recorder.span("solve:verify"):
-        report = verify(
-            built.spec,
-            solution,
-            chain,
-            resolved.terms,
-            constraints_of(solution),
-            profile=resolved.profile,
-            tolerances=Tolerances(violation=post.violation_tol, obj_rel=post.objective_rel_tol, obj_abs=post.objective_abs_tol),
-        )
+        report = verify(built.spec, solution, chain, resolved.terms, constraints, profile=resolved.profile, tolerances=tolerances)
     if not report.passed:
         raise VerificationError(report)
     with recorder.span("solve:orders"):
@@ -225,8 +220,23 @@ def finish_portfolio(built: BuildResult, resolved: ResolvedConfig, chain: ChainS
         drift = rounding_drift(built.spec, solution, orders, built.order_inputs, violation_tol=post.violation_tol)
     if not drift.passed:
         raise DriftError(drift)
+    with recorder.span("solve:verify_orders"):
+        executed = executed_solution(built.spec, solution, orders, resolved.profile)
+        executed_report = verify(built.spec, executed, chain, resolved.terms, constraints, profile=resolved.profile, tolerances=tolerances)
+    if not executed_report.passed:
+        raise VerificationError(executed_report, what="executed orders")
     return PortfolioResult(
-        portfolio_id=built.portfolio_id, spec=built.spec, solution=solution, report=report, orders=orders, rule_audit=built.rule_audit, chain_state=chain, drift=drift, contribution=contribution
+        portfolio_id=built.portfolio_id,
+        spec=built.spec,
+        solution=solution,
+        report=report,
+        orders=orders,
+        rule_audit=built.rule_audit,
+        chain_state=chain,
+        drift=drift,
+        contribution=contribution,
+        executed=executed,
+        executed_report=executed_report,
     )
 
 

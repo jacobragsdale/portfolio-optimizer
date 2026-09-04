@@ -228,7 +228,11 @@ room under its upper bound. Rounding toward zero
 was considered — it can never breach a cap — but solver noise of about 1e-8 in weight space turns an
 exact 1,250-share answer into 1,249, which is worse in practice. Instead the rounding drift is measured
 against the solved weights and bounded by what one lot and one dust-filtered trade can cost; exceeding the
-bound fails the portfolio.
+bound fails the portfolio. That bound is a diagnostic. What decides whether the orders go out is that the
+book they leave — the executed weights, rebuilt from the orders — passes the same verification the solved
+weights did, against every typed constraint row: a fraction of a share can breach a bound the solver sat
+on, and the engine adds no slack of its own for it. A desk that accepts some says so on the row, through its
+`tolerance`.
 
 ## A run couples through its one side, so the schedule is a graph
 
@@ -280,8 +284,9 @@ the shipped `trades` dataset is the desk's blotter, and the `restrict_recent_tra
 every name an account traded inside the wash-sale window, so an inflow cannot rebuy what the outflow
 just sold; a boolean universe column and one `weight_limit` row on `buy` (`scope: sold_at_loss`) is
 the directional shape of the same thing. The same orders, loaded once more as `adv_consumed_shares`
-on the universe, are what the standard build subtracts from each name's daily volume, so the
-inflow's participation budget is what the outflow left of it. `load_run_orders` reads a run's orders
+on the universe, are what the standard build takes off each name's participation budget — off the
+budget, not the volume, so an earlier run's trades and a predecessor's in the same run leave the same
+room — and the inflow's budget is what the outflow left of it. `load_run_orders` reads a run's orders
 file in either shape, content-hashed like any input, which is the whole of the handoff between an
 outflow and the inflow behind it, or between a run and the retry of part of it: two runs, two
 manifests, and `diff-manifests` naming the predecessor's orders as the input that changed.
@@ -343,7 +348,7 @@ it has done any work. The manifest records the backend's lifetime and every envi
 ## Timing is recorded, and observability is never identity
 
 A finished run can be drawn. Every task the engine submits times itself — `build` with its
-`build:slice`/`build:rules`/`build:spec` phases, `solve` with `solve:chain`/`solve:solve`/`solve:verify`/`solve:orders` —
+`build:slice`/`build:rules`/`build:spec` phases, `solve` with `solve:chain`/`solve:solve`/`solve:verify`/`solve:orders`/`solve:verify_orders` —
 and the runner times the client-side stages: `load`, each `dataset:<name>` (derived from the load
 audits), `assembly`, `cluster` (provisioning to first worker), `sink`. A span is a wall-clock start, a duration, and the
 `host:pid` that ran it; spans ride each task's output back beside the environment stamp and land in

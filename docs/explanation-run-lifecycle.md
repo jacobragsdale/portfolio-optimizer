@@ -12,7 +12,7 @@ and every term is a kind the engine knows → load data through loaders → asse
 every portfolio at once (slice, rules, solve-order key, a pure-numpy problem, its constraint rows
 parsed) → derive who waits for whom from what each may trade on the side the run couples through and
 what its rows declare they read → solve along that graph with the configured solve step (cvxpy by
-default) → re-check each answer without cvxpy → round to whole shares → publish the orders once →
+default) → re-check each answer without cvxpy → round to whole shares and re-check the book they leave → publish the orders once →
 prove the business rules on what went out → write a manifest.** Money is `Decimal` everywhere except inside the solver, and there are exactly two
 conversion points. Every stage validates its own output, so a bad input fails at the earliest stage
 that can detect it, with a message naming what is wrong.
@@ -253,7 +253,8 @@ typed atoms — affine `dot`, `matvec`, `masked`, `scale`, `weighted`, ...; conv
 half can mirror them. The adapter checks that the problem is DCP-compliant, maps `time_limit_s` to the
 solver's own option, solves once, reads back the largest dual value of every constraint set — the
 shadow price of each limit — and returns the `SolveResult` as is: status, weights, objective,
-iterations, solve time, solver and version, the records of the constraints it applied, the duals. A
+iterations, solve time, solver and version, the duals. The engine then stamps the solution with the
+portfolio's typed constraint rows as records — its own reading of the rows, not the step's. A
 step that is not cvxpy — the shipped `pro_rata_fill`, a firm's library, a function of your own — returns
 weights the same way and is verified the same way; see
 [how to replace the cvxpy solve](how-to-write-a-solve-step.md).
@@ -277,11 +278,11 @@ There is deliberately no path that returns the current portfolio as a fallback a
 ## 7. Verify: the second opinion
 
 `engine/check.py` recomputes everything in numpy and never imports cvxpy (a test enforces this). Every
-constraint the solve step reported is parsed back through the kind registry and re-checked through the
-model's own `residual`; every term is recomputed through its own `value`, the values summed and
-compared with the solver's reported objective. So a kind a package published is checked exactly like a
-shipped one, and nothing typed is ever unverified — a step that reports no constraints has none
-checked, which is the honest answer rather than a silent pass. It also checks finiteness, that the
+typed constraint row the portfolio carries — stamped on the solution by the engine, so a solve step
+cannot narrow the set by leaving one out — is parsed back through the kind registry and re-checked
+through the model's own `residual`; every term is recomputed through its own `value`, the values summed
+and compared with the solver's reported objective. So a kind a package published is checked exactly
+like a shipped one, and nothing typed is ever unverified. It also checks finiteness, that the
 solution's `spec_hash` matches the spec it is being checked against, and the order-flow profile's **identity
 checks** — under `inflow`, `no_sells` (`w ≥ w0`), `trade_balance` (the reported buy is `w − w0`),
 `nonneg_buy`, and `sell_absent`; under `outflow`, `no_buys`, `trade_balance`, `nonneg_sell`, and
@@ -310,7 +311,12 @@ schema's `notional_matches` invariant confirms it. Each order also carries the s
 `rounding_drift` rebuilds the executed weights from the orders and measures the worst deviation from the
 solved weights. The tolerance is derived, not configured: one lot of the priciest name plus one
 dust-filtered trade, both as fractions of NAV, plus the bound overshoot the verifier accepts. Exceeding
-it raises `DriftError`.
+it raises `DriftError`. That is a diagnostic; the gate is that the executed book passes §7 again.
+`executed_solution` is the same weights as a solution — the profile's split of them, no objective — and
+the verifier holds it to the same identity checks and typed rows under the same tolerance. Rounding
+to the nearest share can breach a bound the solver sat on by a fraction of a share, and the engine adds
+no slack for it: a row's `tolerance` is where a desk says how much it accepts. A breach raises
+`VerificationError` naming the executed orders; the portfolio fails at stage `solve`.
 
 ## 9. The dependency graph, and where the work runs
 
@@ -439,12 +445,12 @@ matches, naming what did fail.
 
 ## 11. Persist, publish, record
 
-For each solved portfolio, the spec, solution, and chain state — its predecessors' trades on the side
-the run couples through, and which predecessors — are written as `.npz` files under
-`<output_dir>/<run_id>/{problem_specs,solutions,chain}/` as each result is classified, while the cluster
-is still up. The solution carries the records of the constraints the step applied and the solver's
-duals, so these files are what `portfolio-optimizer verify` reloads to re-check a solution without the
-solver stack.
+For each solved portfolio, the spec, solution, executed book, and chain state — its predecessors' trades
+on the side the run couples through, and which predecessors — are written as `.npz` files under
+`<output_dir>/<run_id>/{problem_specs,solutions,executed,chain}/` as each result is classified, while the
+cluster is still up. The solution carries the portfolio's constraint rows as records and the solver's
+duals, so these files are what `portfolio-optimizer verify` reloads to re-check both the solution and
+the executed book without the solver stack.
 
 The **sink** is called exactly once, with every solved portfolio's orders concatenated and sorted, and
 only when at least one portfolio solved. The shipped sinks write Parquet (Decimals as Arrow decimals) or
@@ -470,7 +476,8 @@ for, when the first worker answered, when it was released; the resolved config a
 settings; every objective term as its record; every dataset's provenance and content hash; and, per
 portfolio, the solve-order key, the number of predecessors, the rule audits, the constraint records it
 solved under, the spec hash, the chain-input hash, the solver statistics and duals, the verification
-outcome with the checks that bound and every residual signed, drift, and the orders' count, hash, and gross notional;
+outcome with the checks that bound and every residual signed — once for the solved weights and once for
+the executed book — drift, and the orders' count, hash, and gross notional;
 and every check step's outcome. The
 manifest is then self-hashed, and `load_manifest` refuses one whose hash does not match its content.
 
@@ -542,10 +549,11 @@ through exactly this.
    parses as its kind and every row and term finds what it reads on the spec.
 9. **Solve step** — weights of the right shape, status classified, infeasibility diagnosed; for the
    cvxpy step, DCP-compliant first.
-10. **Verifier** — every reported constraint through its own residual, every term through its own
+10. **Verifier** — every typed constraint row through its own residual, every term through its own
     value, and the objective, independently of cvxpy.
 11. **Orders** — the `ORDERS` schema including `notional = quantity × price`, every order on a side the
-    run trades and inside the tradable set, then the drift bound.
+    run trades and inside the tradable set, the drift bound, then the verifier again over the executed
+    book.
 12. **Checks** — every configured check over the assembled datasets and the published orders, one
     row per case the rule applies to; `not_exercised` when it examined nothing.
 13. **Manifest** — self-hash checked on load.

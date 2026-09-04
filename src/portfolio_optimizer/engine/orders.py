@@ -8,17 +8,22 @@ matters because solver noise of 1e-8 in weight space is a fraction of a share: r
 would turn an exact 1250-share answer into 1249. The buy clamp makes ``spec.buyable`` structural:
 the verifier tolerates a bound violation of ``violation_tol``, which at a large NAV is whole shares,
 and a BUY in a security the portfolio cannot buy would be invisible to the dependency graph. The
-drift this introduces is measured against the solved weights and bounded by :func:`rounding_drift`;
-verification of every constraint happens on the solved weights before rounding.
+drift this introduces is measured against the solved weights and bounded by :func:`rounding_drift`,
+a diagnostic; what decides whether the orders may go out is that the book they leave —
+:func:`executed_solution` — passes the same verification the solved weights did. Rounding can breach
+a bound the solver sat on, by a fraction of a share; a row's ``tolerance`` is where a desk says how
+much of that it accepts, and the engine adds none of its own.
 """
 
+from dataclasses import replace
 from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 
 import numpy as np
 import pandas as pd
 
 from portfolio_optimizer.domain.frames import validate_frame
-from portfolio_optimizer.domain.results import DriftReport, OrderInputs, ProblemSpec, Solution
+from portfolio_optimizer.domain.order_flow import OrderFlowProfile
+from portfolio_optimizer.domain.results import F64, DriftReport, OrderInputs, ProblemSpec, Solution
 from portfolio_optimizer.domain.schemas import ORDERS
 
 
@@ -76,18 +81,30 @@ def _orders_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
     return pd.DataFrame({column.name: pd.Series([row[column.name] for row in rows], dtype=column.dtype) for column in ORDERS.columns})
 
 
+def executed_weights(spec: ProblemSpec, orders: pd.DataFrame) -> F64:
+    """The weights the orders leave the book at: shares held plus the signed order quantities, times price, over NAV, from the spec's own vectors."""
+    signed = np.zeros(spec.n)
+    positions = {security: index for index, security in enumerate(spec.security_ids)}
+    for security, side, quantity in zip(orders["security_id"], orders["side"], orders["quantity"], strict=True):
+        signed[positions[str(security)]] += int(quantity) if str(side) == "BUY" else -int(quantity)
+    return (spec.shares_held + signed) * spec.price / spec.nav
+
+
+def executed_solution(spec: ProblemSpec, solution: Solution, orders: pd.DataFrame, profile: OrderFlowProfile) -> Solution:
+    """The executed book as a solution the verifier checks exactly like the solver's: the weights the orders leave, the profile's split of them, no objective and no duals."""
+    w = executed_weights(spec, orders)
+    buy, sell = profile.split(w, spec.w0)
+    return replace(solution, w=w, buy=buy, sell=sell, objective=None, duals={})
+
+
 def rounding_drift(spec: ProblemSpec, solution: Solution, orders: pd.DataFrame, inputs: OrderInputs, *, violation_tol: float = 0.0) -> DriftReport:
-    """Rebuild the executed weights from the orders and measure their distance from the solved weights.
+    """Measure how far the executed weights sit from the solved weights.
 
     The tolerance is what rounding can cost by construction: one lot of the priciest name plus one
     dust-filtered trade, both as fractions of NAV, plus ``violation_tol`` — the bound overshoot the
     verifier accepts, which the buy clamp in :func:`solution_to_orders` may take back.
     """
-    signed: dict[str, int] = {}
-    for security, side, quantity in zip(orders["security_id"], orders["side"], orders["quantity"], strict=True):
-        signed[str(security)] = int(quantity) if str(side) == "BUY" else -int(quantity)
-    executed = np.array([float((Decimal(inputs.shares_held[i] + signed.get(security, 0)) * inputs.price[i]) / inputs.nav) for i, security in enumerate(spec.security_ids)], dtype=np.float64)
-    error = float(np.abs(executed - solution.w).max(initial=0.0))
+    error = float(np.abs(executed_weights(spec, orders) - solution.w).max(initial=0.0))
     lot_cost = max((float(Decimal(lot) * price / inputs.nav) for lot, price in zip(inputs.lot_size, inputs.price, strict=True)), default=0.0)
     dust_cost = float(inputs.min_trade_notional / inputs.nav)
     traded = {str(security) for security in orders["security_id"]}

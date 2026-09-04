@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, Field
 
-from portfolio_optimizer.domain.results import RUN_SCOPED, Artifact, AssemblyAuditRecord, ConstraintRecord, PortfolioFailure, PortfolioResult, RuleAuditRecord
+from portfolio_optimizer.domain.results import RUN_SCOPED, Artifact, AssemblyAuditRecord, ConstraintRecord, ConstraintReport, PortfolioFailure, PortfolioResult, RuleAuditRecord
 from portfolio_optimizer.domain.types import StrictModel
 from portfolio_optimizer.engine.environment import WorkerEnvironment, distribution_version
 from portfolio_optimizer.engine.files import write_atomically
@@ -104,7 +104,7 @@ class SolveRecord(StrictModel):
 
 
 class CheckRecord(StrictModel):
-    """Outcome of the independent verification; ``tolerance`` is the violation every residual was held to, ``active`` the checks that bind — where the answer stopped."""
+    """Outcome of one independent verification; ``tolerance`` is the violation every residual was held to, ``active`` the checks that bind — where the answer stopped."""
 
     tolerance: float
     max_violation: float
@@ -162,7 +162,7 @@ class PortfolioRecord(StrictModel):
     predecessors: int | None = None
     rules: tuple[RuleAuditRecord, ...] = ()
     constraints: tuple[ConstraintRecord, ...] = ()
-    """The typed constraints the solve step applied to this portfolio, as records, after its rules.
+    """This portfolio's typed constraint rows, as records, after its rules: what the verifier held the answer to.
 
     Per portfolio, because constraints are loaded data and a rule may change them; the run-level block
     that used to hold them could not say what any one account solved.
@@ -172,6 +172,11 @@ class PortfolioRecord(StrictModel):
     chain_inputs_sha256: str | None = None
     solve: SolveRecord | None = None
     check: CheckRecord | None = None
+    """The verification of the solved weights."""
+
+    executed: CheckRecord | None = None
+    """The same verification over the weights the rounded orders leave the book at; no objective to agree with, so its objective fields are trivially passed."""
+
     drift: DriftRecord | None = None
     orders: OrdersRecord | None = None
     failure_stage: str | None = None
@@ -228,9 +233,22 @@ def versions(solver: str, solver_version: str, packages: Mapping[str, str], work
     )
 
 
+def _check_record(report: ConstraintReport, violation_tol: float) -> CheckRecord:
+    return CheckRecord(
+        tolerance=violation_tol,
+        max_violation=report.max_violation,
+        violated=report.violated,
+        active=report.active,
+        objective_gap=report.objective_gap,
+        objective_passed=report.objective_passed,
+        passed=report.passed,
+        residuals={check.display: check.residual for check in report.checks if check.residual is not None},
+    )
+
+
 def solved_record(result: PortfolioResult, violation_tol: float, *, solve_order: str | None = None) -> PortfolioRecord:
-    """The manifest record for a portfolio that produced orders; ``violation_tol`` is what its verification was held to."""
-    solution, report, drift = result.solution, result.report, result.drift
+    """The manifest record for a portfolio that produced orders; ``violation_tol`` is what both verifications were held to."""
+    solution, drift = result.solution, result.drift
     gross = sum((notional for notional in result.orders["notional"]), start=0)
     return PortfolioRecord(
         portfolio_id=result.portfolio_id,
@@ -250,16 +268,8 @@ def solved_record(result: PortfolioResult, violation_tol: float, *, solve_order:
             solve_time_s=solution.solve_time_s,
             duals=dict(solution.duals),
         ),
-        check=CheckRecord(
-            tolerance=violation_tol,
-            max_violation=report.max_violation,
-            violated=report.violated,
-            active=report.active,
-            objective_gap=report.objective_gap,
-            objective_passed=report.objective_passed,
-            passed=report.passed,
-            residuals={check.display: check.residual for check in report.checks if check.residual is not None},
-        ),
+        check=_check_record(result.report, violation_tol),
+        executed=_check_record(result.executed_report, violation_tol),
         drift=DriftRecord(max_weight_error=drift.max_weight_error, tolerance=drift.tolerance, dropped_orders=drift.dropped_orders, passed=drift.passed),
         orders=OrdersRecord(count=len(result.orders), sha256=frame_sha256(result.orders.drop(columns=["run_id"]), ("portfolio_id", "security_id")), gross_notional=str(gross)),
     )

@@ -1,10 +1,11 @@
 """Independent, cvxpy-free re-verification of a solution against its spec.
 
-Every constraint the solve step reports and every configured term is a typed model that carries its
+Every typed constraint row the portfolio carries and every configured term is a typed model with its
 own numpy half — ``residual`` for a constraint, ``value`` for a term — so an auditor can re-run this
 over a persisted spec and solution without the solver stack, and a kind a package ships is checked
-exactly like a shipped one. A step that reports no constraints has none checked, which is the honest
-answer rather than a silent pass.
+exactly like a shipped one. The rows are the engine's reading, stamped on the solution at solve, so a
+solve step cannot narrow what is checked by leaving a row out. The same check runs twice per
+portfolio: over the solved weights, and over the weights the rounded orders leave the book at.
 
 This module must never import cvxpy; a test enforces it.
 """
@@ -30,7 +31,7 @@ BOX: frozenset[str] = frozenset({"lb", "ub"})
 
 
 def constraints_of(solution: Solution) -> tuple[TypedConstraint, ...]:
-    """The constraints a solution carries, parsed back into their models through the registry."""
+    """The typed constraint rows the engine stamped on a solution, parsed back into their models through the registry."""
     return tuple(parse_constraint(record, f"constraints[{index}]") for index, record in enumerate(solution.constraints))
 
 

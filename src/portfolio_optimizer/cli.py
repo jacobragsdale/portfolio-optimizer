@@ -367,6 +367,7 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
     try:
         spec = ProblemSpec.from_npz(run_dir / "problem_specs" / f"{portfolio_id}.npz")
         solution = Solution.from_npz(run_dir / "solutions" / f"{portfolio_id}.npz")
+        executed = Solution.from_npz(run_dir / "executed" / f"{portfolio_id}.npz")
         chain = ChainState.from_npz(run_dir / "chain" / f"{portfolio_id}.npz")
     except OSError as error:
         stderr.write(f"cannot read persisted problem: {error}\n")
@@ -384,15 +385,23 @@ def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
         stderr.write(f"the manifest names a kind this environment does not know: {error}\n")
         return EXIT_INPUT_REJECTED
     profile = profile_for(str(manifest.config.resolved["order_flow"]))
-    report = verify(spec, solution, chain, terms, constraints, profile=profile, tolerances=Tolerances(violation=record.check.tolerance))
-    stdout.writelines(
-        f"  {'ok  ' if check.passed else 'FAIL'} {check.display:32} violation {check.violation:.3e} (tol {check.tolerance:.1e}){' worst ' + check.worst_security if check.worst_security else ''}{' [binding]' if check.active else ''}\n"
-        for check in report.checks
-    )
-    solver_objective = "none (the solve step minimized nothing)" if report.solver_objective is None else f"{report.solver_objective:.9g}"
-    stdout.write(f"  objective recomputed {report.recomputed_objective:.9g} vs solver {solver_objective} (gap {report.objective_gap:.3e})\n")
-    stdout.write(f"{'VERIFIED' if report.passed else 'VERIFICATION FAILED'} {portfolio_id} (spec {spec.content_hash()[:12]})\n")
-    return EXIT_OK if report.passed else EXIT_PORTFOLIO_FAILED
+    tolerances = Tolerances(violation=record.check.tolerance)
+    passed = True
+    for title, candidate in (("solution", solution), ("executed orders", executed)):
+        report = verify(spec, candidate, chain, terms, constraints, profile=profile, tolerances=tolerances)
+        passed = passed and report.passed
+        stdout.write(f"{title}\n")
+        stdout.writelines(
+            f"  {'ok  ' if check.passed else 'FAIL'} {check.display:32} violation {check.violation:.3e} (tol {check.tolerance:.1e}){' worst ' + check.worst_security if check.worst_security else ''}{' [binding]' if check.active else ''}\n"
+            for check in report.checks
+        )
+        if candidate is executed:
+            stdout.write(f"  objective of the executed book {report.recomputed_objective:.9g}\n")
+        else:
+            solver_objective = "none (the solve step minimized nothing)" if report.solver_objective is None else f"{report.solver_objective:.9g}"
+            stdout.write(f"  objective recomputed {report.recomputed_objective:.9g} vs solver {solver_objective} (gap {report.objective_gap:.3e})\n")
+    stdout.write(f"{'VERIFIED' if passed else 'VERIFICATION FAILED'} {portfolio_id} (spec {spec.content_hash()[:12]})\n")
+    return EXIT_OK if passed else EXIT_PORTFOLIO_FAILED
 
 
 def _diff_manifests(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:

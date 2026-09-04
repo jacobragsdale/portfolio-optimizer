@@ -10,6 +10,7 @@ import pytest
 
 from portfolio_optimizer.config.resolve import ConfigResolutionError, ResolvedConfig
 from portfolio_optimizer.domain.objective import TermSpecError
+from portfolio_optimizer.domain.order_flow import INFLOW
 from portfolio_optimizer.domain.results import ChainState, ProblemSpec, Solution, SolveStatus
 from portfolio_optimizer.engine.build import StandardParams, standard
 from portfolio_optimizer.engine.check import constraints_of, verify
@@ -280,10 +281,22 @@ def test_a_solve_step_that_is_not_an_optimizer_returns_weights_and_no_objective(
     assert solution.buy.tolist() == solution.sell.tolist() == [0.0, 0.0, 0.0]
     assert (solution.objective, solution.iterations) == (None, None)
     assert (solution.solver, solution.solver_version) == ("tests.steps:hold_still", "unknown"), "the step's qualified name, and the version of its distribution — which a test module has none of"
-    assert solution.constraints == () and solution.duals == {}, "a step that interprets no rows reports none, and none are checked"
+    assert [record["kind"] for record in solution.constraints] == ["cash_limit", "cash_limit", "turnover_limit", "participation_limit"], (
+        "the rows are the engine's to record, whatever the step made of them"
+    )
+    assert solution.duals == {}
     report = verify(spec, solution, chain, resolved.terms, constraints_of(solution), profile=resolved.profile)
     assert report.passed and report.objective_passed and report.solver_objective is None
     assert report.objective_terms == (("alpha", pytest.approx(-float((spec.column("alpha") * spec.w0).sum()))),), "the configured terms are still evaluated, as a report line"
+
+
+def test_a_solve_step_that_ignores_a_constraint_row_cannot_pass_verification(make: Factories) -> None:
+    """The rows are what the engine verifies, not what the step says it applied: a step that leaves cash above the cap fails on the cap it never rendered."""
+    spec = make.spec(w0=np.full(3, 0.3))  # a tenth of NAV in cash, and the example's cash_cap of zero
+    chain = ChainState.empty(spec.security_ids)
+    solution = solve(spec, chain, resolved_with(["alpha"], solve="tests.steps:hold_still"))
+    report = verify(spec, solution, chain, (), constraints_of(solution), profile=INFLOW)
+    assert report.violated == ("cash_cap/cash_limit",)
 
 
 def test_a_solve_step_returning_the_wrong_shape_is_a_setup_error(make: Factories) -> None:

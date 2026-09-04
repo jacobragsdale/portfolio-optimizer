@@ -183,8 +183,9 @@ is the inflow wired through it:
 of the run's `--as-of` (thirty by default, the US window) by marking it `restricted`, so it keeps its
 current weight under every order flow. As `adv_consumed` it is one row per universe security with
 `adv_consumed_shares`, the shares the outflow traded in it; the second `join` puts the column on the
-universe beside the signals the first brought, and the standard build derives `adv_capacity` from the participation times what is left
-of the day. Run the outflow, then this config:
+universe beside the signals the first brought, and the standard build derives `adv_capacity` as the
+participation times the day's volume less those shares, floored at zero — off the budget, exactly as a
+predecessor's trades in the same run come off it. Run the outflow, then this config:
 
 ```bash
 uv run portfolio-optimizer run configs/example_outflow.json --data-root examples/data --as-of 2026-08-28T00:00:00Z

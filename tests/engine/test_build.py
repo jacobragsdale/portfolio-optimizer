@@ -8,6 +8,8 @@ import pandas as pd
 import pytest
 from scipy.sparse import csr_array
 
+from portfolio_optimizer.domain.constraints import adv_remaining
+from portfolio_optimizer.domain.results import ChainState
 from portfolio_optimizer.engine.build import LONG_TERM_HOLDING, BuildError, StandardParams, order_inputs, standard, to_float64
 from tests.conftest import AS_OF, Factories, Frames
 
@@ -97,6 +99,18 @@ def test_adv_capacity_is_net_of_what_an_earlier_run_consumed(make: Factories, fr
     spec = standard(make.portfolio_data(universe=universe))
     np.testing.assert_allclose(spec.column("adv_capacity"), [50.0, 0.0, 0.0])
     assert "adv_consumed_shares" not in spec.columns, "folded into the capacity, like adv_shares, not exported again"
+
+
+def test_an_earlier_runs_consumption_and_a_predecessors_leave_the_same_budget(make: Factories, frames: Frames) -> None:
+    """ADV 1,000, participation 10%, 50 shares already traded: 50 shares of budget left, whether the 50 came from an earlier run's orders or from a predecessor in this one."""
+    universe = frames.universe({"security_id": "A", "price": Decimal(100), "adv_shares": 1000, "adv_consumed_shares": 50})
+    data = make.portfolio_data(holdings=frames.holdings({"security_id": "A"}), universe=universe, details=make.details(max_adv_participation=Decimal("0.1")))
+    after_earlier_run = standard(data)
+    fresh = standard(data.with_changes(universe=universe.drop(columns=["adv_consumed_shares"])))
+    after_predecessor = adv_remaining(fresh, ChainState(security_ids=fresh.security_ids, traded_shares=np.array([50.0])))
+    budget_left = 50 * 100 / 1_000_000
+    np.testing.assert_allclose(after_earlier_run.column("adv_capacity"), [budget_left])
+    np.testing.assert_allclose(after_predecessor, [budget_left])
 
 
 def test_restricted_names_are_frozen_at_their_current_weight(make: Factories, frames: Frames) -> None:

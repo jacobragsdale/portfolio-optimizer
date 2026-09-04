@@ -116,7 +116,7 @@ HANDOFF_ORDERS = (
 
 
 def test_a_previous_runs_orders_feed_the_next_run_as_its_blotter_and_its_spent_volume(tmp_path: Path, env: dict[str, str]) -> None:
-    """The inflow wired through ``load_run_orders`` over that blotter: P1 cannot rebuy A and finds a quarter of what is left of C's day, 23,750 shares, not 25,000; P2 cannot rebuy C and takes A to its cap."""
+    """The inflow wired through ``load_run_orders`` over that blotter: P1 cannot rebuy A and finds its quarter of C's day less the 5,000 the outflow took of it, 20,000 shares, not 25,000; P2 cannot rebuy C and takes A to its cap."""
     fed = env | {"PORTFOLIO_OPTIMIZER_DATA_ROOT": str(example_book(tmp_path / "fed", **{"outflow_orders.csv": HANDOFF_ORDERS}))}
     body = json.loads(HANDOFF_CONFIG.read_text())
     body["datasets"] = {name: instant(spec) for name, spec in body["datasets"].items()}
@@ -126,7 +126,7 @@ def test_a_previous_runs_orders_feed_the_next_run_as_its_blotter_and_its_spent_v
     assert code == 0, err
     orders = pd.read_parquet(tmp_path / "out" / "run-smoke" / "orders" / "orders.parquet")
     assert orders[["portfolio_id", "security_id", "side", "quantity"]].to_dict("records") == [
-        {"portfolio_id": "P1", "security_id": "C", "side": "BUY", "quantity": 23750},
+        {"portfolio_id": "P1", "security_id": "C", "side": "BUY", "quantity": 20000},
         {"portfolio_id": "P2", "security_id": "A", "side": "BUY", "quantity": 3000},
     ]
     manifest = json.loads((tmp_path / "out" / "run-smoke" / "manifest.json").read_text())

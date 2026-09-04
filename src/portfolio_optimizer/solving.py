@@ -6,7 +6,8 @@ the weights: the spec, the chain, the order-flow profile, the typed terms, this 
 rows, and the run's extra datasets. The shipped step (``solvers.cvxpy``) builds and solves a cvxpy
 problem from the terms' and constraints' own renderers; a firm's own library or a pure numpy
 function fits the same contract. Whatever the step does, the order-flow profile turns its ``w`` into the
-trade and the verifier decides whether the answer is acceptable — the guarantees are the verifier's,
+trade and the verifier decides whether the answer is acceptable — against every typed constraint row
+the portfolio carries, whether or not the step rendered it — so the guarantees are the verifier's,
 not the step's.
 
 A solve step returns weights and nothing else: it writes no files, reads no clock, and sees no other
@@ -22,7 +23,7 @@ import pandas as pd
 from portfolio_optimizer.config.models import RunConfig
 from portfolio_optimizer.domain.objective import TypedTerm
 from portfolio_optimizer.domain.order_flow import OrderFlowProfile
-from portfolio_optimizer.domain.results import F64, ChainState, ConstraintRecord, ProblemSpec, SolveStatus
+from portfolio_optimizer.domain.results import F64, ChainState, ProblemSpec, SolveStatus
 
 SHIPPED_CVXPY_SOLVE = "portfolio_optimizer.solvers:cvxpy"
 """The one solve step whose chain access is exactly the configured terms and constraints; any other step may read ``request.chain`` however it likes, so its runs couple conservatively."""
@@ -136,7 +137,8 @@ class SolveResult:
     is the value the step minimized, when it minimized one; without it the verifier skips the
     objective comparison and evaluates the configured terms as a report line instead. ``solver`` and
     ``solver_version`` name what produced the answer; left ``None``, the engine records the step's
-    qualified name and its package version.
+    qualified name and its package version. A step reports nothing about the constraints: the engine
+    records the portfolio's typed rows itself and verifies the weights against every one of them.
     """
 
     w: F64 | None
@@ -147,14 +149,5 @@ class SolveResult:
     solver: str | None = None
     solver_version: str | None = None
     detail: str = ""
-    constraints: tuple[ConstraintRecord, ...] = field(default_factory=tuple)
-    """What the step applied, as constraint records (a model's ``record()``), for the verifier and the manifest.
-
-    The step is what decides what the constraint rows mean, so it says what it made of them. The
-    verifier re-checks every record through its model's own residual; a step that interprets nothing
-    leaves this empty and its constraints go unchecked, which is the honest answer rather than a
-    silent pass.
-    """
-
     duals: Mapping[str, float] = field(default_factory=dict)
     """Per constraint name, the largest dual value the solver reported — its shadow price; empty for a step that has none."""

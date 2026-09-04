@@ -83,10 +83,9 @@ def test_the_cvxpy_step_refuses_rows_it_cannot_interpret(make: Factories) -> Non
         cvxpy(SolveRequest(spec=spec, chain=request.chain, profile=INFLOW, terms=request.terms, constraints=foreign), CvxpyParams())
 
 
-def test_the_cvxpy_step_reports_what_it_applied_and_the_shadow_price_of_what_bound(make: Factories) -> None:
+def test_the_cvxpy_step_reports_the_shadow_price_of_what_bound(make: Factories) -> None:
     spec = make.spec()
     result = cvxpy(_request(spec), CvxpyParams())
-    assert [record["name"] for record in result.constraints] == ["cash_floor", "cash_cap", "turnover", "adv"]
     assert set(result.duals) == {"no_sells", "cash_floor", "cash_cap", "turnover", "adv"}
     assert result.duals["cash_floor"] > 0.0 and result.duals["turnover"] == pytest.approx(0.0, abs=1e-6), "the cash floor binds a fully invested book; a turnover cap of two never does"
 

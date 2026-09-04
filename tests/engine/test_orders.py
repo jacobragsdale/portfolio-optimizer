@@ -9,12 +9,15 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from pandas.testing import assert_frame_equal
 
+from portfolio_optimizer.domain.constraints import parse_constraints
 from portfolio_optimizer.domain.frames import validate_frame
-from portfolio_optimizer.domain.results import OrderInputs, ProblemSpec, Solution
+from portfolio_optimizer.domain.order_flow import INFLOW
+from portfolio_optimizer.domain.results import ChainState, OrderInputs, ProblemSpec, Solution
 from portfolio_optimizer.domain.schemas import ORDERS
 from portfolio_optimizer.engine.build import order_inputs, standard
-from portfolio_optimizer.engine.orders import rounding_drift, solution_to_orders
-from tests.conftest import Factories, Frames, make_portfolio_data, make_solution
+from portfolio_optimizer.engine.check import verify
+from portfolio_optimizer.engine.orders import executed_solution, rounding_drift, solution_to_orders
+from tests.conftest import CASH_FLOOR, Factories, Frames, Row, constraint_frame, make_portfolio_data, make_solution, typed_row
 
 HAND_OPTIMUM = np.array([0.35, 0.4, 0.25])
 """A target for the default bundle — A 5,000 @100 and B 10,000 @50 on 1,000,000 — whose deltas are whole shares: sell 1,500 A, sell 2,000 B, buy 25,000 C."""
@@ -140,6 +143,26 @@ def test_drift_is_zero_for_exact_orders_and_bounded_for_lots(make: Factories, fr
     lot_report = rounding_drift(lots.spec, lot_solution, solution_to_orders(lots.spec, lot_solution, lots.order_inputs, run_id="r"), lots.order_inputs)
     assert 0 < lot_report.max_weight_error <= lot_report.tolerance
     assert lot_report.passed
+
+
+def test_orders_that_round_into_a_breach_fail_verification_unless_the_row_allows_the_slack(make: Factories) -> None:
+    """Seven dollars of cash buys 0.7 of a share of C; the nearest share costs ten, so the executed book is three dollars overdrawn — a breach of the cash floor the solved weights never showed."""
+    output = built(make, details=make.details(nav=Decimal(1_000_007), cash=Decimal(7)))
+    solution = solution_at(output.spec, output.spec.w0 + np.array([0.0, 0.0, 7 / 1_000_007]))
+    orders = solution_to_orders(output.spec, solution, output.order_inputs, run_id="r")
+    assert orders["quantity"].tolist() == [1]
+    executed = executed_solution(output.spec, solution, orders, INFLOW)
+    np.testing.assert_allclose(executed.w.sum() - 1.0, 3 / 1_000_007)
+    assert executed.objective is None, "an executed book has no solver objective to agree with"
+    chain = ChainState.empty(output.spec.security_ids)
+
+    def report_under(row: Row) -> tuple[str, ...]:
+        rows = parse_constraints(constraint_frame([row]))
+        assert rows is not None
+        return verify(output.spec, executed, chain, (), rows.typed, profile=INFLOW).violated
+
+    assert report_under(CASH_FLOOR) == ("cash_floor/cash_limit",)
+    assert report_under(typed_row("cash_limit", "cash_floor", direction=">=", bounds={"scalar": "cash_lb"}, tolerance="0.00001")) == ()
 
 
 def test_drift_counts_orders_dropped_by_the_dust_filter(make: Factories) -> None:

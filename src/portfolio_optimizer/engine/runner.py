@@ -731,7 +731,7 @@ def _write_csv(target: Path, frame: pd.DataFrame) -> Artifact:
 
 def _persist_result(result: PortfolioResult, run_dir: Path) -> list[Artifact]:
     written: list[Artifact] = []
-    for subdir, writer in (("problem_specs", result.spec.to_npz), ("solutions", result.solution.to_npz), ("chain", result.chain_state.to_npz)):
+    for subdir, writer in (("problem_specs", result.spec.to_npz), ("solutions", result.solution.to_npz), ("executed", result.executed.to_npz), ("chain", result.chain_state.to_npz)):
         directory = run_dir / subdir
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{result.portfolio_id}.npz"

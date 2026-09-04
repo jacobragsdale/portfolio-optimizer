@@ -564,8 +564,9 @@ enable when a solve is slow or hits its limit. Adding a solver is one row in the
 solver" is the same `uv sync --extra` on a laptop and in the worker image.
 
 Whatever the step is, the engine treats its answer the same way: the order-flow profile turns the weights
-into a trade, the verifier re-checks every constraint the step reported against them, rounding and
-drift run unchanged, and the manifest records the step and its version where it records the solver's.
+into a trade, the verifier re-checks every typed constraint row against them — the rows are the engine's
+to record, not the step's to report — rounding and drift run unchanged, and the manifest records the step
+and its version where it records the solver's.
 A step that minimized nothing reports no objective; the verifier then skips the objective comparison
 and still evaluates the configured terms as a report line, so a heuristic and the optimizer can be
 compared on one book. One thing a step of your own gives up: the engine cannot see whether it reads
