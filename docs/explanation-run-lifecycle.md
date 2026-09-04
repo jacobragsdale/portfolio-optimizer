@@ -12,7 +12,7 @@ and every term is a kind the engine knows → load data through loaders → asse
 every portfolio at once (slice, rules, solve-order key, a pure-numpy problem, its constraint rows
 parsed) → derive who waits for whom from what each may trade on the side the run couples through and
 what its rows declare they read → solve along that graph with the configured solve step (cvxpy by
-default) → re-check each answer without cvxpy → round to whole shares and re-check the book they leave → publish the orders once →
+default) → re-check each answer without cvxpy → round to executable quantities and re-check the book they leave → publish the orders once →
 prove the business rules on what went out → write a manifest.** Money is `Decimal` everywhere except inside the solver, and there are exactly two
 conversion points. Every stage validates its own output, so a bad input fails at the earliest stage
 that can detect it, with a message naming what is wrong.
@@ -138,8 +138,9 @@ and `details` must exist, and **every engine-known frame is validated against it
 set, dtype, nullability, bounds, unique key, and frame-level invariants such as "cash_lb does not
 exceed cash_ub" — with all failures across all frames reported at once. All three may carry any
 further columns: that is where security analytics and the desk's own account limits live, and the
-build exports every one. Only `security_id` and `price` are required of the universe; `sector`,
-`adv_shares`, `lot_size`, and `restricted` are optional and a build or a rule that needs one says so.
+build exports every one. Only `security_id` and `price` are required of the universe; `accrued_interest`,
+`sector`, `adv_quantity`, `increment`, `min_denomination`, and `restricted` are optional and a build or a
+rule that needs one says so.
 `constraints` is engine-known but optional — a run that omits it is bound by nothing but the trade
 identity and the spec's own bounds. Finally, `details` must have a row for every portfolio. Whatever
 datasets remain that the engine does not know become the run's extras.
@@ -187,7 +188,7 @@ every name whose sector is outside the account's mandate rows, `add_zero_alpha` 
 objective needs, `attach_universe_columns` copies the universe's analytics onto holdings for a book that
 loads holdings per account, `cap_single_name` tightens the style. A rule that freezes names starts
 from `restricted_flags(universe)`, the `restricted` column or all-false where the universe has none,
-and a rule that needs `adv_shares` or `sector` refuses a universe without it by name. A rule never sees
+and a rule that needs `adv_quantity` or `sector` refuses a universe without it by name. A rule never sees
 other portfolios. What it *can* do is shrink the portfolio's tradable set — freeze a name, or cap it at
 its current weight in a run that couples through buys — and that is what lets portfolios solve
 concurrently (§9): two portfolios wait on each other only when they can both trade the same security on
@@ -203,12 +204,16 @@ shipped `most_uninvested_first` puts the account with the most left to put to wo
 The **build step** is configured like any other, `(data: PortfolioData[, params]) -> ProblemSpec`, and
 `standard` (`engine/build.py`) is the default. It sorts the universe by `security_id` and aligns
 everything to that order, which is why it requires every held name to be in the universe (a
-`BuildError` otherwise). In exact `Decimal` it computes current weights (`shares × price / nav`), tax
-per dollar sold (gain fraction times the short- or long-term rate, long-term when held longer than 365
-days as of `--as-of`; losses come out negative), transaction cost from `tcost_bps` where the universe
+`BuildError` otherwise). A price is the clean value of one unit of quantity — a bond quoted per 100
+face arrives divided by 100 — and `accrued_interest`, zero where the universe carries none, is added to
+it for every valuation. Holdings are tax lots, summed per name; the build sells them pro rata and does
+no lot selection. In exact `Decimal` it computes current weights (`quantity × dirty price / nav`), tax
+per dollar of proceeds (each lot's gain on the clean price at the short- or long-term rate, long-term
+when held longer than 365 days as of `--as-of`, over the dirty proceeds; losses come out negative),
+transaction cost from `tcost_bps` where the universe
 carries it, per-name bounds (restricted names frozen at their current weight, optional
 `min_weight`/`max_weight` columns tightening the style cap), and ADV capacity as a fraction of NAV where
-it carries `adv_shares`. Only then does `to_float64` convert — refusing bools, non-Decimals, and
+it carries `adv_quantity`. Only then does `to_float64` convert — refusing bools, non-Decimals, and
 anything non-finite.
 
 Everything the bundle carries beyond the schemas is exported by name: each numeric universe column
@@ -219,11 +224,12 @@ account's `details` row, declared or extra, into `spec.scalars` for `spec.scalar
 what lets a constraint row name a limit the engine has never heard of. Holdings' extra columns are not
 exported: the build has no row for a name that is not in the universe.
 
-The result is a `ProblemSpec` (`domain/results.py`): pure numpy, read-only arrays, no cvxpy — six fixed
-vectors (`w0`, `price`, `shares_held`, `lot_size`, `lb`, `ub`) and the named columns, flags, groups,
-and scalars. Its own `__post_init__` checks shapes, sortedness, finiteness, `lb ≤ ub`, positive prices,
-and so on, and it carries a content hash. Alongside it, `order_inputs` keeps the *exact* `Decimal`
-prices and share counts for stage 8, derived from whatever spec the build returned.
+The result is a `ProblemSpec` (`domain/results.py`): pure numpy, read-only arrays, no cvxpy — five fixed
+vectors (`w0`, `price`, `quantity_held`, `lb`, `ub`) and the named columns, flags, groups, and scalars.
+Its own `__post_init__` checks shapes, sortedness, finiteness, `lb ≤ ub`, positive prices, and so on,
+and it carries a content hash. Alongside it, `order_inputs` keeps the *exact* `Decimal` prices, accrued
+interest, quantities, increments, and minimum pieces for stage 8, derived from whatever spec the build
+returned.
 
 The build task then reads the portfolio's **constraint rows** (`domain/constraints.py`): where the
 frame has a `kind` column, every row is parsed as the typed model it names — its fields from `params`,
@@ -263,7 +269,7 @@ Classification decides what the result means:
 
 - **Optimal.** The order-flow profile turns the weights into the trade the engine reports:
   `buy = max(w − w0, 0)` under `inflow`, `sell = max(w0 − w, 0)` under `outflow`, the clip keeping solver
-  noise past `w0` from becoming a few shares on the side the run does not have. One variable per name
+  noise past `w0` from becoming a few units on the side the run does not have. One variable per name
   means there is no split to choose and no round trip to strip; a term that rewards a sale is priced
   exactly.
 - **Infeasible.** `InfeasibleError` carries an arithmetic diagnosis computed without another solve,
@@ -301,20 +307,25 @@ stage `solve`.
 
 ## 8. Orders: float64 becomes `Decimal`, once
 
-`engine/orders.py` converts each weight delta to shares: **nearest share** (half-even), then down to a
-lot multiple, then a sell is clamped to what is held and a buy to the room under the security's upper
-bound, then trades below `min_trade_notional` are dropped. `notional = quantity × reference_price` is
-computed in `Decimal` from `OrderInputs`, never from the float copies inside the spec, and the `ORDERS`
-schema's `notional_matches` invariant confirms it. Each order also carries the spec hash, run id,
-`as_of_date`, the float target weight, and the unrounded share count for audit.
+`engine/orders.py` converts each weight delta to a quantity at the dirty price: **nearest unit**
+(half-even), then down to a multiple of the security's `increment`, then a sell is clamped to what is
+held and a buy to the room under the security's upper bound, then the `min_denomination` is honoured —
+a buy that cannot reach the minimum piece is dropped, a sell that would leave less than it is shrunk to
+leave exactly it, and a sell of the whole position goes out as it is — and trades below
+`min_trade_notional` are dropped. Nothing trades more than the solver asked. `notional = quantity ×
+(reference_price + accrued_interest)` is computed in `Decimal` from `OrderInputs`, never from the float
+copies inside the spec, and the `ORDERS` schema's `notional_matches` invariant confirms it. Each order
+also carries the spec hash, run id, `as_of_date`, the float target weight, and the unrounded quantity
+for audit.
 
 `rounding_drift` rebuilds the executed weights from the orders and measures the worst deviation from the
-solved weights. The tolerance is derived, not configured: one lot of the priciest name plus one
-dust-filtered trade, both as fractions of NAV, plus the bound overshoot the verifier accepts. Exceeding
+solved weights. The tolerance is derived, not configured: one increment plus one minimum piece of the
+dearest name plus one dust-filtered trade, all as fractions of NAV, plus the bound overshoot the
+verifier accepts. Exceeding
 it raises `DriftError`. That is a diagnostic; the gate is that the executed book passes §7 again.
 `executed_solution` is the same weights as a solution — the profile's split of them, no objective — and
 the verifier holds it to the same identity checks and typed rows under the same tolerance. Rounding
-to the nearest share can breach a bound the solver sat on by a fraction of a share, and the engine adds
+to the nearest unit can breach a bound the solver sat on by a fraction of a unit, and the engine adds
 no slack for it: a row's `tolerance` is where a desk says how much it accepts. A breach raises
 `VerificationError` naming the executed orders; the portfolio fails at stage `solve`.
 
@@ -348,15 +359,15 @@ Because every predecessor is *earlier*, the graph is grown a portfolio at a time
 all at once: the runner walks the order and places each portfolio as its build reports, so the head of
 the book is solving while the tail is still building. Nothing waits for the build wave to finish.
 
-Each solve folds its predecessors' orders on that side into a `ChainState`: `traded_shares`, whole
-shares per security, projected onto this spec's securities and **zeroed wherever this portfolio cannot
+Each solve folds its predecessors' orders on that side into a `ChainState`: `traded_quantity`, the
+quantity traded per security, projected onto this spec's securities and **zeroed wherever this portfolio cannot
 trade the name on that side, or its own readers cannot see it**. That mask is why the schedule never
 changes the answer — the argument is in
 [the architecture explanation](explanation-architecture.md#a-run-couples-through-its-one-side-so-the-schedule-is-a-graph).
 Order rounding makes the tradable set structural (a BUY is clamped to the room under `ub` and a SELL to
-the shares held, so solver noise at a bound never produces a trade the graph could not have seen), and
+the quantity held, so solver noise at a bound never produces a trade the graph could not have seen), and
 `finish_portfolio` asserts it, along with every order being on a side the run trades. The chain state's
-hash — the ids and the shares, never who traded them — is recorded per portfolio.
+hash — the ids and the quantities, never who traded them — is recorded per portfolio.
 
 `engine/runner.py` drives one schedule, on the backend:
 
@@ -503,21 +514,21 @@ follow.
 
 P1 and P2 each have a NAV of 1,000,000 with 400,000 in cash, and hold 3,000 A at 100 (at cost) and
 6,000 B at 60 against a price of 50 — a loss — P1's lots long-term, P2's short-term. A (alpha 0.03)
-and B (alpha −0.01) are `TECH` and trade a million shares a day; C (alpha 0.05, `HEALTH`, 20 bps to
-trade) has the best expected return and the worst liquidity: 100,000 shares a day at 10, and the style
-allows 25% participation, so a portfolio may buy at most 25,000 shares — a quarter of its NAV. P1's
+and B (alpha −0.01) are `TECH` and trade a million units a day; C (alpha 0.05, `HEALTH`, 20 bps to
+trade) has the best expected return and the worst liquidity: 100,000 units a day at 10, and the style
+allows 25% participation, so a portfolio may buy at most 25,000 units — a quarter of its NAV. P1's
 single-name cap is 40%, P2's 60%; the cash band is `[0, 0.6]` and the sector bands `TECH ≥ 0.5`,
 `HEALTH ≤ 0.5`.
 
 In the inflow P1 solves first: it takes the quarter of NAV that C's budget allows, 25,000 C, and
 buys 1,000 A up to its 40% cap; B's alpha has turned negative, so the remaining 50,000 stays cash — the
-hand-computable optimum, to the share. P2 can buy the same securities, so it waits for P1; when it
+hand-computable optimum, to the unit. P2 can buy the same securities, so it waits for P1; when it
 solves, the chain state says C's budget is spent, so it buys 3,000 A to its 60% cap and the run says
 why C is closed: `adv/cumulative_participation` binds. Across the book that is 54 orders in 52
 accounts — 52 in A (P4 has room but sold A nine days earlier, and the blotter rule freezes it), and
-C only for P1 and P3, whose 30% participation leaves 5,000 shares inside its
+C only for P1 and P3, whose 30% participation leaves 5,000 units inside its
 own budget. In the outflow neither account waits on C; each harvests B down to the `TECH` floor,
-2,000 shares — P1 at the long-term rate, four cents of refund per dollar sold, P2 at the short-term
+2,000 units — P1 at the long-term rate, four cents of refund per dollar sold, P2 at the short-term
 rate — and the term that rewards the sale is exact because nothing can rebuy B in the same solve.
 Across the book: 38 orders in 37 accounts, 23 in B and 15 short-term loss harvests of A, with the
 cumulative ADV cap on B binding from P34 on, in 45 accounts. Either way the other ninety-eight

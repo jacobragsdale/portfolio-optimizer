@@ -954,7 +954,7 @@
                     "properties": {
                       "emit": {
                         "default": "trades",
-                        "description": "`trades`: the orders as blotter rows (`portfolio_id`, `security_id`, `side`, `quantity`, `traded_on`), the shape `restrict_recent_trades` reads. `adv_consumed`: one row per universe security with `adv_consumed_shares`, the shares the run traded in it on either side, for an assembly `join` into the universe, where the standard build takes it off each name's participation budget; needs `depends_on: [\"universe\"]`.",
+                        "description": "`trades`: the orders as blotter rows (`portfolio_id`, `security_id`, `side`, `quantity`, `traded_on`), the shape `restrict_recent_trades` reads. `adv_consumed`: one row per universe security with `adv_consumed_quantity`, the quantity the run traded in it on either side, for an assembly `join` into the universe, where the standard build takes it off each name's participation budget; needs `depends_on: [\"universe\"]`.",
                         "enum": [
                           "trades",
                           "adv_consumed"
@@ -1367,7 +1367,7 @@
                         "type": "string"
                       },
                       "key": {
-                        "default": "min_adv_shares",
+                        "default": "min_adv_quantity",
                         "minLength": 1,
                         "title": "Key",
                         "type": "string"

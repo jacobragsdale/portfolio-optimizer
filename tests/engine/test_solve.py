@@ -80,7 +80,7 @@ def test_solving_twice_is_bitwise_identical(make: Factories, frames: Frames) -> 
 
 
 def test_turnover_cap_binds_with_the_known_answer(make: Factories) -> None:
-    spec = make.spec(n=2, w0=np.array([0.5, 0.0]), shares_held=np.array([5_000.0, 0.0]), max_turnover=0.2, cash_ub=0.5)
+    spec = make.spec(n=2, w0=np.array([0.5, 0.0]), quantity_held=np.array([5_000.0, 0.0]), max_turnover=0.2, cash_ub=0.5)
     solution = solve(spec, ChainState.empty(spec.security_ids), resolved_with(["alpha"]), [*CASH, TURNOVER])
     np.testing.assert_allclose(solution.w, [0.5, 0.2], atol=1e-6, err_msg="S1 is the name worth buying, and the cap stops it at a fifth of NAV with cash to spare")
     assert float(solution.buy.sum()) == pytest.approx(0.2, abs=1e-6)
@@ -88,7 +88,7 @@ def test_turnover_cap_binds_with_the_known_answer(make: Factories) -> None:
 
 def test_a_portfolio_whose_predecessors_spent_a_names_budget_cannot_buy_it(make: Factories, frames: Frames) -> None:
     spec = first_account(make, frames, max_weight=Decimal("0.6"))  # the example's second account: room to take A alone when C is unbuyable
-    spent = ChainState(security_ids=spec.security_ids, traded_shares=np.array([1000.0, 0.0, 25_000.0]), predecessors=("P1",))
+    spent = ChainState(security_ids=spec.security_ids, traded_quantity=np.array([1000.0, 0.0, 25_000.0]), predecessors=("P1",))
     solution = solve(spec, spent, resolved_with(BUY_TERMS))
     assert solution.buy[2] == pytest.approx(0.0, abs=1e-6), "C's whole ADV budget went to the predecessor"
     np.testing.assert_allclose(solution.w, [0.6, 0.3, 0.0], atol=1e-6, err_msg="so the cash goes to A, up to the wider cap")
@@ -161,7 +161,7 @@ def test_a_term_that_rewards_a_side_is_refused_under_a_rebalance_by_name(make: F
 
 def test_an_outflow_solve_only_sells_and_couples_through_sells(make: Factories, frames: Frames) -> None:
     holdings = frames.holdings({"security_id": "A", "quantity": 5000, "avg_cost": Decimal(100)}, {"security_id": "B", "quantity": 10000, "avg_cost": Decimal(50)})
-    universe = frames.three_security_universe().assign(adv_shares=pd.Series([4000, 1_000_000, 100_000], dtype="Int64"), alpha=pd.Series([-0.03, -0.01, 0.05], dtype="Float64"))
+    universe = frames.three_security_universe().assign(adv_quantity=pd.Series([4000, 1_000_000, 100_000], dtype="Int64"), alpha=pd.Series([-0.03, -0.01, 0.05], dtype="Float64"))
     spec = standard(make.portfolio_data(holdings=holdings, universe=universe, details=make.details(max_adv_participation=Decimal("0.25"), cash_lb=Decimal(0), cash_ub=Decimal(1))))
     resolved = resolved_with(["alpha"], order_flow="outflow")
     solution = solve(spec, ChainState.empty(spec.security_ids), resolved)
@@ -170,7 +170,7 @@ def test_an_outflow_solve_only_sells_and_couples_through_sells(make: Factories, 
     report = verify(spec, solution, ChainState.empty(spec.security_ids), resolved.terms, constraints_of(solution), profile=resolved.profile)
     assert report.passed, report.violated
     assert {check.name for check in report.checks if check.label == "identity"} == {"no_buys", "trade_balance", "nonneg_sell", "buy_absent", "lb", "ub"}
-    spent = ChainState(security_ids=spec.security_ids, traded_shares=np.array([1000.0, 0.0, 0.0]), predecessors=("P0",))
+    spent = ChainState(security_ids=spec.security_ids, traded_quantity=np.array([1000.0, 0.0, 0.0]), predecessors=("P0",))
     np.testing.assert_allclose(solve(spec, spent, resolved).w, [0.5, 0.0, 0.0], atol=1e-6, err_msg="a predecessor's sells of A consumed the budget this portfolio would have sold into")
     report = verify(spec, _with_sell(solve(spec, spent, resolved), spec, np.array([0.05, 0.0, 0.0])), spent, resolved.terms, constraints_of(solution), profile=resolved.profile)
     assert report.violated == ("adv/cumulative_participation",), "a sell past what the chain left of A's budget is caught: the verifier checks the chain against the sells, not the absent buys"
@@ -362,7 +362,7 @@ def test_allow_current_weight_holds_a_breached_start_an_inflow_run_cannot_trade_
 
 def test_a_scoped_participation_limit_binds_its_scope_and_leaves_the_rest_alone(make: Factories) -> None:
     spec = make.spec(w0=np.array([0.3, 0.3, 0.3]), flags={"is_thin": np.array([False, False, True])}, adv_capacity=np.array([0.05, 0.05, 0.05]), price=np.full(3, 100.0))
-    spent = ChainState(security_ids=spec.security_ids, traded_shares=np.array([0.0, 0.0, 300.0]), predecessors=("P0",))  # 0.03 of S2's 0.05 budget
+    spent = ChainState(security_ids=spec.security_ids, traded_quantity=np.array([0.0, 0.0, 300.0]), predecessors=("P0",))  # 0.03 of S2's 0.05 budget
     rows = [typed_row("participation_limit", "adv", direction="<=", scope="is_thin"), *CASH]
     solution = engine_solve(spec, spent, resolved_with(["alpha"]), constraint_frame(rows))
     assert solution.buy[2] == pytest.approx(0.02, abs=1e-6), "S2 gets what the predecessor left of its budget"

@@ -124,7 +124,7 @@ def diagnose_infeasibility(spec: ProblemSpec, chain: ChainState, *, profile: Ord
         findings.append(f"moving w0 inside its bounds needs turnover {needed:.6f} > max_turnover {max_turnover:.6f}")
     capacity = spec.columns.get("adv_capacity")
     if capacity is not None:
-        consumed = chain.traded_shares * spec.price / spec.nav if chain.security_ids == spec.security_ids else np.zeros(spec.n)
+        consumed = chain.traded_quantity * spec.price / spec.nav if chain.security_ids == spec.security_ids else np.zeros(spec.n)
         remaining = np.maximum(0.0, capacity - consumed)
         required = clamped - spec.w0
         blocked = [spec.security_ids[i] for i in range(spec.n) if abs(required[i]) > capacity[i] + 1e-12 or required[i] > remaining[i] + 1e-12]

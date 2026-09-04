@@ -111,7 +111,7 @@ def test_the_blotter_answers_the_trades_for_the_accounts_asked_for(tmp_path: Pat
 
 
 RUN_ORDERS = (
-    "portfolio_id,security_id,side,quantity,reference_price,notional,target_weight,unrounded_shares,spec_hash,run_id,as_of_date\n"
+    "portfolio_id,security_id,side,quantity,reference_price,notional,target_weight,unrounded_quantity,spec_hash,run_id,as_of_date\n"
     "P2,B,SELL,200,50,10000,0.1,200.0,abc,run-1,2026-08-27T00:00:00Z\n"
     "P1,C,BUY,50,10,500,0.2,50.0,abc,run-1,2026-08-27T00:00:00Z\n"
     "P1,A,SELL,100,100,10000,0.0,100.0,abc,run-1,2026-08-27T00:00:00Z\n"
@@ -138,10 +138,10 @@ def test_a_previous_runs_orders_load_as_the_volume_each_universe_security_lost(t
     universe = frames.three_security_universe().assign(security_id=pd.Series(["C", "A", "D"], dtype="string"))
     params = RunOrdersParams(path="orders.csv", emit="adv_consumed", min_latency_s=0, max_latency_s=0)
     consumed = asyncio.run(load_run_orders(LoadRequest(dataset="adv_consumed", portfolio_ids=(), as_of_date=AS_OF, data_root=tmp_path, run_id="test", inputs=Frames({"universe": universe})), params))
-    assert consumed.to_dict("records") == [{"security_id": "A", "adv_consumed_shares": 100}, {"security_id": "C", "adv_consumed_shares": 50}, {"security_id": "D", "adv_consumed_shares": 0}], (
+    assert consumed.to_dict("records") == [{"security_id": "A", "adv_consumed_quantity": 100}, {"security_id": "C", "adv_consumed_quantity": 50}, {"security_id": "D", "adv_consumed_quantity": 0}], (
         "every universe security, sorted, either side summed, zero where nothing traded; B is not in this universe"
     )
-    assert str(consumed["adv_consumed_shares"].dtype) == "Int64" and str(consumed["security_id"].dtype) == "string"
+    assert str(consumed["adv_consumed_quantity"].dtype) == "Int64" and str(consumed["security_id"].dtype) == "string"
     with pytest.raises(ValueError, match=r'needs the universe to name every security; declare depends_on: \["universe"\]'):
         asyncio.run(load_run_orders(request("adv_consumed", root=tmp_path), params))
 
@@ -163,7 +163,7 @@ def test_the_parameter_store_fetches_the_set_the_dataset_names() -> None:
     assert dict(zip(parameters["name"], parameters["value"], strict=True)) == {"risk_aversion": Decimal("2.5"), "max_names": Decimal(150)}
     named = ParametersParams(min_latency_s=0, max_latency_s=0, set_name="buy_universe_parameters")
     other = asyncio.run(load_parameters(request("whatever_the_desk_calls_it"), named))
-    assert other["name"].tolist() == ["min_adv_shares"]
+    assert other["name"].tolist() == ["min_adv_quantity"]
 
 
 def test_a_global_input_still_fetches_the_book_and_not_the_firm() -> None:

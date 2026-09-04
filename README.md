@@ -6,7 +6,7 @@ Python.
 
 A run is one JSON file, an order flow, and an as-of date. The engine loads the data the file names,
 applies your rules per portfolio, builds one problem per portfolio, solves along a dependency graph it
-derives from the data, re-verifies every answer without cvxpy, rounds to whole-share orders and
+derives from the data, re-verifies every answer without cvxpy, rounds to executable quantities and
 re-verifies the book they leave, publishes them, and writes a manifest that lets anyone reproduce the
 run. A run is an inflow, an outflow, or a rebalance: it buys, it sells, or it does either to bring a
 book back inside its bounds. A desk's order flows are separate runs over one snapshot, and the template
@@ -46,7 +46,7 @@ The quickest way to learn the engine is the inflow it ships with,
       "max_in_flight": 8
     },
 
-    // The security master: price, sector, volume, lot size, and the restricted flag. No `scope`
+    // The security master: price, sector, volume, increment, and the restricted flag. No `scope`
     // means one call for the book; no `depends_on` means it starts at once.
     "universe": {"loader": "load_universe"},
 

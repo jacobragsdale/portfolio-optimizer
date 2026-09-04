@@ -71,17 +71,18 @@ _DEFAULTS: dict[str, Row] = {
         "cash_lb": Decimal(0),
         "cash_ub": Decimal(0),
     },
-    HOLDINGS.name: {"portfolio_id": "P1", "security_id": "A", "quantity": 5000, "avg_cost": Decimal(90), "acquired_on": ACQUIRED},
-    UNIVERSE.name: {"security_id": "A", "price": Decimal(100), "sector": "TECH", "adv_shares": 1_000_000, "lot_size": 1, "restricted": False, "alpha": 0.0},
+    HOLDINGS.name: {"portfolio_id": "P1", "security_id": "A", "lot_id": "L1", "quantity": 5000, "avg_cost": Decimal(90), "acquired_on": ACQUIRED},
+    UNIVERSE.name: {"security_id": "A", "price": Decimal(100), "sector": "TECH", "adv_quantity": 1_000_000, "increment": 1, "restricted": False, "alpha": 0.0},
     ORDERS.name: {
         "portfolio_id": "P1",
         "security_id": "A",
         "side": "BUY",
         "quantity": 10,
         "reference_price": Decimal(100),
+        "accrued_interest": Decimal(0),
         "notional": Decimal(1000),
         "target_weight": 0.1,
-        "unrounded_shares": 10.0,
+        "unrounded_quantity": 10.0,
         "spec_hash": "0" * 64,
         "run_id": "run-1",
         "as_of_date": AS_OF,
@@ -169,9 +170,9 @@ class Frames:
     def three_security_universe(self) -> pd.DataFrame:
         """The example's securities: A, B, C at 100, 50, 10 in one sector, C thin and dear to trade but worth the most."""
         return self.universe(
-            {"security_id": "A", "price": Decimal(100), "adv_shares": 1_000_000, "alpha": 0.03, "tcost_bps": Decimal(5)},
-            {"security_id": "B", "price": Decimal(50), "adv_shares": 1_000_000, "alpha": -0.01, "tcost_bps": Decimal(5)},
-            {"security_id": "C", "price": Decimal(10), "adv_shares": 100_000, "alpha": 0.05, "tcost_bps": Decimal(20)},
+            {"security_id": "A", "price": Decimal(100), "adv_quantity": 1_000_000, "alpha": 0.03, "tcost_bps": Decimal(5)},
+            {"security_id": "B", "price": Decimal(50), "adv_quantity": 1_000_000, "alpha": -0.01, "tcost_bps": Decimal(5)},
+            {"security_id": "C", "price": Decimal(10), "adv_quantity": 100_000, "alpha": 0.05, "tcost_bps": Decimal(20)},
         )
 
 
@@ -237,8 +238,7 @@ def make_spec(n: int = 3, **overrides: object) -> ProblemSpec:
         "nav": 1_000_000.0,
         "w0": np.full(n, 1.0 / n) if n else zeros,
         "price": np.full(n, 100.0),
-        "shares_held": np.full(n, 1_000_000.0 / n / 100.0) if n else zeros,
-        "lot_size": np.ones(n),
+        "quantity_held": np.full(n, 1_000_000.0 / n / 100.0) if n else zeros,
         "lb": zeros,
         "ub": np.ones(n),
         "columns": columns,

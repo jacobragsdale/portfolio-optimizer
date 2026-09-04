@@ -70,7 +70,7 @@ function, or an object with `name` and `params`:
 
 ```json
 "add_zero_alpha"
-{"name": "restrict_low_liquidity", "params": {"dataset": "buy_universe_parameters", "key": "min_adv_shares"}}
+{"name": "restrict_low_liquidity", "params": {"dataset": "buy_universe_parameters", "key": "min_adv_quantity"}}
 ```
 
 A bare name is looked up in the template module for that kind of step — `loaders.py` for loaders,
@@ -184,7 +184,7 @@ a narrow `name`/`value` frame of numbers that change without the config changing
 The example declares three. `trades` is a third shape, a **per-account record** with a `portfolio_id`
 column: the desk's blotter, which the engine reduces to each account's rows on the way into its
 bundle, where `restrict_recent_trades` reads it. The parameter sets are two, both served by one loader that fetches the set named by the dataset itself.
-`buy_universe_parameters` holds the `min_adv_shares` that `restrict_low_liquidity` reads, which is why
+`buy_universe_parameters` holds the `min_adv_quantity` that `restrict_low_liquidity` reads, which is why
 that rule takes no number in the config; `global_parameters` holds settings for a solve step, and
 nothing shipped reads it — the `cvxpy` step has no business interpreting a desk's own settings. Both
 are content-hashed and recorded in the manifest like every other input, which is the point: a run
@@ -691,7 +691,7 @@ or a step with the right contract and name it, and the [how-to guides](how-to-ad
 that.
 
 **Some tolerances are derived, not configured.** The rounding-drift bound — how far executed weights
-may deviate from solved weights after shares are rounded — is computed from the priciest lot and the
+may deviate from solved weights after quantities are rounded — is computed from the dearest increment, minimum piece, and the
 dust threshold in the data, so there is no knob for it. The only tolerances you set are the verifier's,
 in `post_solve`.
 

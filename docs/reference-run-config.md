@@ -156,13 +156,13 @@ Loaders: `load_portfolios`, `load_holdings` (one request per account in the batc
 `load_constraints`, `load_mandates`, `load_trades`, `load_parameters` (`set_name`, default the dataset's own name),
 `load_run_orders` (`path`, an orders file a previous run's sink wrote, relative to the data root;
 `emit`, default `trades`: the orders as blotter rows for the accounts asked for, or `adv_consumed`:
-one row per universe security with `adv_consumed_shares`, which needs `depends_on: ["universe"]` and
+one row per universe security with `adv_consumed_quantity`, which needs `depends_on: ["universe"]` and
 an assembly `join` into the universe).
 Every one of them stands in for a service and takes `min_latency_s` and `max_latency_s`, which override
 the wait that source is pretended to take; a real loader has neither. Assembly steps: `join`, `union`,
 `select`, `drop`. Rules: `cap_single_name` (`max_weight`), `add_zero_alpha`, `restrict_low_liquidity`
 (`dataset`, `key`; reads its threshold from a `name`/`value` extra dataset, by default
-`buy_universe_parameters`/`min_adv_shares`), `restrict_to_mandate` (`dataset`, default `mandates`;
+`buy_universe_parameters`/`min_adv_quantity`), `restrict_to_mandate` (`dataset`, default `mandates`;
 freezes every name whose sector is outside the account's mandate rows), `restrict_recent_trades`
 (`dataset`, default `trades`; `window_days`, default 30; freezes every name the account traded within
 the window of the run's as-of instant), `attach_universe_columns`
@@ -212,7 +212,7 @@ spec's own vectors or an exported universe column. The numbers stay in the data;
 | `exposure_limit` | `column`, `vector` (default `w`), `bounds` | literal or scalar | `column · vector` against the bound: a beta, a duration, a score. |
 | `cash_limit` | `bounds` | literal or scalar | The cash left after the run, `1 − Σw`. `>=` on `cash_lb` and `<=` on `cash_ub` are the style's floor and cap. Takes no `scope`. |
 | `turnover_limit` | `vector` (default `trade`), `bounds` | literal or scalar | The summed `vector` over the scope; `trade` against `{"scalar": "max_turnover"}` is the style's two-way turnover cap. |
-| `participation_limit` | `bounds` (default `"1"`) | a literal multiple of `adv_capacity` | **Chain-aware.** Own trade in each scoped name within `bounds × adv_capacity` (the style's `max_adv_participation` times the day's volume, as a fraction of NAV), and the coupled side within what higher-priority portfolios' trades on that side left of it. Needs the universe's `adv_shares`; `direction` must be `<=`; no start policy. |
+| `participation_limit` | `bounds` (default `"1"`) | a literal multiple of `adv_capacity` | **Chain-aware.** Own trade in each scoped name within `bounds × adv_capacity` (the style's `max_adv_participation` times the day's volume, as a fraction of NAV), and the coupled side within what higher-priority portfolios' trades on that side left of it. Needs the universe's `adv_quantity`; `direction` must be `<=`; no start policy. |
 
 The per-security box `lb ≤ w ≤ ub` — the bounds the build derives from the style's `max_weight`, the
 universe's optional `min_weight`/`max_weight` columns, and the `restricted` flag — is part of every

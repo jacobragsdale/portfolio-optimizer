@@ -122,8 +122,7 @@ def test_missing_names_say_what_is_available(make: Factories) -> None:
     with pytest.raises(MissingSpecColumnError, match="spec has no flag 'liquid'; available: \\['esg'\\]"):
         spec.flag("liquid")
     with pytest.raises(
-        MissingSpecColumnError,
-        match=r"spec has no column 'momentum'; available: \['w0', 'price', 'shares_held', 'lot_size', 'lb', 'ub', 'adv_capacity', 'alpha', 'tax_per_dollar', 'tcost_per_dollar'\]",
+        MissingSpecColumnError, match=r"spec has no column 'momentum'; available: \['w0', 'price', 'quantity_held', 'lb', 'ub', 'adv_capacity', 'alpha', 'tax_per_dollar', 'tcost_per_dollar'\]"
     ):
         spec.column("momentum")
     with pytest.raises(MissingSpecColumnError, match=r"spec has no scalar 'max_names'; available: \["):
@@ -153,45 +152,45 @@ def test_sellable_is_where_a_positive_sell_is_allowed(make: Factories) -> None:
 
 
 def test_chain_state_shape_must_match_ids() -> None:
-    with pytest.raises(ValueError, match="traded_shares has shape"):
-        ChainState(security_ids=("A", "B"), traded_shares=np.zeros(3))
+    with pytest.raises(ValueError, match="traded_quantity has shape"):
+        ChainState(security_ids=("A", "B"), traded_quantity=np.zeros(3))
 
 
 def test_contribution_keeps_only_the_side_it_is_asked_for(contributions: tuple[Contribution, Contribution], frames: Frames) -> None:
     first, second = contributions
-    assert (first.portfolio_id, first.security_ids, first.traded_shares.tolist()) == ("P1", ("C",), [20000.0])
-    assert (second.security_ids, second.traded_shares.tolist()) == (("C",), [5000.0])
+    assert (first.portfolio_id, first.security_ids, first.traded_quantity.tolist()) == ("P1", ("C",), [20000.0])
+    assert (second.security_ids, second.traded_quantity.tolist()) == (("C",), [5000.0])
     orders = frames.orders(
         {"security_id": "A", "side": "SELL", "quantity": 1250, "notional": 125000}, {"security_id": "C", "side": "BUY", "quantity": 20000, "reference_price": 10, "notional": 200000}
     )
     sells = Contribution.from_orders("P1", orders, "SELL")
-    assert (sells.security_ids, sells.traded_shares.tolist()) == (("A",), [1250.0])
+    assert (sells.security_ids, sells.traded_quantity.tolist()) == (("A",), [1250.0])
 
 
 def test_derive_chain_state_folds_predecessors_buys_onto_the_spec(contributions: tuple[Contribution, Contribution]) -> None:
     state = derive_chain_state(("A", "C", "Z"), np.array([True, True, True]), contributions)
-    np.testing.assert_array_equal(state.traded_shares, np.array([0.0, 25000.0, 0.0]))
+    np.testing.assert_array_equal(state.traded_quantity, np.array([0.0, 25000.0, 0.0]))
     assert state.predecessors == ("P1", "P2")
     assert derive_chain_state(("A",), np.array([True]), ()).predecessors == ()
 
 
 def test_derive_chain_state_zeroes_what_this_portfolio_cannot_buy(contributions: tuple[Contribution, Contribution]) -> None:
     state = derive_chain_state(("A", "C", "Z"), np.array([True, False, True]), contributions)
-    np.testing.assert_array_equal(state.traded_shares, np.zeros(3))
+    np.testing.assert_array_equal(state.traded_quantity, np.zeros(3))
 
 
 def test_chain_hash_covers_the_shares_and_not_who_bought_them(contributions: tuple[Contribution, Contribution]) -> None:
     first, _ = contributions
     both = derive_chain_state(("C",), np.array([True]), contributions)
-    anonymous = ChainState(security_ids=("C",), traded_shares=np.array([25000.0]))
+    anonymous = ChainState(security_ids=("C",), traded_quantity=np.array([25000.0]))
     assert both.content_hash() == anonymous.content_hash()
     assert derive_chain_state(("C",), np.array([True]), (first,)).content_hash() != both.content_hash()
 
 
 def test_chain_hash_is_the_one_bought_shares_produced() -> None:
     # The field was renamed from bought_shares on 2026-08-29; the hash covers the ids and the values only, so recorded manifests still match.
-    assert ChainState(security_ids=("C",), traded_shares=np.array([25000.0])).content_hash() == "7606b5f9997880f2d4a3c939ce7e280e110d7411d0e3c7af44968e9af8ee6f6b"
-    assert ChainState(security_ids=("A", "C", "Z"), traded_shares=np.array([0.0, 25000.0, 0.0])).content_hash() == "4a6f72f066b1694ea5e186f2662b1afbe84b262a2cce3f43946ba506009c9658"
+    assert ChainState(security_ids=("C",), traded_quantity=np.array([25000.0])).content_hash() == "7606b5f9997880f2d4a3c939ce7e280e110d7411d0e3c7af44968e9af8ee6f6b"
+    assert ChainState(security_ids=("A", "C", "Z"), traded_quantity=np.array([0.0, 25000.0, 0.0])).content_hash() == "4a6f72f066b1694ea5e186f2662b1afbe84b262a2cce3f43946ba506009c9658"
 
 
 def test_chain_state_round_trips_through_npz(tmp_path: Path, contributions: tuple[Contribution, Contribution]) -> None:

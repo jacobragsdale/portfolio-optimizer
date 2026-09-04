@@ -141,7 +141,7 @@ def adv_remaining(spec: ProblemSpec, chain: ChainState, scale: float = 1.0) -> F
     if chain.security_ids != spec.security_ids:
         msg = "chain state is not aligned to this spec's securities"
         raise ConstraintSpecError(msg)
-    consumed = chain.traded_shares * spec.price / spec.nav
+    consumed = chain.traded_quantity * spec.price / spec.nav
     return np.maximum(0.0, scale * spec.column("adv_capacity") - consumed)
 
 
@@ -480,7 +480,7 @@ class ParticipationLimit(TypedConstraint):
         try:
             spec.column("adv_capacity")
         except MissingSpecColumnError as error:
-            yield f"{error}; a participation limit needs the universe's adv_shares and the account's max_adv_participation"
+            yield f"{error}; a participation limit needs the universe's adv_quantity and the account's max_adv_participation"
 
     def capacity(self, spec: ProblemSpec) -> F64:
         """Each name's budget as a fraction of NAV: the spec's capacity scaled by ``bounds``; the scope says where the constraint applies it."""

@@ -73,7 +73,7 @@ class VerificationError(RuntimeError):
 
 
 class DriftError(RuntimeError):
-    """Rounding to whole shares moved the portfolio further than lot sizes can explain."""
+    """Rounding to executable quantities moved the portfolio further than the increments and minimum pieces can explain."""
 
     def __init__(self, report: DriftReport) -> None:
         self.report = report

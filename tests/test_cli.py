@@ -108,7 +108,7 @@ def test_retry_of_reruns_the_failed_portfolios_under_whatever_config_the_desk_wr
 
 
 HANDOFF_ORDERS = (
-    "portfolio_id,security_id,side,quantity,reference_price,notional,target_weight,unrounded_shares,spec_hash,run_id,as_of_date\n"
+    "portfolio_id,security_id,side,quantity,reference_price,notional,target_weight,unrounded_quantity,spec_hash,run_id,as_of_date\n"
     "P1,A,SELL,1000,100,100000,0.2,1000.0,outflow,run-outflow,2026-08-28T00:00:00Z\n"
     "P2,C,SELL,5000,10,50000,0.0,5000.0,outflow,run-outflow,2026-08-28T00:00:00Z\n"
 )
@@ -131,7 +131,7 @@ def test_a_previous_runs_orders_feed_the_next_run_as_its_blotter_and_its_spent_v
     ]
     manifest = json.loads((tmp_path / "out" / "run-smoke" / "manifest.json").read_text())
     assert {dataset["name"] for dataset in manifest["datasets"]} >= {"trades", "adv_consumed"}, "both shapes of the handoff are inputs the manifest records and hashes"
-    assert [step["columns_added"] for step in manifest["assembly"]] == [{"universe": ["alpha", "tcost_bps"]}, {"universe": ["adv_consumed_shares"]}, {}]
+    assert [step["columns_added"] for step in manifest["assembly"]] == [{"universe": ["alpha", "tcost_bps"]}, {"universe": ["adv_consumed_quantity"]}, {}]
 
 
 def test_the_default_settings_run_the_example_inline_with_no_environment_at_all(tmp_path: Path, config: Path) -> None:

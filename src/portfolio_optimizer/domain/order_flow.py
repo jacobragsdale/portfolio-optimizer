@@ -99,7 +99,7 @@ class Inflow:
     """An inflow buys alone: ``w ≥ w0`` and ``buy = w - w0``; there is no ``sell``.
 
     Portfolios couple through buys: the tradable set is the buyable set, a contribution is the BUY
-    rows, and the chain carries shares predecessors bought. An inflow can only lower cash, and a name
+    rows, and the chain carries the quantity predecessors bought. An inflow can only lower cash, and a name
     whose cap sits below its holding cannot be traded out of: both are named as the infeasibilities
     they are rather than solved around.
     """
@@ -112,7 +112,7 @@ class Inflow:
         return spec.buyable
 
     def split(self, w: F64, w0: F64) -> tuple[F64, F64]:
-        """``buy = max(w - w0, 0)``, ``sell = 0``: the clip keeps solver noise below ``w0`` from becoming a sell of a few shares at a large NAV."""
+        """``buy = max(w - w0, 0)``, ``sell = 0``: the clip keeps solver noise below ``w0`` from becoming a sell of a few units at a large NAV."""
         return np.maximum(w - w0, 0.0), np.zeros_like(w)
 
     def coupled(self, solution: Solution) -> F64:
@@ -147,7 +147,7 @@ class Outflow:
     """An outflow sells alone: ``w ≤ w0`` and ``sell = w0 - w``; there is no ``buy``. The mirror of :class:`Inflow`.
 
     Portfolios couple through sells: the tradable set is the sellable set, a contribution is the SELL
-    rows, and the chain carries shares predecessors sold. An outflow can only raise cash, and a name
+    rows, and the chain carries the quantity predecessors sold. An outflow can only raise cash, and a name
     held below its floor cannot be traded out of.
     """
 
@@ -159,7 +159,7 @@ class Outflow:
         return spec.sellable
 
     def split(self, w: F64, w0: F64) -> tuple[F64, F64]:
-        """``buy = 0``, ``sell = max(w0 - w, 0)``: the clip keeps solver noise above ``w0`` from becoming a buy of a few shares at a large NAV."""
+        """``buy = 0``, ``sell = max(w0 - w, 0)``: the clip keeps solver noise above ``w0`` from becoming a buy of a few units at a large NAV."""
         return np.zeros_like(w), np.maximum(w0 - w, 0.0)
 
     def coupled(self, solution: Solution) -> F64:
@@ -195,7 +195,7 @@ class Rebalance:
 
     Still one variable per name, so a name is bought or sold, never both. Portfolios couple through
     every trade: the tradable set is the buyable set and the sellable set together, a contribution is
-    every order row, and the chain carries shares predecessors traded on either side — a buy and a
+    every order row, and the chain carries the quantity predecessors traded on either side — a buy and a
     sell both spend a name's daily volume. No start is one a rebalance cannot trade out of: a name over
     its cap is sold down, a book below its cash floor raises cash, which is why a failed inflow or
     outflow is retried as one.

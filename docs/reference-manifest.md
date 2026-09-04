@@ -31,7 +31,7 @@
 | `problem_specs/<portfolio_id>.npz` | The `ProblemSpec` as arrays plus JSON metadata; no pickle. |
 | `solutions/<portfolio_id>.npz` | The solve step's `w` and the profile's `buy`/`sell` split, with the objective (null when the step minimized nothing), status, solver and its version, solve time, iterations, spec hash, the portfolio's typed constraint rows as records (the engine's reading, stamped at solve), and the solver's duals. |
 | `executed/<portfolio_id>.npz` | The book the orders leave, in the same shape: the executed weights rebuilt from the rounded orders, the profile's split of them, no objective and no duals, the same spec hash and constraint records. What `verify` re-checks beside the solution. |
-| `chain/<portfolio_id>.npz` | The chain state the solve depended on: `traded_shares`, the shares its predecessors traded on the side the run couples through (bought under `inflow`, sold under `outflow`, either under `rebalance`), per security, zero where the portfolio cannot trade the name on that side; the metadata names the predecessors. Chain files written before 2026-08-29 carry the key `bought_shares` and no longer load; their hash is unchanged. |
+| `chain/<portfolio_id>.npz` | The chain state the solve depended on: `traded_quantity`, the quantity its predecessors traded on the side the run couples through (bought under `inflow`, sold under `outflow`, either under `rebalance`), per security, zero where the portfolio cannot trade the name on that side; the metadata names the predecessors. Chain files written before 2026-09-04 carry the key `traded_shares` and no longer load; their hash is unchanged. |
 | `checks/<label>.csv` | The rows a check step found in breach — every row it examined whose `ok` is false, with the check's own detail columns — written only when there are any. |
 | `failures/<portfolio_id>.txt` | The traceback of the exception that failed a portfolio, with the `run_id`, stage, and error above it. Written only for a failure an exception produced: a portfolio skipped after another's, a worker refused for its environment, and an input simply absent have no traceback and no file. A failure the run itself owns (`portfolio_id` `*`) is named for its stage — `failures/sink.txt`, `failures/cluster.txt`. This is normally the only surviving record of *where* a failure happened, since a worker's own stderr goes nowhere the run can read. |
 | `trace.json` | The manifest's `timing` spans in the Chrome trace format: a row per worker process, a lane per portfolio, one complete event per span. Opens in `chrome://tracing` or [Perfetto](https://ui.perfetto.dev). |
@@ -44,17 +44,20 @@ Files are written to a sibling temp file and renamed, so a crash leaves no parti
 |---|---|---|
 | `portfolio_id`, `security_id` | `string` | Unique together. |
 | `side` | `string` | `BUY` or `SELL`. |
-| `quantity` | `Int64` > 0 | Whole shares, a multiple of the security's `lot_size`. |
-| `reference_price` | `Decimal` | The universe price used to size the order. |
-| `notional` | `Decimal` | `quantity × reference_price`, exact. |
+| `quantity` | `Int64` > 0 | Units of face, a multiple of the security's `increment` unless the order sells the whole position; the position it leaves is zero or at least the security's `min_denomination`. |
+| `reference_price` | `Decimal` | The universe's clean price per unit. |
+| `accrued_interest` | `Decimal` | The universe's accrued interest per unit, zero where it carries none. |
+| `notional` | `Decimal` | `quantity × (reference_price + accrued_interest)`, exact. |
 | `target_weight` | `Float64` | The solved weight. |
-| `unrounded_shares` | `Float64` | The signed share delta before rounding. |
+| `unrounded_quantity` | `Float64` | The signed quantity delta before rounding, at the dirty price. |
 | `spec_hash` | `string` | Hash of the problem the order came from. |
 | `run_id` | `string` | |
 | `as_of_date` | `datetime64[ns, UTC]` | |
 
-Rounding: nearest whole share (half-even), then down to a lot multiple, then a sell is clamped to the
-shares held and a buy to the room under the security's upper bound; orders below the style's
+Rounding: nearest unit (half-even), then down to a multiple of the increment, then a sell is clamped to
+the quantity held and a buy to the room under the security's upper bound, then the minimum denomination
+is honoured (a buy that cannot reach it is dropped, a sell that would leave less than it is shrunk to
+leave exactly it, a sell of the whole position goes out as it is); orders below the style's
 `min_trade_notional` are dropped.
 
 ## Manifest
@@ -90,11 +93,11 @@ the hash of the rest of the document; `load_manifest` refuses a document whose c
 | `rules[]` | `qualname`, `source_sha256`, `params_sha256`, `rows_in`, `rows_out` per rule; the row counts cover `holdings`, `universe`, and every extra dataset in the bundle by name. |
 | `constraints[]` | This portfolio's typed constraint rows, after its rules, each as its record: `kind` and every field (`name`, `direction`, `scope`, `allow_current_weight`, `tolerance`, and the kind's own — `bounds`, `column`, `vector`). What the verifier held the answer to, whatever the solve step made of them. Empty for rows in a vocabulary the engine does not read. |
 | `problem_spec_sha256` | Hash of every array, flag, grouping, and scalar the solver saw. |
-| `chain_inputs_sha256` | Hash of the chain state — the security ids and the shares predecessors traded on the coupled side, never which predecessors — so `overlap` and `all` runs hash alike. |
+| `chain_inputs_sha256` | Hash of the chain state — the security ids and the quantity predecessors traded on the coupled side, never which predecessors — so `overlap` and `all` runs hash alike. |
 | `solve` | `solver`, `solver_version`, `status`, `iterations`, `objective_value`, `solve_time_s`, `duals` (per constraint name the step rendered, the largest dual value the solver reported — the shadow price of the limit, zero where it did not bind; `no_sells` under `inflow` or `no_buys` under `outflow` is the order-flow profile's identity, the box included). For the `cvxpy` step, the cvxpy solver's name and the version of its distribution; the cvxpy version itself is in `versions.cvxpy`. A solve step that is not cvxpy records its qualified name as `solver` and its package version as `solver_version` unless it named a solver itself, `objective_value` is `null` when it minimized nothing, and `duals` is empty unless it reported some. |
 | `check` | The verification of the solved weights: `tolerance` (the `violation_tol` every residual was held to), `max_violation`, `violated` (check names), `active` (the checks that bind — their residual within the tolerance of the bound — in report order, as `label/residual` where a constraint's residual name differs from its label: `ub`, `cash_floor/cash_limit`, `adv/cumulative_participation`), `objective_gap`, `objective_passed`, `passed`, `residuals` (every check's signed worst residual by its display name — negative is the margin kept, so `-residuals[name]` is how much room the answer left against that limit; a check with no residual vector is absent). |
 | `executed` | The same record over the weights the rounded orders leave the book at. A solved portfolio passed both; `objective_gap` is `0` and `objective_passed` true here, since an executed book has no solver objective to agree with. |
-| `drift` | `max_weight_error`, `tolerance`, `dropped_orders`, `passed` — the effect of rounding to shares. |
+| `drift` | `max_weight_error`, `tolerance`, `dropped_orders`, `passed` — the effect of rounding to executable quantities. |
 | `orders` | `count`, `sha256` (content hash excluding `run_id`), `gross_notional`. |
 | `failure_stage`, `error` | For failed portfolios: `load` (a batch that failed, or no `details` row), `slice`, `build` (the bundle could not become a problem, or a constraint row or term could not apply to it), `solve`, `worker` (the worker died, or its environment fingerprint differed from the run's), `skipped` (the error names the failed predecessor, or the `fail_fast` cut-off), `sink`, `check` (on the `*` record: a check step raised or returned something other than examined rows — a bug in the check, not a verdict on the orders — the first such is recorded), or `cluster` (on the `*` record: no worker came up), and the error. The traceback behind the error, where there was an exception, is in `failures/` above — the manifest keeps the one-line summary. |
 

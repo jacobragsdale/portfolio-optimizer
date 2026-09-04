@@ -139,17 +139,17 @@ beside its content hash.
 The first two accounts are the ones to read by hand. P1 and P2 each have a NAV of $1,000,000, hold
 3,000 A at 100 and 6,000 B at 50, and have $400,000 of cash to invest; each may trade at most a
 quarter of a name's daily volume. C has the best expected return of the three and the worst liquidity:
-100,000 shares a day at 10, so a portfolio can buy at most 25,000 shares — a 0.25 weight. A is worth
+100,000 units a day at 10, so a portfolio can buy at most 25,000 units — a 0.25 weight. A is worth
 buying too; B has turned negative. The accounts differ in one thing that decides the answer: P1's style
 caps any one name at 40%, P2's at 60%.
 
-P1 has first pick. It buys the 25,000 shares of C its budget allows, then A up to its cap — 1,000
-shares — and leaves the last $50,000 in cash rather than put it into B, since the cash floor is a
+P1 has first pick. It buys the 25,000 units of C its budget allows, then A up to its cap — 1,000
+units — and leaves the last $50,000 in cash rather than put it into B, since the cash floor is a
 floor, not a target. P2 wants C too, but P1 has used the whole budget for the day, so its cash goes to
-A instead: 3,000 shares, up to its wider cap. The output says so: `adv/participation` and
+A instead: 3,000 units, up to its wider cap. The output says so: `adv/participation` and
 `adv/cumulative_participation` bind on P1 — C's budget is what stopped it — and
 `adv/cumulative_participation` binds on P2, the budget P1 used. P3 is the exception that proves the
-rule: its style allows 30% of a day's volume, so it finds 5,000 shares of C still inside its own budget
+rule: its style allows 30% of a day's volume, so it finds 5,000 units of C still inside its own budget
 after P1's 25,000. P4 has room in A and buys none: `examples/data/trades.csv` says it sold A nine
 days before the run, and the `restrict_recent_trades` rule freezes a name traded inside the thirty-day
 wash-sale window (its trade in C three months earlier is outside it and changes nothing). Behind them
@@ -167,7 +167,7 @@ uv run python -c "import pandas as pd, glob; print(pd.read_parquet(glob.glob('ou
 ```
 
 You should see 54 orders across 52 accounts, every one a `BUY`. P1's two are the ones to check: buy
-1,000 A and buy 25,000 C — the hand-computed optimum, to the share. P2's one is buy 3,000 A.
+1,000 A and buy 25,000 C — the hand-computed optimum, to the unit. P2's one is buy 3,000 A.
 
 ## 5. Run the outflow over the same book
 
@@ -186,7 +186,7 @@ Same data, same instant, the other order flow. Expected:
 Both P1 and P2 hold B at a cost of 60 against a price of 50. That loss is worth money: at P1's
 long-term rate it is 4 cents of tax refund on every dollar sold, far more than the alpha given up, so
 the outflow harvests it — down to where the account's `TECH` floor of 50% stops it, which is
-2,000 shares each. A is at cost and worth holding, so nothing else moves. The output names the floor as
+2,000 units each. A is at cost and worth holding, so nothing else moves. The output names the floor as
 what bound. Down the book, accounts holding B at a gain keep it, because the tax on the gain outweighs
 its small negative alpha, and from the thirty-fourth account on `adv/cumulative_participation` binds
 instead: the accounts ahead have sold B's day.
@@ -220,7 +220,7 @@ This reloads the persisted problem, solution, executed book, and chain state and
 constraint row and every term in plain numpy — cvxpy is never imported. Expected: two lists of `ok`
 lines, one under `solution` and one under `executed orders`, `[binding]` after the ones the answer sits
 against, and `VERIFIED P1`. Notice that the recomputed objective equals the solver's to nine digits, and
-that the executed book — the weights the whole-share orders actually leave — passes the same checks.
+that the executed book — the weights the rounded orders actually leave — passes the same checks.
 
 ## What you accomplished
 

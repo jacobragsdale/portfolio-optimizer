@@ -59,7 +59,7 @@ class Quadratic(TypedTerm):
 
 @register_term_kind
 class ChainPenalty(TypedTerm):
-    """``weight · (traded_shares · w)``: a term that reads the chain, so a run configuring it couples every portfolio through its whole tradable set."""
+    """``weight · (traded_quantity · w)``: a term that reads the chain, so a run configuring it couples every portfolio through its whole tradable set."""
 
     kind: Literal["chain_penalty"] = "chain_penalty"
     reads_chain = True
@@ -67,12 +67,12 @@ class ChainPenalty(TypedTerm):
     @override
     def value(self, spec: ProblemSpec, solution: Solution, chain: ChainState, profile: OrderFlowProfile) -> float:
         del spec, profile
-        return float(self.weight) * float((chain.traded_shares * solution.w).sum())
+        return float(self.weight) * float((chain.traded_quantity * solution.w).sum())
 
     @override
     def to_cvxpy(self, x: DecisionVars, spec: ProblemSpec, chain: ChainState) -> ObjectiveTerm:
         del spec
-        return ObjectiveTerm(self.name, scale(float(self.weight), dot(chain.traded_shares, x.w)))
+        return ObjectiveTerm(self.name, scale(float(self.weight), dot(chain.traded_quantity, x.w)))
 
 
 @register_term_kind

@@ -127,7 +127,7 @@ async def load_portfolios(request: LoadRequest, params: ServiceParams) -> pd.Dat
 
 
 async def load_holdings(request: LoadRequest, params: ServiceParams) -> pd.DataFrame:
-    """What each account in the request owns: shares, average cost, and the date the lot was acquired.
+    """What each account in the request owns, one tax lot per row: quantity, average cost, and the date the lot was acquired.
 
     The shape of a custodian that answers one account per call: one request per id in the batch, run
     together, so the loader is right however the engine batches it — under the example's
@@ -221,7 +221,7 @@ TRADES = FrameSchema(
     ),
     key=(),
 )
-"""The shape of a trade record: which account traded which name, which way, when, and — where the source says — how many shares; an extra dataset typed by the loader that fetches it. No key: an account may trade a name twice in a day."""
+"""The shape of a trade record: which account traded which name, which way, when, and — where the source says — how much; an extra dataset typed by the loader that fetches it. No key: an account may trade a name twice in a day."""
 
 
 async def load_trades(request: LoadRequest, params: ServiceParams) -> pd.DataFrame:
@@ -245,7 +245,7 @@ class RunOrdersParams(ServiceParams):
     )
     emit: Literal["trades", "adv_consumed"] = Field(
         default="trades",
-        description='`trades`: the orders as blotter rows (`portfolio_id`, `security_id`, `side`, `quantity`, `traded_on`), the shape `restrict_recent_trades` reads. `adv_consumed`: one row per universe security with `adv_consumed_shares`, the shares the run traded in it on either side, for an assembly `join` into the universe, where the standard build takes it off each name\'s participation budget; needs `depends_on: ["universe"]`.',
+        description='`trades`: the orders as blotter rows (`portfolio_id`, `security_id`, `side`, `quantity`, `traded_on`), the shape `restrict_recent_trades` reads. `adv_consumed`: one row per universe security with `adv_consumed_quantity`, the quantity the run traded in it on either side, for an assembly `join` into the universe, where the standard build takes it off each name\'s participation budget; needs `depends_on: ["universe"]`.',
     )
 
 
@@ -257,7 +257,7 @@ async def load_run_orders(request: LoadRequest, params: RunOrdersParams) -> pd.D
     and recorded like any dataset, so the second run stays a pure function of a snapshot and
     ``diff-manifests`` names the predecessor's orders as the input that changed. ``trades`` is the
     orders frame as trade rows — a run's ``as_of_date`` is when it traded — for the accounts asked
-    for; ``adv_consumed`` is the shares traded per security, either side, over every universe security
+    for; ``adv_consumed`` is the quantity traded per security, either side, over every universe security
     (zero where none). Both are sorted, since an extra dataset hashes by row order.
     """
     await _call(request, params.latency(BLOTTER))
@@ -274,7 +274,7 @@ async def load_run_orders(request: LoadRequest, params: RunOrdersParams) -> pd.D
         raise ValueError(msg) from None
     consumed = orders.groupby("security_id")["quantity"].sum()
     ids = sorted(str(value) for value in universe["security_id"])
-    return pd.DataFrame({"security_id": pd.Series(ids, dtype="string"), "adv_consumed_shares": pd.Series([int(consumed.get(security, 0)) for security in ids], dtype="Int64")})
+    return pd.DataFrame({"security_id": pd.Series(ids, dtype="string"), "adv_consumed_quantity": pd.Series([int(consumed.get(security, 0)) for security in ids], dtype="Int64")})
 
 
 def _read_orders(path: Path) -> pd.DataFrame:

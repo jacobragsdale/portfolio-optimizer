@@ -92,7 +92,7 @@ def constraints_without(*kinds: str) -> str:
 def holdings_csv(**positions: Sequence[tuple[str, int, str, str]]) -> str:
     """The ``holdings`` table with the named accounts' positions replaced by ``(security_id, quantity, avg_cost, acquired_on)`` rows."""
     header, rows = _table("holdings.csv")
-    replaced = [f"{portfolio_id},{security},{quantity},{cost},{acquired}" for portfolio_id, lots in positions.items() for security, quantity, cost, acquired in lots]
+    replaced = [f"{portfolio_id},{security},L1,{quantity},{cost},{acquired}" for portfolio_id, lots in positions.items() for security, quantity, cost, acquired in lots]
     return "\n".join([header, *replaced, *(row for row in rows if row.split(",")[0] not in positions)]) + "\n"
 
 
@@ -103,7 +103,7 @@ def uncoupled_book(tmp_path: Path, **files: str) -> Path:
 
 def thin_b_book(tmp_path: Path) -> Path:
     """The example data with B's daily volume cut to 12,000 shares: what makes the outflow's two accounts compete for a name's ADV budget (``THIN_B_ORDERS_P2``)."""
-    universe = "security_id,price,sector,adv_shares,lot_size,restricted\nA,100,TECH,1000000,1,false\nB,50,TECH,12000,1,false\nC,10,HEALTH,100000,1,false\n"
+    universe = "security_id,price,sector,adv_quantity,increment,restricted\nA,100,TECH,1000000,1,false\nB,50,TECH,12000,1,false\nC,10,HEALTH,100000,1,false\n"
     return example_book(tmp_path, **{"universe.csv": universe})
 
 

@@ -50,7 +50,7 @@ The rules of the contract:
   with a message; the engine records the portfolio as failed at stage `solve` with that message and
   does not try to explain it. `spec.scalar`, `spec.column`, and `adv_remaining` raise
   `MissingSpecColumnError` for a spec that lacks what they read (`adv_capacity` needs the universe's
-  `adv_shares`); the shipped `pro_rata_fill` catches that one and fills without a budget.
+  `adv_quantity`); the shipped `pro_rata_fill` catches that one and fills without a budget.
 - **Touch nothing outside the request.** No files, no clock, no other portfolio. A step that reads the
   chain gets it from `request.chain`; nothing else about other portfolios is visible, by design. Because
   the engine cannot see *whether* a step of yours reads the chain, every step other than the shipped

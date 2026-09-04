@@ -56,7 +56,7 @@ def test_add_zero_alpha_on_an_empty_universe(make: Factories, frames: Frames) ->
 
 def _with_threshold(make: Factories, threshold: int, **kwargs: object) -> PortfolioData:
     """The canonical bundle carrying the parameter frame the rule reads its threshold from."""
-    return make.portfolio_data(extras={"buy_universe_parameters": Frames().parameters(min_adv_shares=threshold)}, **kwargs)
+    return make.portfolio_data(extras={"buy_universe_parameters": Frames().parameters(min_adv_quantity=threshold)}, **kwargs)
 
 
 @pytest.mark.parametrize(("threshold", "restricted"), [(100_000, [False, False, False]), (100_001, [False, False, True]), (1_000_001, [True, True, True])])
@@ -74,13 +74,13 @@ def test_restrict_low_liquidity_keeps_names_already_restricted(make: Factories, 
 
 
 def test_restrict_low_liquidity_says_which_dataset_it_wanted(make: Factories) -> None:
-    with pytest.raises(ValueError, match=r"no extra dataset 'buy_universe_parameters' to read 'min_adv_shares' from; the run carries \[\]"):
+    with pytest.raises(ValueError, match=r"no extra dataset 'buy_universe_parameters' to read 'min_adv_quantity' from; the run carries \[\]"):
         restrict_low_liquidity(make.portfolio_data(), LiquidityParams())
 
 
 def test_restrict_low_liquidity_says_which_parameter_is_missing(make: Factories) -> None:
     empty = make.portfolio_data(extras={"buy_universe_parameters": Frames().parameters(max_names=150)})
-    with pytest.raises(ValueError, match=r"parameter 'min_adv_shares': expected exactly one row, found 0 among \['max_names'\]"):
+    with pytest.raises(ValueError, match=r"parameter 'min_adv_quantity': expected exactly one row, found 0 among \['max_names'\]"):
         restrict_low_liquidity(empty, LiquidityParams())
 
 
@@ -88,7 +88,7 @@ def test_restrict_low_liquidity_says_which_parameter_is_missing(make: Factories)
 @settings(deadline=None, max_examples=25)
 def test_restrict_low_liquidity_is_idempotent(threshold: int) -> None:
     params = LiquidityParams()
-    extras = {"buy_universe_parameters": Frames().parameters(min_adv_shares=threshold)}
+    extras = {"buy_universe_parameters": Frames().parameters(min_adv_quantity=threshold)}
     once = restrict_low_liquidity(make_portfolio_data(extras=extras), params)  # hypothesis tests cannot take fixtures
     twice = restrict_low_liquidity(once, params)
     assert_frame_equal(once.universe, twice.universe)

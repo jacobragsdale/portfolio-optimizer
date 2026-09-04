@@ -75,7 +75,7 @@ Money enters the engine as `Decimal` and stays that way through loading, assembl
 schemas reject a float where a Decimal belongs. The optimizer needs float64, so `engine/build.py` is the
 one place the conversion happens — after current weights and tax per dollar have been computed exactly.
 Orders need exact quantities and notionals again, so `engine/orders.py` is the one place float64 becomes
-shares and `Decimal`, using the exact prices carried alongside the spec rather than the float copies
+quantities and `Decimal`, using the exact prices carried alongside the spec rather than the float copies
 inside it. Keeping both conversions in single, tested functions is what makes "the notional in the
 order is exactly quantity times price" a guarantee rather than a hope.
 
@@ -222,15 +222,18 @@ implementation of anything the engine proves.
 
 ## Rounding
 
-Whole-share rounding is the point where a mathematically feasible answer meets reality. The engine rounds
-to the nearest share, then down to lot multiples, then clamps a sell to what is held and a buy to the
-room under its upper bound. Rounding toward zero
-was considered — it can never breach a cap — but solver noise of about 1e-8 in weight space turns an
-exact 1,250-share answer into 1,249, which is worse in practice. Instead the rounding drift is measured
-against the solved weights and bounded by what one lot and one dust-filtered trade can cost; exceeding the
-bound fails the portfolio. That bound is a diagnostic. What decides whether the orders go out is that the
-book they leave — the executed weights, rebuilt from the orders — passes the same verification the solved
-weights did, against every typed constraint row: a fraction of a share can breach a bound the solver sat
+Rounding to executable quantities is the point where a mathematically feasible answer meets reality. The
+engine rounds to the nearest unit at the dirty price, then down to the security's increment, then clamps
+a sell to what is held and a buy to the room under its upper bound, then honours the minimum
+denomination: a buy that cannot reach it is dropped, a sell that would leave less than it is shrunk to
+leave exactly it, and a sell of the whole position goes out as it is, so nothing trades more than the
+solver asked. Rounding toward zero was considered — it can never breach a cap — but solver noise of about
+1e-8 in weight space turns an exact 1,250-unit answer into 1,249, which is worse in practice. Instead the
+rounding drift is measured against the solved weights and bounded by what one increment, one minimum
+piece, and one dust-filtered trade can cost; exceeding the bound fails the portfolio. That bound is a
+diagnostic. What decides whether the orders go out is that the book they leave — the executed weights,
+rebuilt from the orders — passes the same verification the solved weights did, against every typed
+constraint row: a fraction of a unit can breach a bound the solver sat
 on, and the engine adds no slack of its own for it. A desk that accepts some says so on the row, through its
 `tolerance`.
 
@@ -241,7 +244,7 @@ should see how much of its daily volume the first already used. The engine allow
 dependency and no other — **what a higher-priority portfolio traded on the side the run couples
 through may limit what a later one trades there; nothing else reaches anyone.** Under `inflow` that side
 is buys, under `outflow` it is sells, and under `rebalance` it is both: a sell spends a name's daily
-volume exactly as a buy does, and the chain carries shares traded either way. That is a product decision
+volume exactly as a buy does, and the chain carries the quantity traded either way. That is a product decision
 (2026-08-29), and it is what makes the schedule derivable instead of configured.
 
 ![Eight accounts: the line dependencies-all forces, and the graph overlap derives — three components, critical path three, identical orders either way](images/derived-schedule.svg)
@@ -264,14 +267,14 @@ solve goes in while the rest of the book is still building. There is no executio
 graph replaces one, and the manifest records its shape — edges, components, the longest chain of
 solves — so a slow batch explains itself.
 
-Each solve folds its predecessors' orders on that side into a `ChainState` — `traded_shares`, aligned
+Each solve folds its predecessors' orders on that side into a `ChainState` — `traded_quantity`, aligned
 to its own securities and **masked to its own tradable set**. The mask is load-bearing: a predecessor's
 trades lie inside *its* tradable set, the mask keeps only *this* portfolio's, so what a solve sees is a
 function of the overlapping predecessors alone — the same array whether every higher-priority
 portfolio was folded or only those sharing a tradable name. That is the exactness argument, and it
 carries over from buys to sells verbatim; a property test asserts it: the graph schedule and the total
 order produce identical orders and identical chain hashes. Order rounding clamps a buy to the room
-under its upper bound and a sell to the shares held, so solver noise can never produce a trade the
+under its upper bound and a sell to the quantity held, so solver noise can never produce a trade the
 graph could not have seen, and the pipeline asserts every order is on a side the run trades and inside
 the tradable set. `execution.dependencies: "all"` keeps the total order available for diagnosis.
 
@@ -283,7 +286,7 @@ internal crossing — is a recorded non-goal; `IDEAS.md` says what it would cost
 the shipped `trades` dataset is the desk's blotter, and the `restrict_recent_trades` rule freezes
 every name an account traded inside the wash-sale window, so an inflow cannot rebuy what the outflow
 just sold; a boolean universe column and one `weight_limit` row on `buy` (`scope: sold_at_loss`) is
-the directional shape of the same thing. The same orders, loaded once more as `adv_consumed_shares`
+the directional shape of the same thing. The same orders, loaded once more as `adv_consumed_quantity`
 on the universe, are what the standard build takes off each name's participation budget — off the
 budget, not the volume, so an earlier run's trades and a predecessor's in the same run leave the same
 room — and the inflow's budget is what the outflow left of it. `load_run_orders` reads a run's orders
@@ -382,7 +385,8 @@ run but the list. The policy is the desk's; the engine selects, tags, and record
 
 ## What was left out on purpose
 
-Tax lots (holdings are security-level with an average cost), shorting, fractional shares, a covariance
+Lot selection (holdings are tax lots, and the shipped build sells them pro rata), shorting, fractional
+quantities, a covariance
 risk term, and automatic solver fallback. Each is a real extension, and each would have made the
 template harder to read without changing the shape of the engine. The manifest, the hashes, and the
 verifier are designed so that adding them leaves the audit story intact.

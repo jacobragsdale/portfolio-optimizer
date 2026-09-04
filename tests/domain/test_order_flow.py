@@ -61,9 +61,9 @@ def test_inflow_couples_through_buys_and_reports_only_buys(make: Factories, fram
     assert INFLOW.tradable(spec).tolist() == [False, True, True], "S0 is capped at its holding, so it is not buyable"
     orders = frames.orders({"security_id": "S1", "side": "BUY", "quantity": 10, "notional": Decimal(1000)}, {"security_id": "S2", "side": "BUY", "quantity": 7, "notional": Decimal(700)})
     contribution = INFLOW.contribution("P1", orders)
-    assert (contribution.security_ids, contribution.traded_shares.tolist()) == (("S1", "S2"), [10.0, 7.0])
+    assert (contribution.security_ids, contribution.traded_quantity.tolist()) == (("S1", "S2"), [10.0, 7.0])
     state = INFLOW.chain_state(spec, [Contribution("P0", ("S0", "S2"), np.array([5.0, 3.0]))], np.ones(3, dtype=np.bool_))
-    assert state.traded_shares.tolist() == [0.0, 0.0, 3.0], "a predecessor's buy of a name this portfolio cannot buy is masked out"
+    assert state.traded_quantity.tolist() == [0.0, 0.0, 3.0], "a predecessor's buy of a name this portfolio cannot buy is masked out"
     assert INFLOW.order_sides == {"BUY"}
     assert INFLOW.coupled(make.solution(spec, buy=np.array([0.0, 0.1, 0.2]))).tolist() == [0.0, 0.1, 0.2]
 
@@ -110,9 +110,9 @@ def test_outflow_couples_through_sells_and_reports_only_sells(make: Factories, f
     assert OUTFLOW.tradable(spec).tolist() == [False, True, False], "S0 is floored at its holding and S2 is not held"
     orders = frames.orders({"security_id": "S0", "side": "SELL", "quantity": 10, "notional": Decimal(1000)}, {"security_id": "S1", "side": "SELL", "quantity": 7, "notional": Decimal(700)})
     contribution = OUTFLOW.contribution("P1", orders)
-    assert (contribution.security_ids, contribution.traded_shares.tolist()) == (("S0", "S1"), [10.0, 7.0])
+    assert (contribution.security_ids, contribution.traded_quantity.tolist()) == (("S0", "S1"), [10.0, 7.0])
     state = OUTFLOW.chain_state(spec, [Contribution("P0", ("S0", "S1"), np.array([5.0, 3.0]))], np.ones(3, dtype=np.bool_))
-    assert state.traded_shares.tolist() == [0.0, 3.0, 0.0], "a predecessor's sell of a name this portfolio cannot sell is masked out"
+    assert state.traded_quantity.tolist() == [0.0, 3.0, 0.0], "a predecessor's sell of a name this portfolio cannot sell is masked out"
     assert OUTFLOW.order_sides == {"SELL"}
     assert OUTFLOW.coupled(make.solution(spec, sell=np.array([0.0, 0.1, 0.2]))).tolist() == [0.0, 0.1, 0.2]
 
@@ -157,9 +157,9 @@ def test_a_rebalance_couples_through_every_trade_on_either_side(make: Factories,
     assert REBALANCE.tradable(spec).tolist() == [False, True, True], "S0 is frozen at its holding; S1 can go either way; S2 can only be bought"
     orders = frames.orders({"security_id": "S1", "side": "SELL", "quantity": 10, "notional": Decimal(1000)}, {"security_id": "S2", "side": "BUY", "quantity": 7, "notional": Decimal(700)})
     contribution = REBALANCE.contribution("P1", orders)
-    assert (contribution.security_ids, contribution.traded_shares.tolist()) == (("S1", "S2"), [10.0, 7.0]), "a sell reaches a later portfolio the same as a buy"
+    assert (contribution.security_ids, contribution.traded_quantity.tolist()) == (("S1", "S2"), [10.0, 7.0]), "a sell reaches a later portfolio the same as a buy"
     state = REBALANCE.chain_state(spec, [Contribution("P0", ("S0", "S1", "S2"), np.array([5.0, 3.0, 2.0]))], np.ones(3, dtype=np.bool_))
-    assert state.traded_shares.tolist() == [0.0, 3.0, 2.0], "a predecessor's trade in a name this portfolio cannot trade is masked out"
+    assert state.traded_quantity.tolist() == [0.0, 3.0, 2.0], "a predecessor's trade in a name this portfolio cannot trade is masked out"
     assert REBALANCE.order_sides == {"BUY", "SELL"}
     assert REBALANCE.coupled(make.solution(spec, buy=np.array([0.0, 0.1, 0.0]), sell=np.array([0.2, 0.0, 0.0]))).tolist() == [0.2, 0.1, 0.0]
 
@@ -179,6 +179,6 @@ def test_chain_state_masks_to_the_consume_set_as_well_as_the_tradable_set(make: 
     spec = make.spec(w0=np.array([0.5, 0.5, 0.0]), ub=np.array([0.5, 1.0, 1.0]))
     contributions = [Contribution("P0", ("S1", "S2"), np.array([5.0, 3.0]))]
     narrowed = INFLOW.chain_state(spec, contributions, np.array([False, False, True]))
-    assert narrowed.traded_shares.tolist() == [0.0, 0.0, 3.0], "S1 is buyable but outside the consume set"
+    assert narrowed.traded_quantity.tolist() == [0.0, 0.0, 3.0], "S1 is buyable but outside the consume set"
     everything = INFLOW.chain_state(spec, contributions, np.ones(3, dtype=np.bool_))
-    assert everything.traded_shares.tolist() == [0.0, 5.0, 3.0]
+    assert everything.traded_quantity.tolist() == [0.0, 5.0, 3.0]

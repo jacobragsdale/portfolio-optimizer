@@ -106,7 +106,7 @@ def write_book(root: Path, rng: np.random.Generator, *, portfolios: int, securit
     prices = [Decimal(int(value)) / 100 for value in rng.integers(90_000, 112_000, size=securities)]  # a $1,000-face bond quoted between 90 and 112
     adv = np.exp(rng.uniform(np.log(100), np.log(20_000), size=securities)).astype(np.int64)  # bonds a day: the thin tail is where the chain actually binds
     alphas = rng.uniform(-0.02, 0.02, size=securities)  # relative-value scores, tighter than an equity book's
-    universe = ["security_id,price,sector,adv_shares,lot_size,restricted,alpha,tcost_bps"]
+    universe = ["security_id,price,sector,adv_quantity,increment,restricted,alpha,tcost_bps"]
     universe.extend(f"S{index:06d},{prices[index]},{names[state_of[index]]},{int(adv[index])},5,false,{alphas[index]:.6f},25" for index in range(securities))
     (root / "universe.csv").write_text("\n".join(universe) + "\n")
 
@@ -116,7 +116,7 @@ def write_book(root: Path, rng: np.random.Generator, *, portfolios: int, securit
     (root / "portfolios.csv").write_text("\n".join(["portfolio_id,solve_order", *(f"{portfolio_id},{index}" for index, portfolio_id in enumerate(portfolio_ids))]) + "\n")
 
     mandates = ["portfolio_id,sector"]
-    holdings = ["portfolio_id,security_id,quantity,avg_cost,acquired_on"]
+    holdings = ["portfolio_id,security_id,lot_id,quantity,avg_cost,acquired_on"]
     details = ["portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,max_weight,max_turnover,max_adv_participation,min_trade_notional,cash_lb,cash_ub"]
     rows: list[tuple[str, str, str, str]] = [CONSTRAINT_COLUMNS]
     nav = Decimal(10_000_000)
@@ -133,7 +133,7 @@ def write_book(root: Path, rng: np.random.Generator, *, portfolios: int, securit
             cost = (prices[security] * Decimal(int(rng.integers(80, 100))) / 100).quantize(
                 Decimal("0.01")
             )  # gains only: a harvestable loss is the tax term's wash-trade refusal, not a scheduling question
-            holdings.append(f"{portfolio_id},S{security:06d},{quantity},{cost},2025-07-01T00:00:00Z")
+            holdings.append(f"{portfolio_id},S{security:06d},L1,{quantity},{cost},2025-07-01T00:00:00Z")
         details.append(f"{portfolio_id},{portfolio_id} {sleeve.code} muni,{sleeve.code},{sleeve.st_tax_rate},{sleeve.lt_tax_rate},{nav // 8},{nav},{cap},1,0.25,0,0,0.15")
         rows.extend(_constraint_rows(portfolio_id, sleeve))
     (root / "mandates.csv").write_text("\n".join(mandates) + "\n")

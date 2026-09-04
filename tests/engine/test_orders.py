@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 import numpy as np
+import pandas as pd
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -60,12 +61,12 @@ def test_fractional_shares_round_to_the_nearest_share(make: Factories) -> None:
     assert orders["security_id"].tolist() == ["B", "C"]
     assert orders["side"].tolist() == ["SELL", "BUY"]
     assert orders["quantity"].tolist() == [1, 2]
-    assert orders["unrounded_shares"].iloc[1] == pytest.approx(1.5)
+    assert orders["unrounded_quantity"].iloc[1] == pytest.approx(1.5)
 
 
 def test_lots_round_down_to_a_multiple(make: Factories, frames: Frames) -> None:
     universe = frames.three_security_universe()
-    universe.loc[2, "lot_size"] = 100
+    universe.loc[2, "increment"] = 100
     output = built(make, universe=universe)
     w = output.spec.w0 + np.array([0.0, 0.0, 25_050 * 10 / 1e6])
     orders = solution_to_orders(output.spec, solution_at(output.spec, w), output.order_inputs, run_id="r")
@@ -78,7 +79,7 @@ def test_trades_below_the_minimum_notional_are_dropped(make: Factories) -> None:
     assert orders["security_id"].tolist() == ["C"]
 
 
-def test_sells_never_exceed_the_shares_held(make: Factories) -> None:
+def test_sells_never_exceed_the_quantity_held(make: Factories) -> None:
     output = built(make)
     w = np.array([-0.2, 0.7, 0.5])
     orders = solution_to_orders(output.spec, solution_at(output.spec, w), output.order_inputs, run_id="r")
@@ -106,8 +107,10 @@ def test_misaligned_inputs_are_rejected(make: Factories) -> None:
     inputs = OrderInputs(
         security_ids=("A", "B"),
         price=(Decimal(1), Decimal(1)),
-        shares_held=(0, 0),
-        lot_size=(1, 1),
+        accrued_interest=(Decimal(0), Decimal(0)),
+        quantity_held=(0, 0),
+        increment=(1, 1),
+        min_denomination=(1, 1),
         w0=(Decimal(0), Decimal(0)),
         ub=(Decimal(1), Decimal(1)),
         nav=Decimal(1),
@@ -136,7 +139,7 @@ def test_drift_is_zero_for_exact_orders_and_bounded_for_lots(make: Factories, fr
     assert report.max_weight_error == 0.0
     assert report.passed
     universe = frames.three_security_universe()
-    universe.loc[2, "lot_size"] = 100
+    universe.loc[2, "increment"] = 100
     lots = built(make, universe=universe)
     w = lots.spec.w0 + np.array([0.0, 0.0, 25_050 * 10 / 1e6])
     lot_solution = solution_at(lots.spec, w)
@@ -165,6 +168,27 @@ def test_orders_that_round_into_a_breach_fail_verification_unless_the_row_allows
     assert report_under(typed_row("cash_limit", "cash_floor", direction=">=", bounds={"scalar": "cash_lb"}, tolerance="0.00001")) == ()
 
 
+def test_bond_quantities_honour_the_increment_the_minimum_piece_and_accrued_interest(make: Factories, frames: Frames) -> None:
+    """A bond at 0.98 clean with 0.01 accrued, traded in 1,000s with a 5,000 minimum piece, on a book of 100,000 that holds 6,000 of it."""
+    universe = frames.universe({"security_id": "A", "price": Decimal("0.98"), "accrued_interest": Decimal("0.01"), "increment": 1000, "min_denomination": 5000})
+    output = built(make, universe=universe, holdings=frames.holdings({"quantity": 6000, "avg_cost": Decimal("0.95")}), details=make.details(nav=Decimal(100_000), cash=Decimal(94_060)))
+    assert output.spec.price.tolist() == [0.99] and output.spec.w0.tolist() == [pytest.approx(0.0594)], "the spec values a unit dirty"
+
+    def orders_for(units: float) -> pd.DataFrame:
+        return solution_to_orders(output.spec, solution_at(output.spec, output.spec.w0 + np.array([units * 0.99 / 100_000])), output.order_inputs, run_id="r")
+
+    buy = orders_for(2400)
+    assert buy[["side", "quantity", "reference_price", "accrued_interest", "notional"]].to_dict("records") == [
+        {"side": "BUY", "quantity": 2000, "reference_price": Decimal("0.98"), "accrued_interest": Decimal("0.01"), "notional": Decimal("1980.00")}
+    ], "2,400 rounds down to the increment, and the notional is at the dirty price"
+    assert orders_for(-3000)["quantity"].tolist() == [1000], "selling 3,000 would leave 3,000, below the minimum piece; the sell shrinks to leave exactly 5,000"
+    assert orders_for(-6000)[["side", "quantity"]].to_dict("records") == [{"side": "SELL", "quantity": 6000}], "a full liquidation goes out whole"
+    empty = built(make, universe=universe, holdings=frames.holdings({"quantity": 0, "avg_cost": Decimal("0.95")}), details=make.details(nav=Decimal(100_000), cash=Decimal(100_000)))
+    assert solution_to_orders(empty.spec, solution_at(empty.spec, np.array([4000 * 0.99 / 100_000])), empty.order_inputs, run_id="r").empty, (
+        "4,000 from nothing cannot reach the minimum piece, so no order"
+    )
+
+
 def test_drift_counts_orders_dropped_by_the_dust_filter(make: Factories) -> None:
     output = built(make, details=make.details(min_trade_notional=Decimal(200_000)))
     solution = solution_at(output.spec, HAND_OPTIMUM)
@@ -179,13 +203,13 @@ def test_orders_respect_holdings_lots_and_the_drift_bound(weights: list[float]) 
     total = sum(weights) or 1.0
     w = np.array([weight / total for weight in weights])
     universe = make_portfolio_data().universe
-    universe.loc[2, "lot_size"] = 7
+    universe.loc[2, "increment"] = 7
     data = make_portfolio_data(universe=universe)
     output = Built(standard(data), order_inputs(data, standard(data)))
     solution = solution_at(output.spec, w)
     orders = solution_to_orders(output.spec, solution, output.order_inputs, run_id="r")
-    held = dict(zip(output.order_inputs.security_ids, output.order_inputs.shares_held, strict=True))
-    lots = dict(zip(output.order_inputs.security_ids, output.order_inputs.lot_size, strict=True))
+    held = dict(zip(output.order_inputs.security_ids, output.order_inputs.quantity_held, strict=True))
+    lots = dict(zip(output.order_inputs.security_ids, output.order_inputs.increment, strict=True))
     for security, side, quantity in zip(orders["security_id"], orders["side"], orders["quantity"], strict=True):
         assert int(quantity) % lots[str(security)] == 0
         if str(side) == "SELL":

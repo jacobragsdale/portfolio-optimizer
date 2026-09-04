@@ -90,7 +90,7 @@ def pro_rata_fill(request: SolveRequest) -> SolveResult:
     """Spread the cash above the style's floor evenly over the names the portfolio may buy — no optimizer, and no view on which name is better.
 
     A name's room is the smaller of what its upper bound allows and what is left of its ADV budget
-    after higher-priority portfolios' buys (every name, where the universe carries no ``adv_shares``);
+    after higher-priority portfolios' buys (every name, where the universe carries no ``adv_quantity``);
     a name that fills up passes its share to the rest. The verifier checks the result like any solve:
     this step honours bounds, the cash floor, and the ADV budget by construction, and sector limits
     not at all — a book with binding ones is a job for the optimizer.

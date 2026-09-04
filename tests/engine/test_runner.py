@@ -25,7 +25,7 @@ def test_the_run_reproduces_the_hand_checked_orders(tmp_path: Path, scheduler_ad
     assert isinstance(p2, PortfolioResult)
     assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P1
     assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P2, "P2 wants C too, but P1 spent C's ADV budget, so its cash goes to A"
-    assert p2.chain_state.traded_shares.tolist() == [1000.0, 0.0, 25000.0], "every buy P1 made reaches P2"
+    assert p2.chain_state.traded_quantity.tolist() == [1000.0, 0.0, 25000.0], "every buy P1 made reaches P2"
     assert p2.chain_state.predecessors == ("P1",)
     assert "adv/cumulative_participation" in p2.report.active, "why P2 did not buy C, in the report"
     run_dir = tmp_path / "run-test" / "run-test"
@@ -85,7 +85,7 @@ def test_continue_skips_the_portfolios_that_depended_on_the_failure_and_names_it
 
 
 def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_path: Path, scheduler_address: str) -> None:
-    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P2,B,6000,60", "P2,Z,6000,60")
+    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P2,B,L1,6000,60", "P2,Z,L1,6000,60")
     data_root = uncoupled_book(tmp_path, **{"holdings.csv": holdings})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
     p1, p2 = report.outcomes
@@ -96,7 +96,7 @@ def test_a_portfolio_holding_a_name_the_build_cannot_place_fails_at_build(tmp_pa
 
 
 def test_a_failed_build_is_treated_as_overlapping_everything_after_it(tmp_path: Path, scheduler_address: str) -> None:
-    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P1,B,6000,60", "P1,Z,6000,60")
+    holdings = (EXAMPLE_DATA / "holdings.csv").read_text().replace("P1,B,L1,6000,60", "P1,Z,L1,6000,60")
     data_root = example_book(tmp_path, **{"holdings.csv": holdings})
     report = execute(tmp_path, scheduler_address=scheduler_address, on_error="continue", data_root=data_root)
     p1, p2 = report.outcomes

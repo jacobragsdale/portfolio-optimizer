@@ -13,8 +13,8 @@ shipped `linear` cannot express, a constraint kind, and makes each known to a ru
   name, a group, an exposure, cash, turnover, or ADV participation is a constraint row of a shipped
   kind ([the reference](reference-run-config.md#constraints-the-constraints-dataset)). Write a kind
   only for a shape none of them has.
-- The data the kind needs is on the `ProblemSpec`: the fixed vectors (`w0`, `price`, `shares_held`,
-  `lot_size`, `lb`, `ub`), named `columns` (the derived `tax_per_dollar`, `tcost_per_dollar`, and
+- The data the kind needs is on the `ProblemSpec`: the fixed vectors (`w0`, `price`, `quantity_held`,
+  `lb`, `ub`), named `columns` (the derived `tax_per_dollar`, `tcost_per_dollar`, and
   `adv_capacity`, plus every numeric universe column beyond the schema, `alpha` included), `flags`
   (every boolean column), `groups` (every string column, as a sparse membership matrix), and
   `scalars` (every number on the account's `details` row). Read them with `spec.column(name)`,
@@ -85,7 +85,7 @@ class DiagonalRisk(TypedTerm):
   are the whole cvxpy surface the template exposes. A convex atom scaled by a negative weight is not
   DCP, and `validate-config` refuses it: every term is rendered once against a one-security dummy
   spec under the run's `order_flow` and the problem is checked for DCP compliance before any data loads.
-- A kind that reads `chain.traded_shares` sets `reads_chain: ClassVar[bool] = True`; see step 4.
+- A kind that reads `chain.traded_quantity` sets `reads_chain: ClassVar[bool] = True`; see step 4.
 - Read numbers from the spec or from the kind's own fields, never from a file or a global: the spec is
   hashed into the manifest and the term's record is written to it, so anything the term used is
   recorded.
@@ -216,9 +216,9 @@ spec scalar; a literal `"0.05"` works too. Two rows of one kind for one account 
 
 ## 5. If the kind reads earlier portfolios' results
 
-Set `reads_chain: ClassVar[bool] = True` and read `chain.traded_shares`: what higher-priority
+Set `reads_chain: ClassVar[bool] = True` and read `chain.traded_quantity`: what higher-priority
 portfolios *traded on the side the run couples through* (bought under `inflow`, sold under `outflow`), as
-whole shares aligned to `spec.security_ids`, zero wherever this portfolio cannot trade the
+quantities aligned to `spec.security_ids`, zero wherever this portfolio cannot trade the
 name on that side, with `chain.predecessors` naming what was folded. `participation_limit` is the
 worked example: `x.coupled` is the decision vector on that side and `profile.coupled(solution)` its
 numpy twin, so a constraint written against them runs under every `order_flow`; `adv_remaining(spec, chain)`

@@ -241,17 +241,7 @@ def _dry_run_spec() -> ProblemSpec:
     one = np.ones(1)
     derived = {"tax_per_dollar": np.zeros(1), "tcost_per_dollar": np.zeros(1), "adv_capacity": one}
     return ProblemSpec(
-        portfolio_id="dry-run",
-        as_of_date=datetime(2000, 1, 1, tzinfo=UTC),
-        security_ids=("DRY",),
-        nav=1.0,
-        w0=one * 0.5,
-        price=one,
-        shares_held=one * 0.5,
-        lot_size=one,
-        lb=np.zeros(1),
-        ub=one,
-        columns=derived,
+        portfolio_id="dry-run", as_of_date=datetime(2000, 1, 1, tzinfo=UTC), security_ids=("DRY",), nav=1.0, w0=one * 0.5, price=one, quantity_held=one * 0.5, lb=np.zeros(1), ub=one, columns=derived
     )
 
 

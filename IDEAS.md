@@ -137,11 +137,11 @@ window, on both sides; the directional shape is a boolean universe column (`sold
 a flag and one constraint row — `{"kind": "weight_limit", "vector": "buy", "direction": "<=",
 "bounds": "0", "scope": "sold_at_loss"}` — closing buys on those names. The blotter is fed from the
 outflow's orders by `load_run_orders` (2026-09-02), which also hands the inflow the volume each name
-lost as `adv_consumed_shares`; `configs/example_inflow_after_outflow.json` is the wiring.
+lost as `adv_consumed_quantity`; `configs/example_inflow_after_outflow.json` is the wiring.
 
 Each simplification the one-side guarantee buys (see the architecture explanation) would need to un-simplify, in this order:
 
-1. `ChainState` carries one side today (`traded_shares`, the side the run couples through); it would
+1. `ChainState` carries one side today (`traded_quantity`, the side the run couples through); it would
    need both, and the fold would read both.
 2. A chain-aware step declares which sides it produces on and consumes on, defaulting to both
    (conservative, always sound). The resolver already inspects signatures; this is one more attribute.
@@ -163,12 +163,12 @@ grow to match. The manifest's derived-graph record is how to watch that happen.
 
 ### Named chain quantities
 
-The chain carries one unsigned vector, `traded_shares`, and `Contribution.from_orders` drops the
+The chain carries one unsigned vector, `traded_quantity`, and `Contribution.from_orders` drops the
 side. Two desk conventions cannot be written against it: a wash-sale rule *within one run* — P1
 sells X at a loss and P2, the same household, must not buy X in the same rebalance — and any
 cross-account quantity that is not shares traded: notional, a count of accounts in a name, a
 household cap. The shape, if a desk asks: `ChainState` and `Contribution` carry a
-`Mapping[str, F64]` of named quantities with `traded_shares` one of them, each kind declares which
+`Mapping[str, F64]` of named quantities with `traded_quantity` one of them, each kind declares which
 quantities it reads (`reads_chain` becomes a set of names), the fold sums per quantity, and the
 mask stays as it is. What it touches: `domain/results.py` (`ChainState`, `Contribution`,
 `derive_chain_state`, the npz format and the hash), `domain/order_flow.py` (`contribution` and
@@ -257,7 +257,7 @@ harvesting stays the outflow's.
 ### The outflow feeds the inflow
 
 Done 2026-09-02, as data: `load_run_orders` reads the orders file a run's sink wrote as the next
-run's blotter (`trades`) and as `adv_consumed_shares` on the universe, which the standard build
+run's blotter (`trades`) and as `adv_consumed_quantity` on the universe, which the standard build
 subtracts from the day's volume before `adv_capacity` — one line in the build, no chain machinery;
 holdings after the sells are "holdings as of", and the cash raised is the cash the `details` row
 shows. Two runs, two manifests, one program, and the same file is what a retry over part of a book
@@ -647,8 +647,8 @@ trivial blocking — one block per order, one allocation each — and every conf
 `(blocks: Blocks[, frames: Frames][, params]) -> Blocks`. A run that configures nothing passes the trivial
 blocks straight through, so the sink's input is uniform and there is no implicit behavior to remember.
 
-The `frames` argument matters more than it looks. Netting to a lot boundary needs `lot_size`; a
-participation cap needs `adv_shares`; a sector-blocked broker needs `sector`. Those live in the assembled
+The `frames` argument matters more than it looks. Netting to a lot boundary needs `increment`; a
+participation cap needs `adv_quantity`; a sector-blocked broker needs `sector`. Those live in the assembled
 universe, not in the orders frame, and the alternative — growing `ORDERS` a column for every aggregator
 anyone might write — is how a schema dies. Hand the step the assembled frames read-only and let it take
 what it needs. What it should *not* get is the specs: `PortfolioResult` carries one per portfolio, a

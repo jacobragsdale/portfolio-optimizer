@@ -30,7 +30,7 @@ REJECT_CASES: list[tuple[str, FrameSchema, Mapping[str, object], str]] = [
     ("string where Decimal", HOLDINGS, {"avg_cost": "90"}, "finite Decimals"),
     ("non-finite Decimal", HOLDINGS, {"avg_cost": Decimal("Infinity")}, "finite Decimals"),
     ("zero price", UNIVERSE, {"price": Decimal(0)}, "price"),
-    ("lot_size zero", UNIVERSE, {"lot_size": 0}, "lot_size"),
+    ("increment zero", UNIVERSE, {"increment": 0}, "increment"),
     ("NaN alpha", UNIVERSE, {"alpha": float("nan")}, "alpha"),
     ("tax rate of one", DETAILS, {"st_tax_rate": Decimal(1)}, "st_tax_rate"),
     ("zero nav", DETAILS, {"nav": Decimal(0)}, "nav"),
@@ -102,7 +102,7 @@ def test_solve_order_is_a_priority_that_may_repeat_or_be_absent(frames: Frames) 
 
 
 def test_coerce_frame_builds_decimals_exactly_and_casts_declared_dtypes() -> None:
-    raw = pd.DataFrame({"portfolio_id": ["P1"], "security_id": ["A"], "quantity": [5], "avg_cost": ["90.10"], "acquired_on": pd.to_datetime(["2024-01-15"]).tz_localize("UTC")})
+    raw = pd.DataFrame({"portfolio_id": ["P1"], "security_id": ["A"], "lot_id": ["L1"], "quantity": [5], "avg_cost": ["90.10"], "acquired_on": pd.to_datetime(["2024-01-15"]).tz_localize("UTC")})
     coerced = validate_frame(coerce_frame(raw, HOLDINGS), HOLDINGS)
     assert coerced["avg_cost"].iloc[0] == Decimal("90.10")
     assert str(coerced["quantity"].dtype) == "Int64"

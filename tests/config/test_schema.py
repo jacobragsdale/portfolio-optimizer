@@ -79,7 +79,7 @@ REJECTED: list[tuple[str, dict[str, object], str]] = [
     ("dataset scope the engine does not have", {"datasets": example_datasets(holdings={"loader": "load_holdings", "scope": "per_security"})}, "datasets"),
     ("malformed step name", {"rules": ["1bad"]}, "rules/0"),
     ("shipped rule with required params given as a string", {"rules": ["cap_single_name"]}, "rules/0"),
-    ("shipped rule with a wrong param type", {"rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_shares": "many"}}]}, "rules/0"),
+    ("shipped rule with a wrong param type", {"rules": [{"name": "restrict_low_liquidity", "params": {"min_adv_quantity": "many"}}]}, "rules/0"),
     ("shipped rule with an unknown param", {"rules": [{"name": "add_zero_alpha", "params": {"fill": 0}}]}, "rules/0"),
     ("a term of an unknown kind", {"objective": [{"kind": "no_such_kind", "name": "x"}]}, "objective/0"),
     ("a term with an unknown field", {"objective": [{"kind": "linear", "name": "alpha", "colour": "alpha"}]}, "objective/0"),

@@ -35,7 +35,7 @@ def exclude_sector(data: PortfolioData, params: ExcludeSectorParams) -> Portfoli
     return data.with_changes(universe=universe)
 ```
 
-`sector`, `adv_shares`, `lot_size`, and `restricted` are optional universe columns, so a rule that
+`sector`, `adv_quantity`, `increment`, and `restricted` are optional universe columns, so a rule that
 needs one checks and says so, as the shipped `restrict_low_liquidity`, `restrict_to_mandate`, and `restrict_recent_trades` do;
 `restricted_flags` (in `rules.py`) is the `restricted` column, or all-false where the universe carries
 none — what every rule that freezes names starts from.

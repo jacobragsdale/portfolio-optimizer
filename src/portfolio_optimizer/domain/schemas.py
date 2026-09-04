@@ -1,7 +1,8 @@
 """The concrete frame schemas every dataset and output must satisfy.
 
-Column conventions: identifiers are ``string``; share counts are ``Int64``; money, prices, and
-weights are ``decimal``; statistical estimates (alpha, scores, loadings) are ``Float64``. The
+Column conventions: identifiers are ``string``; quantities — face amounts, in whatever unit the
+price is the value of one of — are ``Int64``; money, prices, and weights are ``decimal``;
+statistical estimates (alpha, scores, loadings) are ``Float64``. The
 engine-known frames declare what the shipped build reads and leave the rest open: ``holdings``,
 ``universe``, and ``details`` all accept columns beyond their schemas, and the build exports every
 one of them by name — a universe column as a per-security column, flag, or grouping; a details
@@ -31,11 +32,11 @@ def _cash_bounds_ordered(frame: pd.DataFrame) -> str | None:
 def _orders_notional_matches(frame: pd.DataFrame) -> str | None:
     mismatched = [
         str(security)
-        for security, quantity, price, notional in zip(frame["security_id"], frame["quantity"], frame["reference_price"], frame["notional"], strict=True)
-        if Decimal(int(quantity)) * price != notional
+        for security, quantity, price, accrued, notional in zip(frame["security_id"], frame["quantity"], frame["reference_price"], frame["accrued_interest"], frame["notional"], strict=True)
+        if Decimal(int(quantity)) * (price + accrued) != notional
     ]
     if mismatched:
-        return f"notional != quantity * reference_price for {mismatched}"
+        return f"notional != quantity * (reference_price + accrued_interest) for {mismatched}"
     return None
 
 
@@ -75,23 +76,27 @@ HOLDINGS = FrameSchema(
     columns=(
         ColumnSpec("portfolio_id", "string"),
         ColumnSpec("security_id", "string"),
+        ColumnSpec("lot_id", "string"),
         ColumnSpec("quantity", "Int64", ge=ZERO),
         ColumnSpec("avg_cost", "decimal", ge=ZERO),
         ColumnSpec("acquired_on", "datetime_utc"),
     ),
-    key=("portfolio_id", "security_id"),
-    allow_extra=True,  # analytics columns joined or computed per position ride along; the shipped build ignores them
+    key=("portfolio_id", "security_id", "lot_id"),
+    allow_extra=True,  # analytics columns joined or computed per lot ride along; the shipped build ignores them
 )
+"""One tax lot per row: what an account holds of a name, at what cost, since when. A source that keeps positions rather than lots writes one row per position under any ``lot_id``; the shipped build sums a name's lots and taxes a sale of them pro rata, and does no lot selection."""
 
 UNIVERSE = FrameSchema(
     name="universe",
     columns=(
         ColumnSpec("security_id", "string"),
         ColumnSpec("price", "decimal", gt=ZERO),
+        ColumnSpec("accrued_interest", "decimal", required=False, ge=ZERO),
         ColumnSpec("sector", "string", required=False),
-        ColumnSpec("adv_shares", "Int64", required=False, ge=ZERO),
-        ColumnSpec("adv_consumed_shares", "Int64", required=False, ge=ZERO),
-        ColumnSpec("lot_size", "Int64", required=False, ge=ONE),
+        ColumnSpec("adv_quantity", "Int64", required=False, ge=ZERO),
+        ColumnSpec("adv_consumed_quantity", "Int64", required=False, ge=ZERO),
+        ColumnSpec("increment", "Int64", required=False, ge=ONE),
+        ColumnSpec("min_denomination", "Int64", required=False, ge=ONE),
         ColumnSpec("restricted", "bool", required=False),
         ColumnSpec("alpha", "Float64", required=False),
         ColumnSpec("tcost_bps", "decimal", required=False, ge=ZERO),
@@ -101,7 +106,7 @@ UNIVERSE = FrameSchema(
     key=("security_id",),
     allow_extra=True,  # analytics columns joined or computed per security; the build exports every extra by name
 )
-"""Every security the book may trade. Only ``security_id`` and ``price`` are required: ``sector`` is one grouping among any string column, ``adv_shares`` enables the participation constraints and ``adv_consumed_shares`` is what an earlier run already took of it, ``lot_size`` defaults to one share, ``restricted`` to false."""
+"""Every security the book may trade. Only ``security_id`` and ``price`` are required. ``price`` is the clean value of one unit of quantity — a bond quoted per 100 face arrives divided by 100 — and ``accrued_interest``, in the same units and zero by default, is added to it for every valuation. ``sector`` is one grouping among any string column; ``adv_quantity`` enables the participation constraints and ``adv_consumed_quantity`` is what an earlier run already took of it; ``increment`` (default 1) is what a trade is a multiple of and ``min_denomination`` (default 1) the smallest position a trade may leave; ``restricted`` defaults to false."""
 
 ORDER_SIDES = frozenset({"BUY", "SELL"})
 
@@ -113,9 +118,10 @@ ORDERS = FrameSchema(
         ColumnSpec("side", "string", allowed=ORDER_SIDES),
         ColumnSpec("quantity", "Int64", gt=ZERO),
         ColumnSpec("reference_price", "decimal", gt=ZERO),
+        ColumnSpec("accrued_interest", "decimal", ge=ZERO),
         ColumnSpec("notional", "decimal", gt=ZERO),
         ColumnSpec("target_weight", "Float64"),
-        ColumnSpec("unrounded_shares", "Float64"),
+        ColumnSpec("unrounded_quantity", "Float64"),
         ColumnSpec("spec_hash", "string"),
         ColumnSpec("run_id", "string"),
         ColumnSpec("as_of_date", "datetime_utc"),

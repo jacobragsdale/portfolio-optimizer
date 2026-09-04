@@ -29,7 +29,7 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
     """Write a random book: holdings and details for every account, per-portfolio buy lists, tying priorities; one shared universe."""
     root.mkdir()
     portfolio_ids = [f"P{index}" for index in range(1, portfolios + 1)]
-    holdings = ["portfolio_id,security_id,quantity,avg_cost,acquired_on"]
+    holdings = ["portfolio_id,security_id,lot_id,quantity,avg_cost,acquired_on"]
     details = ["portfolio_id,name,state,st_tax_rate,lt_tax_rate,cash,nav,max_weight,max_turnover,max_adv_participation,min_trade_notional,cash_lb,cash_ub"]
     style = "1,2,0.25,0,0,0"  # the example's limits, which bind nothing here: the schedule is what this test is about
     buy_list = ["portfolio_id,security_id"]
@@ -37,7 +37,7 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
         nav = 0
         for security in sorted(rng.sample(SECURITIES, k=rng.randint(1, 3))):
             quantity = rng.randint(1, 4) * 1000
-            holdings.append(f"{portfolio_id},{security},{quantity},{PRICES[security]},2024-01-15T00:00:00Z")
+            holdings.append(f"{portfolio_id},{security},L1,{quantity},{PRICES[security]},2024-01-15T00:00:00Z")
             nav += quantity * PRICES[security]
         details.append(f"{portfolio_id},{portfolio_id} book,NY,0.40,0.20,0,{nav},{style}")
         buy_list.extend(f"{portfolio_id},{security}" for security in sorted(rng.sample(SECURITIES, k=rng.randint(1, 3))))
@@ -45,10 +45,12 @@ def synthetic_book(root: Path, rng: random.Random, portfolios: int = 4) -> None:
     (root / "details.csv").write_text("\n".join(details) + "\n")
     (root / "portfolios.csv").write_text("\n".join(["portfolio_id,solve_order", *(f"{portfolio_id},{rng.randint(0, 1)}" for portfolio_id in portfolio_ids)]) + "\n")
     (root / "buy_list.csv").write_text("\n".join(buy_list) + "\n")
-    (root / "buy_universe_parameters.csv").write_text("name,value\nmin_adv_shares,1000\n")
+    (root / "buy_universe_parameters.csv").write_text("name,value\nmin_adv_quantity,1000\n")
     (root / "trades.csv").write_text("portfolio_id,security_id,side,traded_on\n")
     (root / "global_parameters.csv").write_text("name,value\nrisk_aversion,2.5\n")
-    (root / "universe.csv").write_text("\n".join(["security_id,price,sector,adv_shares,lot_size,restricted", *(f"{security},{PRICES[security]},TECH,20000,1,false" for security in SECURITIES)]) + "\n")
+    (root / "universe.csv").write_text(
+        "\n".join(["security_id,price,sector,adv_quantity,increment,restricted", *(f"{security},{PRICES[security]},TECH,20000,1,false" for security in SECURITIES)]) + "\n"
+    )
     (root / "signals.csv").write_text("\n".join(["security_id,alpha,tcost_bps", *(f"{security},{ALPHAS[security]},5" for security in SECURITIES)]) + "\n")
     constraint_frame(SHIPPED_CONSTRAINTS, portfolio_id=portfolio_ids[0]).iloc[0:0].to_csv(root / "constraints.csv", index=False)
     pd.concat([constraint_frame(SHIPPED_CONSTRAINTS, portfolio_id=portfolio_id) for portfolio_id in portfolio_ids]).to_csv(root / "constraints.csv", index=False)

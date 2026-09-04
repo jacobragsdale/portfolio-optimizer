@@ -33,7 +33,7 @@ RUN_SCOPED = "*"
 TRACEBACK_LIMIT = 32_768
 """Characters of a formatted traceback kept; anything longer is elided in the middle, never at the ends."""
 
-VECTOR_FIELDS: tuple[str, ...] = ("w0", "price", "shares_held", "lot_size", "lb", "ub")
+VECTOR_FIELDS: tuple[str, ...] = ("w0", "price", "quantity_held", "lb", "ub")
 """The per-security vectors every spec carries; ``spec.column`` reads these by name beside the exported columns."""
 
 
@@ -59,11 +59,11 @@ def _readonly[T: np.generic](array: NDArray[T], dtype: type[T]) -> NDArray[T]:
     return result
 
 
-def _aligned_shares(security_ids: tuple[str, ...], traded_shares: F64) -> F64:
-    """Freeze a per-security share vector and insist it lines up with the ids; what a chain state and a contribution both carry."""
-    frozen = _readonly(traded_shares, np.float64)
+def _aligned_quantity(security_ids: tuple[str, ...], traded_quantity: F64) -> F64:
+    """Freeze a per-security quantity vector and insist it lines up with the ids; what a chain state and a contribution both carry."""
+    frozen = _readonly(traded_quantity, np.float64)
     if frozen.shape != (len(security_ids),):
-        msg = f"traded_shares has shape {frozen.shape}, expected {(len(security_ids),)}"
+        msg = f"traded_quantity has shape {frozen.shape}, expected {(len(security_ids),)}"
         raise ValueError(msg)
     return frozen
 
@@ -117,8 +117,9 @@ class ProblemSpec:
 
     Every vector is aligned to ``security_ids`` and expressed as a fraction of NAV. The spec is
     independent of prior portfolios; chain-aware constraints combine it with a
-    :class:`ChainState` at solve time. Six vectors are fixed — the starting weights, price, shares
-    held, lot size, and the per-security bounds the build derived — and everything else is named:
+    :class:`ChainState` at solve time. Five vectors are fixed — the starting weights, the price (the
+    value of one unit of quantity, accrued interest included), the quantity held, and the per-security
+    bounds the build derived — and everything else is named:
     ``columns`` are per-security numbers (a derived ``tax_per_dollar`` beside an exported ``alpha``),
     ``flags`` are per-security booleans, ``groups`` are categorical columns as membership matrices,
     and ``scalars`` are per-account numbers (``cash_ub``, ``max_turnover``, and whatever else the
@@ -133,8 +134,7 @@ class ProblemSpec:
     nav: float
     w0: F64
     price: F64
-    shares_held: F64
-    lot_size: F64
+    quantity_held: F64
     lb: F64
     ub: F64
     columns: Mapping[str, F64] = field(default_factory=dict)
@@ -175,8 +175,6 @@ class ProblemSpec:
             yield "nav must be positive"
         if np.any(self.price <= 0.0):
             yield "price must be positive"
-        if np.any(self.lot_size < 1.0):
-            yield "lot_size must be at least 1"
 
     def _structural_failures(self) -> Iterator[str]:
         n = len(self.security_ids)
@@ -355,13 +353,17 @@ class ProblemSpec:
 class OrderInputs:
     """Exact (Decimal/int) per-security inputs the order step needs, aligned like the spec.
 
-    Built alongside the spec so orders never reconstruct money from float64.
+    Built alongside the spec so orders never reconstruct money from float64. ``price`` is clean and
+    ``accrued_interest`` in the same units; their sum values a unit. ``increment`` is what a trade is a
+    multiple of, ``min_denomination`` the smallest position a trade may leave.
     """
 
     security_ids: tuple[str, ...]
     price: tuple[Decimal, ...]
-    shares_held: tuple[int, ...]
-    lot_size: tuple[int, ...]
+    accrued_interest: tuple[Decimal, ...]
+    quantity_held: tuple[int, ...]
+    increment: tuple[int, ...]
+    min_denomination: tuple[int, ...]
     w0: tuple[Decimal, ...]
     ub: tuple[Decimal, ...]
     nav: Decimal
@@ -369,7 +371,7 @@ class OrderInputs:
 
     def __post_init__(self) -> None:
         n = len(self.security_ids)
-        if not (len(self.price) == len(self.shares_held) == len(self.lot_size) == len(self.w0) == len(self.ub) == n):
+        if not (len(self.price) == len(self.accrued_interest) == len(self.quantity_held) == len(self.increment) == len(self.min_denomination) == len(self.w0) == len(self.ub) == n):
             msg = f"order inputs are not aligned to {n} securities"
             raise ValueError(msg)
 
@@ -384,7 +386,7 @@ class DriftReport:
 
     @property
     def passed(self) -> bool:
-        """True when rounding stayed within the bound implied by lot sizes and the dust filter."""
+        """True when rounding stayed within the bound implied by the increments, the minimum pieces, and the dust filter."""
         return self.max_weight_error <= self.tolerance
 
 
@@ -567,59 +569,59 @@ class RuleAuditRecord(StrictModel):
 class ChainState:
     """What higher-priority portfolios traded, on the side the run couples through, among the securities this one can trade there; aligned to one spec.
 
-    ``traded_shares[i]`` is the whole shares predecessors traded of ``security_ids[i]`` on that side —
+    ``traded_quantity[i]`` is the quantity predecessors traded of ``security_ids[i]`` on that side —
     bought in a run that couples through buys, sold in one that couples through sells — always
     positive, and zero wherever this portfolio cannot trade the security on that side: a run couples
     through one side only, so a security outside this portfolio's tradable set carries no chain
     state. That mask is what makes the state a function of the *overlapping* predecessors alone — the
     same array whether the run folded every earlier portfolio or only those sharing a tradable name.
     ``predecessors`` names what was folded, in solve order; it is provenance, not an input, so
-    :meth:`content_hash` covers the ids and the shares only.
+    :meth:`content_hash` covers the ids and the quantities only.
     """
 
     security_ids: tuple[str, ...]
-    traded_shares: F64
+    traded_quantity: F64
     predecessors: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "traded_shares", _aligned_shares(self.security_ids, self.traded_shares))
+        object.__setattr__(self, "traded_quantity", _aligned_quantity(self.security_ids, self.traded_quantity))
 
     def content_hash(self) -> str:
-        """Deterministic sha256 of the chain inputs a solve depended on; independent of which predecessors produced them, and of what the shares are called."""
+        """Deterministic sha256 of the chain inputs a solve depended on; independent of which predecessors produced them, and of the key the file stores them under."""
         digest = hashlib.sha256()
         digest.update(json.dumps({"security_ids": list(self.security_ids)}).encode())
-        digest.update(np.ascontiguousarray(self.traded_shares + 0.0).tobytes())
+        digest.update(np.ascontiguousarray(self.traded_quantity + 0.0).tobytes())
         return digest.hexdigest()
 
     @classmethod
     def empty(cls, security_ids: tuple[str, ...]) -> Self:
         """The state of a portfolio with no predecessors."""
-        return cls(security_ids=security_ids, traded_shares=np.zeros(len(security_ids)))
+        return cls(security_ids=security_ids, traded_quantity=np.zeros(len(security_ids)))
 
     def to_npz(self, path: Path) -> None:
         """Persist the chain inputs a solve depended on."""
         meta = {"security_ids": list(self.security_ids), "predecessors": list(self.predecessors)}
-        np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(meta, sort_keys=True)), traded_shares=self.traded_shares)
+        np.savez(path, allow_pickle=False, __meta__=np.array(json.dumps(meta, sort_keys=True)), traded_quantity=self.traded_quantity)
 
     @classmethod
     def from_npz(cls, path: Path) -> Self:
         """Load a chain state written by :meth:`to_npz`."""
         with np.load(path, allow_pickle=False) as data:
             meta = json.loads(str(data["__meta__"]))
-            shares = np.asarray(data["traded_shares"], dtype=np.float64)
-        return cls(security_ids=tuple(str(s) for s in meta["security_ids"]), traded_shares=shares, predecessors=tuple(str(p) for p in meta["predecessors"]))
+            quantity = np.asarray(data["traded_quantity"], dtype=np.float64)
+        return cls(security_ids=tuple(str(s) for s in meta["security_ids"]), traded_quantity=quantity, predecessors=tuple(str(p) for p in meta["predecessors"]))
 
 
 @dataclass(frozen=True, slots=True, eq=False)
 class Contribution:
-    """One solved portfolio's trades on the side the run couples through, as the slim object a dependent solve receives: whole shares traded, by security."""
+    """One solved portfolio's trades on the side the run couples through, as the slim object a dependent solve receives: the quantity traded, by security."""
 
     portfolio_id: str
     security_ids: tuple[str, ...]
-    traded_shares: F64
+    traded_quantity: F64
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "traded_shares", _aligned_shares(self.security_ids, self.traded_shares))
+        object.__setattr__(self, "traded_quantity", _aligned_quantity(self.security_ids, self.traded_quantity))
 
     @classmethod
     def from_orders(cls, portfolio_id: str, orders: pd.DataFrame, side: str | None = None) -> Self:
@@ -628,7 +630,7 @@ class Contribution:
         return cls(
             portfolio_id=portfolio_id,
             security_ids=tuple(str(security) for security in rows["security_id"]),
-            traded_shares=np.array([float(int(quantity)) for quantity in rows["quantity"]], dtype=np.float64),
+            traded_quantity=np.array([float(int(quantity)) for quantity in rows["quantity"]], dtype=np.float64),
         )
 
 
@@ -709,7 +711,7 @@ def derive_chain_state(security_ids: tuple[str, ...], tradable: Flags, contribut
         raise ValueError(msg)
     totals: dict[str, float] = {}
     for contribution in contributions:
-        for security, shares in zip(contribution.security_ids, contribution.traded_shares, strict=True):
-            totals[security] = totals.get(security, 0.0) + float(shares)
+        for security, quantity in zip(contribution.security_ids, contribution.traded_quantity, strict=True):
+            totals[security] = totals.get(security, 0.0) + float(quantity)
     projected = np.array([totals.get(security, 0.0) for security in security_ids], dtype=np.float64)
-    return ChainState(security_ids=security_ids, traded_shares=np.where(tradable, projected, 0.0), predecessors=tuple(contribution.portfolio_id for contribution in contributions))
+    return ChainState(security_ids=security_ids, traded_quantity=np.where(tradable, projected, 0.0), predecessors=tuple(contribution.portfolio_id for contribution in contributions))

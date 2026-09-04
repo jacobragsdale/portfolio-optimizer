@@ -52,7 +52,7 @@ class LiquidityParams(Params):
     """Where :func:`restrict_low_liquidity` reads its threshold: an extra dataset of named values, not a number in the config."""
 
     dataset: str = Field(default="buy_universe_parameters", min_length=1)
-    key: str = Field(default="min_adv_shares", min_length=1)
+    key: str = Field(default="min_adv_quantity", min_length=1)
 
 
 def restrict_low_liquidity(data: PortfolioData, params: LiquidityParams) -> PortfolioData:
@@ -67,11 +67,11 @@ def restrict_low_liquidity(data: PortfolioData, params: LiquidityParams) -> Port
     except KeyError:
         msg = f"no extra dataset {params.dataset!r} to read {params.key!r} from; the run carries {sorted(data.extras)}"
         raise ValueError(msg) from None
-    if "adv_shares" not in data.universe.columns:
-        msg = "restrict_low_liquidity needs the universe's adv_shares column, and this universe has none"
+    if "adv_quantity" not in data.universe.columns:
+        msg = "restrict_low_liquidity needs the universe's adv_quantity column, and this universe has none"
         raise ValueError(msg)
     minimum = parameter(frame, params.key)
-    illiquid = data.universe["adv_shares"] < minimum
+    illiquid = data.universe["adv_quantity"] < minimum
     return data.with_changes(universe=data.universe.assign(restricted=(restricted_flags(data.universe) | illiquid).astype("bool")))
 
 

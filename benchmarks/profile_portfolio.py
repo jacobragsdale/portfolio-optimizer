@@ -83,8 +83,8 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
             "security_id": pd.Series(ids, dtype="string"),
             "price": pd.Series(prices, dtype="object"),
             "sector": pd.Series([sector_names[int(index)] for index in sector_of], dtype="string"),
-            "adv_shares": pd.Series(adv, dtype="Int64"),
-            "lot_size": pd.Series([1] * securities, dtype="Int64"),
+            "adv_quantity": pd.Series(adv, dtype="Int64"),
+            "increment": pd.Series([1] * securities, dtype="Int64"),
             "restricted": pd.Series([False] * securities, dtype="bool"),
             "tcost_bps": pd.Series([Decimal(5)] * securities, dtype="object"),
             "alpha": pd.Series(rng.uniform(-0.05, 0.05, size=securities), dtype="Float64"),
@@ -96,6 +96,7 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
         {
             "portfolio_id": pd.Series(["P1"] * held, dtype="string"),
             "security_id": pd.Series([ids[int(index)] for index in held_indexes], dtype="string"),
+            "lot_id": pd.Series(["L1"] * held, dtype="string"),
             "quantity": pd.Series([int(per_position / prices[int(index)]) for index in held_indexes], dtype="Int64"),
             "avg_cost": pd.Series(
                 [(prices[int(index)] * Decimal(int(factor)) / 100).quantize(Decimal("0.01")) for index, factor in zip(held_indexes, rng.integers(50, 100, size=held), strict=True)], dtype="object"
@@ -123,7 +124,7 @@ def synthetic_book(rng: np.random.Generator, *, securities: int, sectors: int, h
         constraint_row("P1", "group_limit", "sector_caps", {"direction": "<=", "column": "sector", "bounds": dict.fromkeys(sector_names, "0.5")})
     )  # K bands in one row: what the block costs at K is part of what this measures
     constraints = pd.DataFrame({column: pd.Series([row[index] for row in rows], dtype="string") for index, column in enumerate(CONSTRAINT_COLUMNS)})
-    extras = {"buy_universe_parameters": pd.DataFrame({"name": pd.Series(["min_adv_shares"], dtype="string"), "value": pd.Series([Decimal(1000)], dtype="object")}), "trades": empty_frame(TRADES)}
+    extras = {"buy_universe_parameters": pd.DataFrame({"name": pd.Series(["min_adv_quantity"], dtype="string"), "value": pd.Series([Decimal(1000)], dtype="object")}), "trades": empty_frame(TRADES)}
     return Book(details=details, holdings=holdings, universe=universe, constraints=constraints, extras=extras)
 
 

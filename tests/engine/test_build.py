@@ -9,6 +9,7 @@ import pytest
 from scipy.sparse import csr_array
 
 from portfolio_optimizer.domain.constraints import adv_remaining
+from portfolio_optimizer.domain.data import PortfolioDataError
 from portfolio_optimizer.domain.results import ChainState
 from portfolio_optimizer.engine.build import LONG_TERM_HOLDING, BuildError, StandardParams, order_inputs, standard, to_float64
 from tests.conftest import AS_OF, Factories, Frames
@@ -19,7 +20,7 @@ def test_spec_aligns_to_the_sorted_universe(make: Factories) -> None:
     spec = standard(data)
     assert spec.security_ids == ("A", "B", "C")
     np.testing.assert_allclose(spec.w0, [0.5, 0.5, 0.0])
-    np.testing.assert_array_equal(spec.shares_held, [5000.0, 10000.0, 0.0])
+    np.testing.assert_array_equal(spec.quantity_held, [5000.0, 10000.0, 0.0])
     np.testing.assert_array_equal(spec.price, [100.0, 50.0, 10.0])
     np.testing.assert_array_equal(spec.lb, [0.0, 0.0, 0.0])
     np.testing.assert_array_equal(spec.ub, [1.0, 1.0, 1.0])
@@ -28,7 +29,7 @@ def test_spec_aligns_to_the_sorted_universe(make: Factories) -> None:
     np.testing.assert_array_equal(spec.group("sector").matrix.toarray(), [[1.0, 1.0, 1.0]])
     inputs = order_inputs(data, spec)
     assert inputs.price == (Decimal(100), Decimal(50), Decimal(10))
-    assert inputs.shares_held == (5000, 10000, 0)
+    assert inputs.quantity_held == (5000, 10000, 0)
     assert inputs.nav == Decimal(1_000_000)
     assert inputs.ub == (Decimal(1), Decimal(1), Decimal(1)), "the bounds the order step clamps to come from the spec, whichever build made it"
 
@@ -51,13 +52,12 @@ def test_every_string_column_is_a_grouping_and_restricted_is_a_flag(make: Factor
 
 
 def test_a_universe_of_only_ids_and_prices_builds(make: Factories, frames: Frames) -> None:
-    universe = frames.three_security_universe().drop(columns=["sector", "adv_shares", "lot_size", "restricted", "tcost_bps"])
+    universe = frames.three_security_universe().drop(columns=["sector", "adv_quantity", "increment", "restricted", "tcost_bps"])
     spec = standard(make.portfolio_data(universe=universe))
-    np.testing.assert_array_equal(spec.lot_size, [1.0, 1.0, 1.0])
     assert set(spec.columns) == {"alpha", "tax_per_dollar"} and spec.groups == {} and spec.flags == {}, (
         "what the universe does not carry the spec does not have, and a constraint that needs it says so"
     )
-    assert order_inputs(make.portfolio_data(universe=universe), spec).lot_size == (1, 1, 1)
+    assert order_inputs(make.portfolio_data(universe=universe), spec).increment == (1, 1, 1)
 
 
 def test_current_weights_sum_to_one_minus_cash(make: Factories) -> None:
@@ -72,6 +72,27 @@ def test_tax_per_dollar_switches_to_the_long_term_rate_strictly_after_a_year(mak
     spec = standard(make.portfolio_data(holdings=holdings))
     assert spec.column("tax_per_dollar")[0] == pytest.approx(0.1 * rate, abs=1e-15)
     assert spec.column("tax_per_dollar")[1:].tolist() == [0.0, 0.0]
+
+
+def test_lots_of_one_name_are_summed_and_taxed_pro_rata(make: Factories, frames: Frames) -> None:
+    """Two lots of A against a price of 100: 1,000 bought at 90 two years ago (a long-term gain) and 1,000 at 110 last month (a short-term loss). The build holds 2,000 and taxes a pro-rata sale: (10 at 20% less 10 at 40%) / 2 per dollar of proceeds."""
+    holdings = frames.holdings(
+        {"security_id": "A", "lot_id": "old", "quantity": 1000, "avg_cost": Decimal(90)},
+        {"security_id": "A", "lot_id": "new", "quantity": 1000, "avg_cost": Decimal(110), "acquired_on": AS_OF - timedelta(days=30)},
+    )
+    spec = standard(make.portfolio_data(holdings=holdings))
+    assert spec.quantity_held[0] == 2000.0
+    assert spec.column("tax_per_dollar")[0] == pytest.approx(-0.01, abs=1e-15)
+    with pytest.raises(PortfolioDataError, match="lot_id"):
+        make.portfolio_data(holdings=frames.holdings({"security_id": "A", "quantity": 1000}, {"security_id": "A", "quantity": 1000}))
+
+
+def test_accrued_interest_values_the_book_and_the_tax_is_on_the_clean_price(make: Factories, frames: Frames) -> None:
+    """A at 100 clean carries 2 of accrued: the 5,000 held are worth 510,000, and the gain on a cost of 90 is 10 per unit taxed at the long-term rate over 102 of proceeds."""
+    universe = frames.three_security_universe().assign(accrued_interest=pd.Series([Decimal(2), Decimal(0), Decimal(0)], dtype="object"))
+    spec = standard(make.portfolio_data(universe=universe))
+    assert spec.price[0] == 102.0 and spec.w0[0] == pytest.approx(0.51)
+    assert spec.column("tax_per_dollar")[0] == pytest.approx(10 * 0.2 / 102, abs=1e-15)
 
 
 def test_a_loss_gives_a_negative_tax_per_dollar(make: Factories, frames: Frames) -> None:
@@ -95,19 +116,19 @@ def test_the_derived_columns_need_the_accounts_rates_and_participation(make: Fac
 
 def test_adv_capacity_is_net_of_what_an_earlier_run_consumed(make: Factories, frames: Frames) -> None:
     """A's day is half spent, B's whole day is, and C's is oversubscribed: the budget is the participation times what is left, never negative."""
-    universe = frames.three_security_universe().assign(adv_consumed_shares=pd.Series([500_000, 1_000_000, 200_000], dtype="Int64"))
+    universe = frames.three_security_universe().assign(adv_consumed_quantity=pd.Series([500_000, 1_000_000, 200_000], dtype="Int64"))
     spec = standard(make.portfolio_data(universe=universe))
     np.testing.assert_allclose(spec.column("adv_capacity"), [50.0, 0.0, 0.0])
-    assert "adv_consumed_shares" not in spec.columns, "folded into the capacity, like adv_shares, not exported again"
+    assert "adv_consumed_quantity" not in spec.columns, "folded into the capacity, like adv_quantity, not exported again"
 
 
 def test_an_earlier_runs_consumption_and_a_predecessors_leave_the_same_budget(make: Factories, frames: Frames) -> None:
     """ADV 1,000, participation 10%, 50 shares already traded: 50 shares of budget left, whether the 50 came from an earlier run's orders or from a predecessor in this one."""
-    universe = frames.universe({"security_id": "A", "price": Decimal(100), "adv_shares": 1000, "adv_consumed_shares": 50})
+    universe = frames.universe({"security_id": "A", "price": Decimal(100), "adv_quantity": 1000, "adv_consumed_quantity": 50})
     data = make.portfolio_data(holdings=frames.holdings({"security_id": "A"}), universe=universe, details=make.details(max_adv_participation=Decimal("0.1")))
     after_earlier_run = standard(data)
-    fresh = standard(data.with_changes(universe=universe.drop(columns=["adv_consumed_shares"])))
-    after_predecessor = adv_remaining(fresh, ChainState(security_ids=fresh.security_ids, traded_shares=np.array([50.0])))
+    fresh = standard(data.with_changes(universe=universe.drop(columns=["adv_consumed_quantity"])))
+    after_predecessor = adv_remaining(fresh, ChainState(security_ids=fresh.security_ids, traded_quantity=np.array([50.0])))
     budget_left = 50 * 100 / 1_000_000
     np.testing.assert_allclose(after_earlier_run.column("adv_capacity"), [budget_left])
     np.testing.assert_allclose(after_predecessor, [budget_left])

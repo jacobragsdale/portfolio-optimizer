@@ -144,7 +144,7 @@ def test_the_inflow_reproduces_the_hand_checked_buys_and_couples_through_them(tm
     assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
     assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P1
     assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == BUY_ORDERS_P2
-    assert p2.chain_state.traded_shares.tolist() == [1000.0, 0.0, 25000.0] and p2.chain_state.predecessors == ("P1",), "every buy P1 made reaches P2: the chain carries the whole trade"
+    assert p2.chain_state.traded_quantity.tolist() == [1000.0, 0.0, 25000.0] and p2.chain_state.predecessors == ("P1",), "every buy P1 made reaches P2: the chain carries the whole trade"
     for outcome in (p1, p2):
         assert outcome.report.passed and (outcome.solution.w >= outcome.spec.w0 - 1e-9).all() and outcome.solution.sell.tolist() == [0.0, 0.0, 0.0]
     assert report.manifest.config.resolved["order_flow"] == "inflow"
@@ -158,7 +158,7 @@ def test_the_outflow_reproduces_the_hand_checked_sells_and_couples_through_them(
     assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
     assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == SELL_ORDERS_P1
     assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == THIN_B_ORDERS_P2, "P1's sells of B used up most of its ADV budget"
-    assert p2.chain_state.traded_shares.tolist() == [0.0, 2000.0, 0.0] and p2.chain_state.predecessors == ("P1",)
+    assert p2.chain_state.traded_quantity.tolist() == [0.0, 2000.0, 0.0] and p2.chain_state.predecessors == ("P1",)
     for outcome in (p1, p2):
         assert outcome.report.passed and (outcome.solution.w <= outcome.spec.w0 + 1e-9).all() and outcome.solution.buy.tolist() == [0.0, 0.0, 0.0]
     assert "adv/cumulative_participation" in p2.report.active, "what the chain left of B's budget is what stopped P2"
@@ -173,7 +173,7 @@ def test_the_rebalance_reproduces_the_hand_checked_trades_and_couples_through_bo
     assert isinstance(p1, PortfolioResult) and isinstance(p2, PortfolioResult)
     assert p1.orders[["security_id", "side", "quantity"]].to_dict("records") == REBALANCE_ORDERS_P1
     assert p2.orders[["security_id", "side", "quantity"]].to_dict("records") == REBALANCE_ORDERS_P2
-    assert p2.chain_state.traded_shares.tolist() == [1000.0, 4000.0, 25000.0] and p2.chain_state.predecessors == ("P1",), (
+    assert p2.chain_state.traded_quantity.tolist() == [1000.0, 4000.0, 25000.0] and p2.chain_state.predecessors == ("P1",), (
         "every trade P1 made, on either side, reaches P2: a sell spends a name's volume like a buy"
     )
     for outcome in (p1, p2):

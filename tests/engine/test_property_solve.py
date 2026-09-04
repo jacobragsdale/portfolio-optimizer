@@ -19,7 +19,7 @@ def feasible_specs(draw: st.DrawFn) -> ProblemSpec:
     turnover = draw(st.floats(min_value=0.05, max_value=2.0))
     invested = 1.0 - draw(st.floats(min_value=0.0, max_value=0.5))  # the rest is cash the inflow may put to work, or not
     w0 = w0_raw / w0_raw.sum() * invested
-    return make_spec(n=n, w0=w0, columns={"alpha": alpha}, shares_held=w0 * 1e6 / 100.0, max_turnover=turnover, cash_ub=1.0)
+    return make_spec(n=n, w0=w0, columns={"alpha": alpha}, quantity_held=w0 * 1e6 / 100.0, max_turnover=turnover, cash_ub=1.0)
 
 
 @given(spec=feasible_specs())
