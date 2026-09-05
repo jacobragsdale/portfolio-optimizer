@@ -94,6 +94,9 @@ run run-b3a1c61b6f8c: manifest out/run-b3a1c61b6f8c/manifest.json
   P3: solved, 2 order(s); binding: ub, adv/cumulative_participation
   P4: solved, 0 order(s); binding: lb, ub, sector_floor/group_limit, adv/cumulative_participation
   ...
+  check restricted_never_traded: not_exercised, 0 examined, 0 violation(s)
+  check wash_sale_window: passed, 100 examined, 0 violation(s)
+100 solved, 0 failed; checks: 1 not_exercised, 1 passed
 exit code 0
 ```
 

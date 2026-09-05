@@ -358,6 +358,15 @@ def test_resolve_config_checks_the_cvxpy_steps_solver_against_what_this_process_
     assert info.value.failures == (failure,)
 
 
+def test_resolve_config_solves_the_dry_run_with_the_configured_solver_options(fake_steps: str) -> None:
+    """An option the solver does not recognize is the config's failure, before any data loads — not every portfolio's at stage solve."""
+    with pytest.raises(ConfigResolutionError) as info:
+        resolve_config(fake_config(fake_steps, solve={"name": "cvxpy", "params": {"solver": "CLARABEL", "options": {"max_itr": 1}}}))
+    assert len(info.value.failures) == 1
+    assert info.value.failures[0].startswith("solve: solver 'CLARABEL' refused the one-security dry run: TypeError: ") and "max_itr" in info.value.failures[0]
+    assert resolve_config(fake_config(fake_steps, solve={"name": "cvxpy", "params": {"solver": "CLARABEL", "options": {"max_iter": 50}}})).shipped_solve
+
+
 def test_a_solve_step_that_is_not_cvxpy_needs_no_solver_and_no_objective(fake_steps: str) -> None:
     resolved = resolve_config(fake_config(fake_steps, solve=f"{fake_steps}:solve_step", objective=[]), installed=lambda: ())
     assert resolved.terms == () and not resolved.shipped_solve, "a pure function minimizes nothing, and no cvxpy solver is asked for"

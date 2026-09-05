@@ -1,6 +1,6 @@
 # Focused fixed-income optimization framework
 
-Status: proposed implementation plan; no product changes implemented by this document.
+Status (2026-09-05): phases 1 and 2 landed on `main` on 2026-09-04 — the verification and capacity fixes (81d1ffb) and the bond domain (1a3e671). Phases 3–7 are not started. The removals in §1 (Dask, the derived schedule, the dataset DAG, retries) are deferred and not authorised; do not start them from this document.
 
 This plan consolidates the engineering, adoption, and simplicity reviews. It supersedes their broader feature suggestions where they conflict with this scope. Parallel multiprocessing is retained as an explicit requirement. Implementation should use coherent changes with no compatibility shims for the current first-draft interfaces.
 
@@ -162,7 +162,7 @@ Pilot with researchers and less experienced users. Measure time to first meaning
 
 ## 7. Implementation sequence and acceptance
 
-All phases below are pending. Preserve unrelated existing work. Update code, tests, configuration schemas, examples, and documentation together as contracts change.
+Phases 3–7 are pending. Preserve unrelated existing work. Update code, tests, configuration schemas, examples, and documentation together as contracts change.
 
 | Phase | Work | Acceptance |
 |---|---|---|

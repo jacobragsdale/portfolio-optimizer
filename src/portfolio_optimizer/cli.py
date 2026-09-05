@@ -13,7 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TextIO
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from portfolio_optimizer.config.models import InlinePortfolios, RunConfig, load_run_config
 from portfolio_optimizer.config.resolve import TEMPLATE_MODULES, ConfigResolutionError, ResolvedConfig, published_steps, resolve_config
@@ -243,6 +243,9 @@ def _run(args: argparse.Namespace, *, env: Mapping[str, str], clock: Clock, new_
             traceback_hint = "" if outcome.traceback is None else f" (traceback: {failure_report_path(run_dir, outcome)})"
             stdout.write(f"  {outcome.portfolio_id}: FAILED at {outcome.stage}: {outcome.error_type}: {outcome.message}{traceback_hint}\n")
     stdout.writelines(f"  check {check.label}: {check.status}, {check.examined} examined, {check.violations} violation(s)\n" for check in report.manifest.checks)
+    solved = sum(isinstance(outcome, PortfolioResult) for outcome in report.outcomes)
+    verdicts = ", ".join(f"{count} {status}" for status, count in sorted(Counter(check.status for check in report.manifest.checks).items())) or "none"
+    stdout.write(f"{solved} solved, {len(report.outcomes) - solved} failed; checks: {verdicts}\n")
     stdout.write(f"exit code {report.exit_code}\n")
     return report.exit_code
 
@@ -332,20 +335,25 @@ def _validate_config(args: argparse.Namespace, *, env: Mapping[str, str], stdout
 
 def _steps(*, stdout: TextIO) -> int:
     """Every step a bare name can resolve to, by kind, and every term and constraint kind: the template's, and what installed packages publish."""
+    stdout.write("a param marked * is required\n")
     for kind in TEMPLATE_MODULES:
         step_kind: StepKind = kind
         stdout.write(f"{step_kind} ({TEMPLATE_MODULES[step_kind]})\n")
         published = published_steps(step_kind)
         for name, params in installed_steps(step_kind).items():
             source = f" [{published[name][0]}]" if name in published else ""
-            fields = ", ".join(params.model_fields) if params is not None else ""
+            fields = ", ".join(_field_names(params)) if params is not None else ""
             stdout.write(f"  {name}{source}{f' ({fields})' if fields else ''}\n")
     for title, kinds in (("term kinds", term_kinds()), ("constraint kinds", constraint_kinds())):
         stdout.write(f"{title}\n")
         for name, model in sorted(kinds.items()):
-            fields = ", ".join(field for field in model.model_fields if field != "kind")
-            stdout.write(f"  {name} ({fields})\n")
+            stdout.write(f"  {name} ({', '.join(_field_names(model, skip='kind'))})\n")
     return EXIT_OK
+
+
+def _field_names(model: type[BaseModel], *, skip: str | None = None) -> list[str]:
+    """A model's field names as ``steps`` prints them: a required one starred."""
+    return [f"{name}*" if info.is_required() else name for name, info in model.model_fields.items() if name != skip]
 
 
 def _verify(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:

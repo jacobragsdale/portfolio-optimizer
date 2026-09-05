@@ -8,6 +8,7 @@ construction at ``validate-config`` and the solve itself both refuse.
 """
 
 import time
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -275,6 +276,26 @@ def solve_problem(
         detail=detail or str(problem.status),
         duals=duals,
     )
+
+
+def dry_run_failures(
+    x: DecisionVars, terms: Sequence[ObjectiveTerm], constraints: Sequence[ConstraintSet], *, solver: str, options: Mapping[str, float | int | bool | str], time_limit_s: float | None
+) -> list[str]:
+    """Why ``solver`` cannot run this problem with ``options``, if it cannot: an option it does not recognize, or a problem class it cannot take.
+
+    Solved once when the config resolves, so the failure is reported as the config's before any data
+    loads rather than as every portfolio's at stage ``solve``. Infeasible or unbounded is not a
+    failure here: that is the dummy's business, not the solver's.
+    """
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # how well the dummy solved is not the question; only a refusal is
+            result = solve_problem(x, terms, constraints, solver=solver, options=options, time_limit_s=time_limit_s, verbose=False)
+    except Exception as error:  # noqa: BLE001  # whatever the solver raised about its options is the report
+        return [f"solve: solver {solver!r} refused the one-security dry run: {type(error).__name__}: {error}"]
+    if result.status is SolveStatus.SOLVER_ERROR:
+        return [f"solve: solver {solver!r} could not solve the one-security dry run: {result.detail}"]
+    return []
 
 
 def _largest_dual(group: ConstraintSet) -> float:

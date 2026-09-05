@@ -18,7 +18,7 @@
 | `verify` | `--manifest PATH --portfolio ID` | Reload the persisted spec, solution, and chain state and recompute every constraint the solve applied and every term in numpy — each through its kind's own residual or value — holding every residual to the `check.tolerance` the run used. Reads `order_flow` from the manifest's resolved config to pick the order-flow profile whose identity checks apply, and the terms from the manifest's `terms`. Marks the checks the answer sits against `[binding]`. Never imports cvxpy. |
 | `diff-manifests LEFT RIGHT` | | Print the first stage at which two runs diverge, overall and per portfolio. |
 | `schema` | | Print the JSON Schema for run configs, over every step and term kind this environment can name; `> configs/run-config.schema.json` regenerates the checked-in file. |
-| `steps` | | List every step a bare name can resolve to, by kind and with its parameter names — the template's and what installed packages publish — and every term and constraint kind with its fields. |
+| `steps` | | List every step a bare name can resolve to, by kind and with its parameter names (a required one starred) — the template's and what installed packages publish — and every term and constraint kind with its fields. |
 
 ## Output directory
 

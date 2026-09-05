@@ -199,6 +199,9 @@ A test checks that the annotated copy matches it.
 // comments and compares the rest to it. The outflow changes the name, `order_flow`, and adds a
 // `tax_cost` term on what is sold; the rebalance changes the first two.
 {
+  // Editors that honor `$schema` validate and complete the file as you type; the engine ignores it.
+  "$schema": "./run-config.schema.json",
+
   // Recorded in the manifest, kept out of the config hash. The as-of instant is `run --as-of`,
   // so one wiring runs every day under one hash and `diff-manifests` compares Monday with Tuesday.
   "run": {"name": "example_inflow", "tags": {"desk": "template"}},

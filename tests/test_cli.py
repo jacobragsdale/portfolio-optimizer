@@ -56,6 +56,7 @@ def test_run_produces_the_golden_orders_and_a_manifest(tmp_path: Path, env: dict
     assert "  check restricted_never_traded: not_exercised, 0 examined, 0 violation(s)" in out and "  check wash_sale_window: not_exercised, 0 examined, 0 violation(s)" in out, (
         "every check's verdict, after the portfolios: this book proves neither"
     )
+    assert "\n2 solved, 0 failed; checks: 2 not_exercised\nexit code 0\n" in out, "the totals, last, for a book too long to read line by line"
     run_dir = tmp_path / "out" / "run-smoke"
     orders = pd.read_parquet(run_dir / "orders" / "orders.parquet")
     assert orders[["portfolio_id", "security_id", "side", "quantity"]].to_dict("records") == [
@@ -205,7 +206,8 @@ def test_steps_lists_what_this_environment_can_name() -> None:
     assert "rule (portfolio_optimizer.rules)" in out and "  restrict_low_liquidity (dataset, key)" in out
     assert "build (portfolio_optimizer.engine.build)" in out and "  standard" in out
     assert "  cvxpy (solver, options, time_limit_s, verbose)" in out
-    assert "term kinds" in out and "  linear (" in out
+    assert out.startswith("a param marked * is required\n")
+    assert "term kinds" in out and "  linear (name*, weight, column, vector)" in out
     assert "constraint kinds" in out and "  participation_limit (" in out
     assert "check (portfolio_optimizer.checks)" in out and "  no_trades_inside_wash_window (dataset, window_days)" in out and "  restricted_never_traded" in out
     assert "parameter" not in out.split("rule (")[1].split("solve_order")[0], "a helper in a template module is not a step"

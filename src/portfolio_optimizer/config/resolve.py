@@ -197,18 +197,20 @@ def _construction_failures(resolved: ResolvedConfig) -> list[str]:
     """Render every objective term once against a one-security dummy spec, under the run's order-flow profile, through the shipped cvxpy step's own machinery.
 
     What parsing cannot see — a term that raises when rendered, reaches for a decision vector the
-    side does not have, or is not convex — surfaces here instead of on a worker. A term that asks for
-    a spec column, scalar, or flag the dummy does not carry is skipped rather than failed: whether the
-    universe has it is a question for the data, not the config. Only the shipped step renders terms
-    this way, so only under it is the check made; constraints are loaded per portfolio and are checked
-    against the real spec at build.
+    side does not have, or is not convex — surfaces here instead of on a worker, and so does a solver
+    option the solver does not recognize, since the dummy is solved once with the configured options.
+    A term that asks for a spec column, scalar, or flag the dummy does not carry is skipped rather than
+    failed: whether the universe has it is a question for the data, not the config. Only the shipped
+    step renders terms this way, so only under it is the check made; constraints are loaded per
+    portfolio and are checked against the real spec at build.
     """
     if not resolved.shipped_solve:
         return []
     if not resolved.terms:
         return ["objective: the cvxpy solve step minimizes the terms' sum and needs at least one; a run that minimizes nothing wants a solve step that is not an optimizer"]
-    from portfolio_optimizer.cvx.adapter import ObjectiveTerm, build_problem
+    from portfolio_optimizer.cvx.adapter import ObjectiveTerm, build_problem, dry_run_failures
     from portfolio_optimizer.cvx.order_flow import decision_variables, identity_constraints
+    from portfolio_optimizer.solvers import CvxpyParams
 
     spec = _dry_run_spec()
     chain = ChainState.empty(spec.security_ids)
@@ -228,12 +230,17 @@ def _construction_failures(resolved: ResolvedConfig) -> list[str]:
             failures.append(f"{where}: {term.name}: rendered {type(result).__name__}, expected ObjectiveTerm")
             continue
         rendered.append(result)
-    if not failures and rendered:
-        try:
-            build_problem(rendered, [identity_constraints(resolved.profile.order_flow, x, spec)])
-        except ValueError as error:
-            failures.append(f"objective: {error}")
-    return failures
+    if failures or not rendered:
+        return failures
+    constraints = [identity_constraints(resolved.profile.order_flow, x, spec)]
+    try:
+        build_problem(rendered, constraints)
+    except ValueError as error:
+        return [f"objective: {error}"]
+    params = resolved.solve.params
+    if not isinstance(params, CvxpyParams):  # pragma: no cover - the shipped step's params are always its model
+        return []
+    return dry_run_failures(x, rendered, constraints, solver=params.solver, options=params.options, time_limit_s=params.time_limit_s)
 
 
 def _dry_run_spec() -> ProblemSpec:
